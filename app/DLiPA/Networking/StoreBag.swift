@@ -69,10 +69,16 @@ struct StoreBag {
         // a loc- prefix on the wire).
         let keys = bag.keys.sorted()
         AppLog.info("bag dict keys (\(keys.count)): " + keys.joined(separator: ", "), .network)
-        if let urlBag = bag["urlBag"] as? [String: Any] {
-            let ubKeys = urlBag.keys.sorted()
-            AppLog.info("urlBag keys (\(ubKeys.count)): " + ubKeys.joined(separator: ", "), .network)
+
+        // Check for any value that is itself a dict — the SAP endpoints may
+        // be nested one level deeper than expected.
+        for key in keys {
+            if let nested = bag[key] as? [String: Any] {
+                let nestedKeys = nested.keys.sorted()
+                AppLog.info("nested dict '\(key)' keys (\(nestedKeys.count)): " + nestedKeys.joined(separator: ", "), .network)
+            }
         }
+
         // Also check for loc- prefixed keys at the top level.
         let locKeys = keys.filter { $0.hasPrefix("loc-") }
         if !locKeys.isEmpty {
