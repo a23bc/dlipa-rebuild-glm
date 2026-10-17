@@ -26,7 +26,8 @@
 		<string>iPhoneOS</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
-	<true/>	<key>MinimumOSVersion</key>
+	<true/>
+	<key>MinimumOSVersion</key>
 	<string>15.0</string>
 	<key>UIDeviceFamily</key>
 	<array>
@@ -36,8 +37,9 @@
 	<key>UILaunchScreen</key>
 	<dict/>
 	<!-- The app has a SceneDelegate, so it must declare its scene
-	     configuration. Without this the manifest is incomplete and MobileInstallation
-	     classifies the bundle as a System app, which fails to register. -->
+	     configuration. Without this the manifest is incomplete and
+	     MobileInstallation classifies the bundle as a System app,
+	     which fails to register. -->
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -54,68 +56,9 @@
 				</dict>
 			</array>
 		</dict>
-	</dict>	<!-- Icon files copied in from the original bundle under their real names,
-	     which is what a working install uses. -->
-	<key>CFBundleIcons</key>
-	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon60x60</string>
-			</array>
-			<key>CFBundleIconName</key>
-			<string>AppIcon</string>
-		</dict>
 	</dict>
-	<key>CFBundleIcons~ipad</key>
-	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon60x60</string>
-				<string>AppIcon76x76</string>
-			</array>
-			<key>CFBundleIconName</key>
-			<string>AppIcon</string>
-		</dict>
-	</dict>
-	<key>CFBundleSupportedPlatforms</key>
-	<array>
-		<string>iPhoneOS</string>
-	</array>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>	<key>MinimumOSVersion</key>
-	<string>15.0</string>
-	<key>UIDeviceFamily</key>
-	<array>
-		<integer>1</integer>
-		<integer>2</integer>
-	</array>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<!-- The app has a SceneDelegate, so it must declare its scene
-	     configuration. Without this the manifest is incomplete and MobileInstallation
-	     classifies the bundle as a System app, which fails to register. -->
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
-		<key>UISceneConfigurations</key>
-		<dict>
-			<key>UIWindowSceneSessionRoleApplication</key>
-			<array>
-				<dict>
-					<key>UISceneConfigurationName</key>
-					<string>Default Configuration</string>
-					<key>UISceneDelegateClassName</key>
-					<string>SceneDelegate</string>
-				</dict>
-			</array>
-		</dict>
-	</dict>	<!-- Icon files copied in from the original bundle under their real names,
-	     which is what a working install uses. -->
+	<!-- Icon files copied in from the original bundle under their real
+	     names, which is what a working install uses. -->
 	<key>CFBundleIcons</key>
 	<dict>
 		<key>CFBundlePrimaryIcon</key>
