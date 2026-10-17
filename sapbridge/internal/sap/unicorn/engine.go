@@ -33,9 +33,15 @@ const (
 	// first means the later UC_INIT will use the smaller size when it
 	// finally runs tcg_exec_init(uc, uc->tcg_buffer_size).
 	//
-	// 16 MiB matches what the upstream ipatool project uses on iOS.
+	// 8 MiB is a middle ground. 16 MiB worked on one launch but failed
+	// on another with "Could not allocate dynamic translator buffer" —
+	// iOS's per-process virtual address ceiling is tight when Go heap
+	// is already 126 MB. 8 MiB leaves more headroom while still giving
+	// the JIT enough room for SAP handshake code. The Unicorn patch
+	// prints errno on mmap failure so we can see the real reason if
+	// this still fails.
 	controlTCGBufferSize = uint32(13 | 1<<26 | 1<<30)
-	tcgBufferSizeIOS     = uint32(16 << 20) // 16 MiB
+	tcgBufferSizeIOS     = uint32(8 << 20) // 8 MiB
 )
 
 const (
