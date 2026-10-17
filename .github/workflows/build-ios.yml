@@ -370,7 +370,7 @@ jobs:
           APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
           echo "==> bundle root before cleanup"
           ls -la "$APP"
-          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" -print -delete
+          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" ! -name "BuildID.txt" -print -delete
           echo "==> bundle root after cleanup"
           ls -la "$APP"
 
