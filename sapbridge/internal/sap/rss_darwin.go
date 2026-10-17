@@ -13,12 +13,15 @@ import (
 // mach task_info constants (mach/task_info.h). On 64-bit Darwin the
 // flavor we want is TASK_BASIC_INFO_64 (= 5) and the matching count
 // is TASK_BASIC_INFO_64_COUNT (= 8 natural_t = 32 bytes).
+//
+// Named with a Flavor suffix so the constant doesn't collide with
+// the taskBasicInfo struct type below.
 const (
-        taskBasicInfo      = 5 // TASK_BASIC_INFO_64 flavor
-        taskBasicInfoCount = 8 // sizeof(task_basic_info_64_data_t)/sizeof(natural_t)
+        taskBasicInfoFlavor      = 5 // TASK_BASIC_INFO_64 flavor
+        taskBasicInfoFlavorCount = 8 // sizeof(task_basic_info_64_data_t)/sizeof(natural_t)
 )
 
-// task_basic_info_64_data_t (mach/task_info.h, 64-bit form):
+// taskBasicInfo mirrors task_basic_info_64_data_t (mach/task_info.h).
 //
 //      struct task_basic_info_64_data_t {
 //          integer_t       suspend_count;  // 4 bytes
@@ -39,8 +42,16 @@ type taskBasicInfo struct {
 
 // libSystem is the handle used to look up task_info / task_self_trap
 // symbols at package init time. purego.Dlopen on iOS also resolves
-// the dyld shared cache.
-var libSystem = purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_LAZY|purego.RTLD_GLOBAL)
+// the dyld shared cache. If the lookup fails, libSystem is 0 and
+// rssBytesMach returns 0 (caller falls back to /proc or skips).
+var libSystem uintptr
+
+func init() {
+        handle, err := purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_LAZY|purego.RTLD_GLOBAL)
+        if err == nil {
+                libSystem = handle
+        }
+}
 
 // rssBytesProcFS is unused on Darwin (mach task_info covers it) but kept
 // as a no-op so rss.go's call site compiles without platform-specific
@@ -58,10 +69,12 @@ func rssBytesMach() uint64 {
         // Resolve task_self_trap (iOS) or mach_task_self_ (macOS) for the
         // current task port. Both return mach_port_t (uint32 on Darwin).
         var taskSelf func() uint32
-        if purego.Dlsym(libSystem, "task_self_trap") != 0 {
+        if handle, err := purego.Dlsym(libSystem, "task_self_trap"); err == nil && handle != 0 {
                 purego.RegisterLibFunc(&taskSelf, libSystem, "task_self_trap")
-        } else {
+        } else if handle, err := purego.Dlsym(libSystem, "mach_task_self_"); err == nil && handle != 0 {
                 purego.RegisterLibFunc(&taskSelf, libSystem, "mach_task_self_")
+        } else {
+                return 0
         }
 
         // task_info(task_t target_task,
@@ -72,9 +85,9 @@ func rssBytesMach() uint64 {
         purego.RegisterLibFunc(&taskInfo, libSystem, "task_info")
 
         var info taskBasicInfo
-        count := uint32(taskBasicInfoCount)
+        count := uint32(taskBasicInfoFlavorCount)
         task := taskSelf()
-        kr := taskInfo(task, taskBasicInfo, unsafe.Pointer(&info), &count)
+        kr := taskInfo(task, taskBasicInfoFlavor, unsafe.Pointer(&info), &count)
         if kr != 0 {
                 fmt.Fprintf(os.Stderr, "[SAP] rss: task_info kr=%d\n", kr)
                 return 0
