@@ -1,5 +1,12 @@
 import UIKit
 
+// The class must be exposed to the ObjC runtime under the bare name
+// "SceneDelegate" (no module prefix) because Info.plist's
+// UIApplicationSceneManifest references it by that name. Swift app-target
+// classes are normally reachable under "<Module>.<Class>", and UIKit's
+// NSClassFromString("SceneDelegate") fails without the @objc name below,
+// which leaves the app with no scene delegate and therefore no UI.
+@objc(SceneDelegate)
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
