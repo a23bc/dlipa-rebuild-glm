@@ -7,6 +7,16 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                      didFinishLaunchingWithOptions launchOptions:
                         [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         print("[DLiPA] AppDelegate.didFinishLaunchingWithOptions start")
+
+        // Black-box recorder: redirect stderr to a file in Caches BEFORE
+        // any SAP code runs. If the Go runtime later dies with
+        // "fatal error: signal: SIGSEGV" inside Unicorn (cgo), the
+        // message lands in dlipa-stderr.log. On the next launch we read
+        // it back and dump it into AppLog so the user can Share-log it.
+        // Without this, cgo-level signals kill the process silently and
+        // we never see why.
+        StderrCapture.start()
+
         // Log the BuildID.txt that CI bakes into the bundle. This is the
         // single most useful line in the device log when chasing a
         // stale-IPA install: it identifies which CI build is *actually*
