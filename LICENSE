@@ -1,0 +1,44 @@
+MIT License
+
+Copyright (c) 2026 a23bc and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+
+Scope
+
+  Covers: the Go signing bridge in sapbridge/, the Swift app in app/, the build
+  scripts, and the CI configuration.
+
+  Does NOT cover:
+
+    - Third-party components, which keep their own licences. See
+      THIRD_PARTY_LICENSES.md. Most importantly, Unicorn is GNU GPL v2 with a
+      linking exception and is statically linked into the binary, so its terms
+      travel with the result and this MIT licence cannot override them.
+
+    - The Apple binaries in VendorAssets/, which are Apple copyright.
+
+    - The Assets.car, icons and Localizable.strings carried over from the
+      original DLiPA 1.4, whose repository states no licence at all.
+
+Why MIT: the protocol code is a trimmed copy of ipatool, which is MIT. Keeping
+the same licence means those vendored files stay under the terms they were
+written under rather than being relicensed.

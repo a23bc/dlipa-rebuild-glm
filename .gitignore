@@ -1,0 +1,14 @@
+build/
+app/build/
+app/DLiPA/Frameworks/SapBridge.framework/
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.DS_Store
+*.ipa
+# The four Apple SAP binaries in VendorAssets/ are ~119 MB and were tracked
+# with git-lfs in the upstream repository. This fork does not have the LFS
+# objects, so the directory is ignored. Users must obtain the binaries from
+# https://github.com/a23bc/dlipa-rebuild (run `git lfs pull` there) and copy
+# them into VendorAssets/ before building.
+VendorAssets/

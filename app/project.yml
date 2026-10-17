@@ -1,0 +1,79 @@
+name: DLiPA
+options:
+  bundleIdPrefix: com.a23bc
+  # Localizations carried over from the original DLiPA 1.4.
+  knownRegions: ['ar', 'de', 'en', 'es', 'fr', 'hi', 'id', 'it', 'ja', 'ko', 'ru', 'tr', 'vi', 'zh-Hans']
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+targets:
+  DLiPA:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    supportedDestinations: [iOS]
+    sources:
+      - path: DLiPA
+        excludes:
+          # ibtool on the macos-15 image demands an installed iOS platform,
+          # which is not present. The launch screen comes from Info.plist.
+          - "**/*.md"
+          - "LaunchScreen.storyboard"
+          # actool wants a simulator runtime the runner does not have.
+          - "Assets.xcassets"
+      # The four Apple binaries are staged here by scripts/stage-assets.sh
+      # and copied into the app bundle.
+      - path: DLiPA/Resources
+        type: folder
+    # No dependencies. The gomobile archive is force-loaded into the app
+    # binary by OTHER_LDFLAGS below, so the symbols resolve at link time and
+    # the bundle stays a single executable. Embedding an xcframework gave
+    # MobileInstallation a nested bundle to validate, which is what made
+    # registration fail with TrollStore error 181.
+    #
+    # (XcodeGen rejects an empty dependencies list, so the key is omitted.)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.a23bc.dliparebuild
+        PRODUCT_NAME: DLiPA
+        INFOPLIST_FILE: DLiPA/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_VERSION: "5.0"
+        # Exposes the gomobile-generated ObjC API to Swift. Without this the
+        # Sapbridge types are unresolvable and the build fails.
+        SWIFT_OBJC_BRIDGING_HEADER: DLiPA/DLiPA-Bridging-Header.h
+        # Headers the framework installs; keep them so the import resolves.
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+
+        TARGETED_DEVICE_FAMILY: "1,2"
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        ENABLE_BITCODE: NO
+        # Adhoc signing. The binary must carry an LC_CODE_SIGNATURE load
+        # command or MobileInstallation types it as System and TrollStore
+        # fails with error 181, so signing is allowed but with the "-"
+        # adhoc identity. No team and no provisioning profile are needed;
+        # the user re-signs with their own Apple ID on install.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        # Unicorn is force-loaded into SapBridge at build time, but the app
+        # link re-links the framework objects, so it needs the archive too.
+        # scripts/build-unicorn-ios.sh leaves it at $(SRCROOT)/build/ios/.
+        # Both archives are force-loaded into the app binary: SapBridge.a
+        # carries the gomobile-generated Sapbridge* symbols, libunicorn.a the
+        # emulator they depend on. Force-loading is what makes the bundle a
+        # single executable, with no Frameworks/ directory for
+        # MobileInstallation to reject at registration.
+        OTHER_LDFLAGS:
+          - "-Wl,-force_load,$(SRCROOT)/build/ios/SapBridge.a"
+          - "-Wl,-force_load,$(SRCROOT)/build/ios/libunicorn.a"
+          - "-Wl,-export_dynamic"        # Local networking + arbitrary loads for the embedded HTTP server
+        # that serves the itms-services install manifest.
+        NSAppTransportSecurity: ""
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-Owholemodule"

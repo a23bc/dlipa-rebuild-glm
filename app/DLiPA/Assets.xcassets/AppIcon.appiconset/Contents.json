@@ -1,0 +1,15 @@
+{
+  "images": [
+    {
+      "idiom": "universal",
+      "platform": "ios",
+      "size": "76x76",
+      "scale": "2x",
+      "filename": "icon-152.png"
+    }
+  ],
+  "info": {
+    "author": "xcodegen",
+    "version": 1
+  }
+}

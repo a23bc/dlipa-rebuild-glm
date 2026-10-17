@@ -1,0 +1,376 @@
+name: Build iOS IPA
+
+# Builds an UNSIGNED .app and packages it as an .ipa.
+# No Apple Developer account is needed: the user signs the IPA on their own
+# machine with AltStore / Sideloadly using their free Apple ID, exactly as the
+# original DLiPA README instructs.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Xcode configuration
+        required: false
+        default: Release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-bridge:
+    name: Build SAP bridge for iOS
+    runs-on: macos-15
+    outputs:
+      artifact: ${{ steps.pack.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install build tools
+        run: |
+          brew install ldid cmake pkg-config
+
+      - name: Stage the Apple SAP assets
+        run: |
+          git lfs install
+          git lfs pull
+          sh scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/build/sap-assets"
+
+      - name: Run Go unit tests
+        working-directory: sapbridge
+        env:
+          # Lets the live handshake/kbsync tests run instead of skipping.
+          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
+        run: |
+          go test -count=1 ./...
+
+      - name: Build Unicorn for iOS arm64
+        run: |
+          sh scripts/build-unicorn-ios.sh
+
+      # gomobile is a host (macOS) tool. It must NOT see the iOS CGO_LDFLAGS,
+      # or the linker rejects the Unicorn archive as the wrong platform.
+      - name: Install gomobile
+        # gomobile is a host tool. It must NOT inherit GOOS=ios, or go install
+        # cross-compiles it and drops it in $GOPATH/bin/ios_arm64/gomobile.
+        # It must also not see the iOS CGO_LDFLAGS, or the linker rejects the
+        # Unicorn archive as the wrong platform.
+        working-directory: sapbridge
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          # init builds gobind, which bind requires. It must run without
+          # GOOS=ios so gobind is a host binary too.
+          gomobile init
+          echo "==> gomobile ready"
+
+      - name: Bind the bridge into an iOS framework
+        working-directory: sapbridge
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ios
+          GOARCH: arm64
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          # Unicorn must be force-loaded into the framework and its symbols
+          # exported so purego.Dlsym can find them at runtime.
+          #
+          # Recorded with go env -w rather than only the shell environment:
+          # gomobile spawns its own go build, and a value that exists only in
+          # the environment is easy to lose across that boundary.
+          go env -w CGO_LDFLAGS="-Wl,-force_load,${{ github.workspace }}/build/ios/libunicorn.a -Wl,-export_dynamic"
+          echo "==> CGO_LDFLAGS: $(go env CGO_LDFLAGS)"
+          # Only the device slice. Simulator targets cannot link an arm64 iOS
+          # archive, and gomobile builds every variant of the target.
+          gomobile bind -target=ios/arm64 \
+            -o ../app/DLiPA/Frameworks/SapBridge.xcframework .
+          echo "==> framework contents"
+          ls -laR ../app/DLiPA/Frameworks/ | head -40
+      - name: Inspect the framework
+        run: |
+          # An xcframework nests the real binary under ios-arm64/.
+          find app/DLiPA/Frameworks/SapBridge.xcframework -type f | head -20
+          FRAMEWORK=$(find app/DLiPA/Frameworks/SapBridge.xcframework -name SapBridge -type f | head -n 1)
+          echo "==> binary: $FRAMEWORK"
+          ls -la "$FRAMEWORK"
+          file "$FRAMEWORK"
+          echo "==> does it contain any uc_ symbol?"
+          nm -A "$FRAMEWORK" 2>/dev/null | grep -c uc_ || echo 0
+          echo "==> does it contain purego?"
+          nm -A "$FRAMEWORK" 2>/dev/null | grep -c purego || echo 0
+
+      - name: Verify the framework contains Unicorn
+        run: |
+          # A missing Unicorn backend only shows up as uc_open failing at
+          # runtime, which is invisible until the app runs. Check here.
+          FRAMEWORK=$(find app/DLiPA/Frameworks/SapBridge.xcframework -name SapBridge -type f | head -n 1)
+          if [ -z "$FRAMEWORK" ]; then echo "::error::SapBridge binary not found in the xcframework"; exit 1; fi
+          if nm -A "$FRAMEWORK" 2>/dev/null | grep -q uc_open; then
+            echo "==> Unicorn symbols present"
+          else
+            echo "::error::uc_open not found; Unicorn is not linked into the framework"
+            exit 1
+          fi
+          echo "==> exported uc_ symbols:"
+          nm -A "$FRAMEWORK" 2>/dev/null | grep -c " T uc_" || true
+
+      - name: Pack the bridge for the app job
+        id: pack
+        run: |
+          # Ship both archives the app link needs: the gomobile c-archive that
+          # carries the Sapbridge* symbols, and libunicorn.a. Both are
+          # force-loaded through OTHER_LDFLAGS in project.yml, so the app is a
+          # single executable with no embedded framework.
+          #
+          # One tar root: bsdtar cannot mix -C roots.
+          mkdir -p stage/ios
+          cp build/ios/libunicorn.a stage/ios/
+          cp app/DLiPA/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/SapBridge stage/SapBridge.a
+          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a
+          echo "artifact=sapbridge-ios.tar.gz" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sapbridge-ios
+          path: sapbridge-ios.tar.gz
+          retention-days: 5
+
+  app:
+    name: Build unsigned DLiPA app
+    runs-on: macos-15
+    needs: go-bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Download the SAP bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: sapbridge-ios
+          path: bridge
+
+      - name: Unpack the bridge
+        run: |
+          # The archive goes straight into the link. No framework is
+          # unpacked into the bundle: the gomobile archive is force-loaded
+          # into the app binary, so the bundle stays a single executable
+          # and MobileInstallation has no nested bundle to reject.
+          mkdir -p app/build/ios
+          tar -xzf bridge/sapbridge-ios.tar.gz -C bridge
+          mv bridge/ios/libunicorn.a app/build/ios/
+          mv bridge/SapBridge.a app/build/ios/
+          ls -la app/build/ios/
+      - name: Bundle the Apple SAP assets
+        run: |
+          # The four binaries are ~119 MB and stored with git-lfs.
+          git lfs install
+          git lfs pull
+          ls -la VendorAssets
+          ./scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/app/DLiPA/Resources/SapAssets"
+
+      - name: Install build tools
+        run: |
+          # xcodegen turns project.yml into a real .xcodeproj, so there is no
+          # fragile hand-edited pbxproj. ldid attaches the adhoc signature
+          # Xcode refuses to produce.
+          brew install xcodegen ldid
+          xcodegen --version
+          ldid --help 2>&1 | head -n 3
+
+      - name: Show build environment
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build the app (unsigned)
+        working-directory: app
+        run: |
+          # Generate the project from project.yml; there is no checked-in
+          # pbxproj to go stale.
+          xcodegen generate
+          ls -la DLiPA.xcodeproj
+
+          # No -sdk iphoneos: the macos-15 image ships the iOS 18 SDK without
+          # the installed platform, and naming the SDK makes the asset and
+          # storyboard steps probe for runtimes that are not present.
+          #
+          # No xcpretty either: it is not installed, and "|| true" would mask
+          # a real build failure as success.
+          # Adhoc-sign rather than skipping signing. CODE_SIGNING_ALLOWED=NO
+          # leaves the binary with no LC_CODE_SIGNATURE load command at all,
+          # and MobileInstallation then types the bundle as System and rejects
+          # registration with error 181. The "-" identity produces an adhoc
+          # signature, which is what TrollStore and AltStore expect, and needs
+          # no developer account.
+          set -o pipefail
+          xcodebuild \
+            -project DLiPA.xcodeproj \
+            -scheme DLiPA \
+            -configuration ${{ github.event.inputs.configuration || 'Release' }} \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            clean build
+      - name: Locate the built app
+        id: app
+        run: |
+          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::DLiPA.app not found"; exit 1; fi
+          echo "path=$APP" >> "$GITHUB_OUTPUT"
+          du -sh "$APP"
+
+      - name: Seal the bundle
+        run: |
+          # TrollStore error 181 with ApplicationType = System means
+          # MobileInstallation found the bundle unsealed. The original DLiPA 1.4,
+          # which installs on this device, carries two things an unsigned Xcode
+          # build does not:
+          #
+          #   1. _CodeSignature/CodeResources, a plist listing every resource
+          #      with its SHA-1 and SHA-256
+          #   2. an LC_CODE_SIGNATURE load command in the Mach-O executable
+          #
+          # codesign cannot produce them here: it validates the whole bundle and
+          # rejects resource after resource. Homebrew ldid no longer supports -S.
+          # The procursus build of ldid kept -S; upstream 2.1.5 dropped it.
+          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::DLiPA.app not found"; exit 1; fi
+
+          python3 scripts/make-coderesources.py "$APP"
+          echo "==> CodeResources"
+          ls -la "$APP/_CodeSignature"
+
+          # The version matters. Homebrew ldid 2.1.5 asserts flag_S because the
+          # upstream release dropped it. The procursus build kept -S.
+          git clone --depth 1 --branch v2.1.5-procursus5 \
+            https://github.com/opa334/ldid.git /tmp/ldid-src
+          make -C /tmp/ldid-src -j"$(sysctl -n hw.ncpu)"
+          # plutil -insert validates entitlement values and rejects team
+          # identifiers it does not recognise, so the plist is written whole.
+          #
+          # The identifier has to name the application: signing with only
+          # get-task-allow leaves the signature without an
+          # application-identifier, so TrollStore reads a single entitlement and
+          # cannot type the bundle as an application. It stays System and
+          # registration fails with 181.
+          #
+          # No certificate is needed. The team value is arbitrary for a locally
+          # signed binary; TrollStore rewrites it on install.
+          cat > ent.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>application-identifier</key>
+          	<string>A23BC00001.com.a23bc.dliparebuild</string>
+          	<key>com.apple.developer.team-identifier</key>
+          	<string>A23BC00001</string>
+          	<key>get-task-allow</key>
+          	<true/>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint ent.plist
+          # -I sets the CodeDirectory identifier. Without it ldid uses the
+          # executable basename, which leaves the binary identified as "DLiPA"
+          # instead of the bundle id, and MobileInstallation then types the
+          # bundle as System. The original DLiPA carries the full bundle id here.
+          # No space after -I: ldid takes the value from argv+2, so -I<value>.
+          # With a space it reads an empty identifier and then treats the
+          # bundle id as a file path.
+          /tmp/ldid-src/ldid -Sent.plist "-Icom.a23bc.dliparebuild" "$APP/DLiPA"
+          rm -f ent.plist
+          echo "==> executable sealed"
+
+      - name: Check the bundle for stray files
+        run: |
+          # CoreFP.icxs was ending up at the bundle root as well as inside
+          # Resources/SapAssets. The root copy is a leftover from an early
+          # attempt to satisfy a guest-internal relative path, and it is
+          # unnecessary: the Go loader reads the assets from the directory
+          # BundleDir names, which the app sets to Resources/SapAssets. A
+          # 7 MB unrecognised file at the bundle root is exactly the kind of
+          # thing MobileInstallation rejects.
+          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
+          echo "==> bundle root before cleanup"
+          ls -la "$APP"
+          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" -print -delete
+          echo "==> bundle root after cleanup"
+          ls -la "$APP"
+
+      - name: Package as IPA
+        id: ipa
+        run: |
+          # Name the file with a short digest of the binary. A stale copy
+          # downloaded earlier is then impossible to confuse with this build.
+          SHA=$(shasum -a 256 "${{ steps.app.outputs.path }}/DLiPA" | cut -c1-8)
+          NAME="DLiPA-${SHA}.ipa"
+          sh scripts/package-ipa.sh "${{ steps.app.outputs.path }}" "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          ls -la "$NAME"
+
+      - name: Report IPA contents
+        run: |
+          unzip -l "${{ steps.ipa.outputs.name }}" | tail -n +2 | head -n 30
+          echo "--- size ---"
+          du -h "${{ steps.ipa.outputs.name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DLiPA-ipa
+          path: ${{ steps.ipa.outputs.name }}
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    name: Attach IPA to a release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: app
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DLiPA-ipa
+          path: dist
+
+      - name: Checksum
+        run: |
+          cd dist
+          NAME=$(ls dist/DLiPA-*.ipa | head -n 1)
+          sha256sum "$NAME" > "$NAME.sha256"
+          cat "$NAME.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/DLiPA-*.ipa
+            dist/DLiPA-*.ipa.sha256
+          body: |
+            ## DLiPA (SAP-adapted build)
+
+            This build adds the App Store request signing that Apple now
+            requires. Install it with your own Apple ID:
+
+            * **AltStore** - open the IPA from the My Apps tab
+            * **Sideloadly** - drag the IPA in and sign in
+
+            Free Apple IDs get a 7-day certificate; re-sign weekly.
+            A paid developer account lasts a year.

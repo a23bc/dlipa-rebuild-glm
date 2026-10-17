@@ -1,0 +1,11 @@
+# The four Apple SAP binaries total ~119 MB and are normally tracked with LFS.
+# This fork does not have the LFS objects available, so the VendorAssets/
+# directory is excluded from the repository (see .gitignore). Users who need to
+# build must obtain the four binaries from the upstream repository
+# (https://github.com/a23bc/dlipa-rebuild) and place them in VendorAssets/
+# before running scripts/stage-assets.sh.
+
+# Build outputs and the bound framework must never be committed.
+app/DLiPA/Frameworks/SapBridge.framework/ filter=lfs diff=lfs merge=lfs -text
+build/ -text
+*.ipa -text
