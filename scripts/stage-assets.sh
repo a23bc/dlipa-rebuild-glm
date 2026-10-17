@@ -13,13 +13,20 @@ mkdir -p "$DST"
 verify() {
   name=$1
   want=$2
+  actual_size=$(wc -c < "$SRC/$name" | tr -d ' ')
   got=$(shasum -a 256 "$SRC/$name" | cut -d" " -f1)
   if [ "$got" != "$want" ]; then
-    echo "::error::$name digest mismatch: got $got want $want" >&2
+    echo "::error::$name digest mismatch:" >&2
+    echo "::error::  expected sha256=$want" >&2
+    echo "::error::  actual   sha256=$got" >&2
+    echo "::error::  size=$actual_size bytes" >&2
+    echo "::error::  path=$SRC/$name" >&2
+    echo "::error::If you are testing with a different macOS build, update the digests in both" >&2
+    echo "::error::  scripts/stage-assets.sh  AND  sapbridge/internal/sap/assets/assets.go" >&2
     exit 1
   fi
   cp "$SRC/$name" "$DST/$name"
-  echo "  ok $name"
+  echo "  ok $name (size=$actual_size sha256=$got)"
 }
 
 echo "==> verifying Apple SAP assets"
