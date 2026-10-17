@@ -49,7 +49,7 @@ RULES2 = {
 # embedded.mobileprovision is a signing residue and is absent from an
 # unsigned build anyway.
 SKIP_DIRS = {"_CodeSignature", "SC_Info"}
-SKIP_FILES = {"ResourceFork", ".DS_Store"}
+SKIP_FILES = {"ResourceFork", ".DS_Store", ".gitkeep"}
 
 
 def walk(app):

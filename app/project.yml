@@ -22,9 +22,21 @@ targets:
           - "LaunchScreen.storyboard"
           # actool wants a simulator runtime the runner does not have.
           - "Assets.xcassets"
+          # SapAssets/ is staged by scripts/stage-assets.sh and added as a
+          # separate folder source below so the Apple binaries land in a
+          # SapAssets/ subdirectory of the bundle root. Adding them as a
+          # folder preserves the SapAssets/ path that AssetStaging.swift
+          # relies on (Bundle.main.url(forResource:) searches recursively).
+          - "Resources/SapAssets"
       # The four Apple binaries are staged here by scripts/stage-assets.sh
-      # and copied into the app bundle.
-      - path: DLiPA/Resources
+      # and copied into the app bundle. type: folder preserves the SapAssets/
+      # subdirectory in the bundle root.
+      # Note: the previous version used `path: DLiPA/Resources` with
+      # type: folder, which created a non-standard Resources/ subdirectory in
+      # the iOS bundle. iOS app bundles are flat; a Resources/ subdirectory
+      # makes MobileInstallation type the bundle as System and reject
+      # registration with error 181.
+      - path: DLiPA/Resources/SapAssets
         type: folder
     # No dependencies. The gomobile archive is force-loaded into the app
     # binary by OTHER_LDFLAGS below, so the symbols resolve at link time and
