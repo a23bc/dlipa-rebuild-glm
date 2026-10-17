@@ -26,28 +26,22 @@ struct StoreBag {
             .replacingOccurrences(of: "\n", with: "\\n") ?? "<binary>"
         AppLog.info("bag parse: first 120 bytes: " + preview, .network)
 
-        // Apple's bag.xml sometimes arrives with a BOM or a leading newline
-        // that confuses PropertyListSerialization. Try stripping a UTF-8 BOM
-        // and any leading whitespace before the <?xml declaration.
-        var trimmed = data
-        if trimmed.count > 3 {
-            let bytes = [UInt8](trimmed.prefix(3))
-            if bytes == [0xEF, 0xBB, 0xBF] {
-                trimmed = trimmed.subdata(in: 3..<trimmed.count)
-                AppLog.info("bag parse: stripped UTF-8 BOM", .network)
-            }
-        }
+        // Apple's bag.xml is wrapped in an ITMS envelope:
+        //   <Document xmlns="..."><Protocol><plist version="1.0">...</plist>...
+        // PropertyListSerialization rejects <Document> immediately. ipatool
+        // solves this by extracting the <plist>...</plist> substring with a
+        // regex before parsing. We do the same here.
+        let normalized = normalizeXMLPlistBody(data)
+        AppLog.info("bag parse: normalized to \(normalized.count) bytes, first 80: " + (String(data: normalized.prefix(80), encoding: .utf8) ?? "?"), .network)
 
         var format = PropertyListSerialization.PropertyListFormat.xml
         let plist: Any
         do {
-            plist = try PropertyListSerialization.propertyList(from: trimmed, options: [], format: &format)
+            plist = try PropertyListSerialization.propertyList(from: normalized, options: [], format: &format)
         } catch {
             AppLog.error("bag parse: PropertyListSerialization failed: \(error)", .network)
-            // Fallback: parse the XML manually with XMLParser. Apple's bag.xml
-            // is a standard plist XML, so XMLParser can read it even when
-            // PropertyListSerialization's stricter validator rejects it.
-            guard let parsed = BagXMLParser.parse(data: trimmed) else {
+            // Fallback: parse the XML manually with XMLParser.
+            guard let parsed = BagXMLParser.parse(data: normalized) else {
                 AppLog.error("bag parse: XMLParser fallback also failed", .network)
                 throw StoreError.malformedBag
             }
@@ -59,8 +53,26 @@ struct StoreBag {
             AppLog.error("bag parse: root is not [String: Any], got \(type(of: plist))", .network)
             throw StoreError.malformedBag
         }
+        AppLog.info("bag parse: PropertyListSerialization succeeded, \(root.count) top-level keys", .network)
         let bag = (root["urlBag"] as? [String: Any]) ?? root
         return parseDict(bag)
+    }
+
+    /// Mirrors ipatool's normalizeXMLPlistBody: extract the <plist>...</plist>
+    /// substring from the ITMS <Document><Protocol> envelope so
+    /// PropertyListSerialization can parse it.
+    private static func normalizeXMLPlistBody(_ data: Data) -> Data {
+        guard let xml = String(data: data, encoding: .utf8) else { return data }
+
+        // Extract <plist ...>...</plist>
+        if let plistStart = xml.range(of: "<plist", options: .caseInsensitive),
+           let plistEnd = xml.range(of: "</plist>", options: .caseInsensitive, range: plistStart.upperBound..<xml.endIndex) {
+            let plistXML = String(xml[plistStart.lowerBound..<plistEnd.upperBound])
+            return Data(plistXML.utf8)
+        }
+
+        // No <plist> found; return original
+        return data
     }
 
     private static func parseDict(_ bag: [String: Any]) -> StoreBag {
