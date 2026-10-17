@@ -500,6 +500,19 @@ func (i *Image) Load(memory Memory) error {
 		}
 	}
 
+	// All segment data has been copied into the Unicorn guest's memory
+	// via MemWrite above. The Go-side copy (i.data) is no longer needed
+	// — segment fixups were applied before Load() ran, and SAP runtime
+	// calls operate against guest virtual addresses, not i.data.
+	//
+	// Drop the reference so the GC can reclaim ~110 MB (CoreFP 95 MB +
+	// AppleMediaServices 15 MB) before the SAP handshake runs. Without
+	// this, iOS's per-process memory ceiling kills the app during
+	// guest.Initialize() because Go heap + Unicorn regions + this
+	// retained copy together push RSS over ~250 MB.
+	i.data = nil
+	i.file = nil
+
 	return nil
 }
 
