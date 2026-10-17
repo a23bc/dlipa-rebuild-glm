@@ -34,7 +34,23 @@ type Signer struct {
 //      sign-sap-setup       -> setupURL
 //      sign-sap-setup-cert  -> certURL
 //      sign-sap-version     -> version (200 today)
-func New(setupURL, certURL string, version int32, hardwareID []byte) (*Signer, error) {
+//
+// All panics inside the SAP stack (Unicorn, machimage, shims, etc.) are
+// recovered here and converted to errors, so a bug deep in the guest
+// runtime surfaces as a normal NSError on the Swift side instead of
+// killing the host iOS process via os.Exit(2).
+func New(setupURL, certURL string, version int32, hardwareID []byte) (signer *Signer, err error) {
+        err = runRecovered("SAP handshake", func() error {
+                var innerErr error
+                signer, innerErr = newSigner(setupURL, certURL, version, hardwareID)
+                return innerErr
+        })
+        return signer, err
+}
+
+// newSigner is the unwrapped handshake implementation. It panics on bugs;
+// New() above recovers those panics.
+func newSigner(setupURL, certURL string, version int32, hardwareID []byte) (*Signer, error) {
         if len(hardwareID) == 0 || len(hardwareID) > 20 {
                 return nil, fmt.Errorf("hardware ID must be 1..20 bytes, got %d", len(hardwareID))
         }
@@ -68,7 +84,16 @@ func New(setupURL, certURL string, version int32, hardwareID []byte) (*Signer, e
 }
 
 // Sign returns the raw signature bytes for body.
-func (s *Signer) Sign(body []byte) ([]byte, error) {
+func (s *Signer) Sign(body []byte) (sig []byte, err error) {
+        err = runRecovered("SAP sign", func() error {
+                var innerErr error
+                sig, innerErr = s.sign(body)
+                return innerErr
+        })
+        return sig, err
+}
+
+func (s *Signer) sign(body []byte) ([]byte, error) {
         if s == nil || s.inner == nil {
                 return nil, errors.New("signer is closed")
         }
@@ -77,7 +102,16 @@ func (s *Signer) Sign(body []byte) ([]byte, error) {
 
 // SignatureHeaderValue returns the ready-to-set value for the
 // X-Apple-ActionSignature HTTP header.
-func (s *Signer) SignatureHeaderValue(body []byte) (string, error) {
+func (s *Signer) SignatureHeaderValue(body []byte) (value string, err error) {
+        err = runRecovered("SAP signature header", func() error {
+                var innerErr error
+                value, innerErr = s.signatureHeaderValue(body)
+                return innerErr
+        })
+        return value, err
+}
+
+func (s *Signer) signatureHeaderValue(body []byte) (string, error) {
         sig, err := s.Sign(body)
         if err != nil {
                 return "", err
@@ -94,7 +128,14 @@ func (s *Signer) Hardware() []byte {
 }
 
 // Close tears down the SAP session and releases the guest runtime.
-func (s *Signer) Close() error {
+func (s *Signer) Close() (err error) {
+        err = runRecovered("SAP close", func() error {
+                return s.close()
+        })
+        return err
+}
+
+func (s *Signer) close() error {
         if s == nil || s.inner == nil {
                 return nil
         }
@@ -105,7 +146,16 @@ func (s *Signer) Close() error {
 
 // KBSync produces the FairPlay blob required by the bag's ent/download
 // endpoint. dsid must be the account's decimal Directory Services ID.
-func KBSync(hardwareID []byte, dsid string) ([]byte, error) {
+func KBSync(hardwareID []byte, dsid string) (blob []byte, err error) {
+        err = runRecovered("KBSync", func() error {
+                var innerErr error
+                blob, innerErr = kbsync(hardwareID, dsid)
+                return innerErr
+        })
+        return blob, err
+}
+
+func kbsync(hardwareID []byte, dsid string) ([]byte, error) {
         // The DSID arrives as a string because gobind cannot map uint64 across
         // the language boundary. Parsing it here keeps the Swift side free of
         // numeric conversions.

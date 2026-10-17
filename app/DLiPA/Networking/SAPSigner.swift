@@ -40,6 +40,19 @@ final class SAPSigner {
         var error: NSError?
         guard let s = SapbridgeNew(setupURL, certURL, version, hardware.bytes, &error),
             error == nil else {
+            // The Go side wraps every entry point with recover(), so a panic
+            // deep in the SAP/Unicorn stack surfaces here as an NSError whose
+            // localizedDescription contains "Go panic in SAP handshake: <value>"
+            // plus a stack trace. Log every byte of it so it lands in the
+            // in-app log view, the shareable log, and OSLog (syslog).
+            let detail = error?.localizedDescription
+                ?? error?.localizedFailureReason
+                ?? error?.domain
+                ?? "unknown error"
+            AppLog.error("SAP handshake FAILED: " + detail, .sap)
+            // Also dump to stderr in case OSLog redaction hides part of it;
+            // stderr lines starting with [SAP] are easy to grep in syslog.
+            fputs("[DLiPA] SAP handshake FAILED: " + detail + "\n", stderr)
             throw error ?? NSError(domain: "SAPSigner", code: 1, userInfo: nil)
         }
         self.signer = s
@@ -72,9 +85,13 @@ final class SAPSigner {
         }
         var error: NSError?
         // Generating the blob runs the Unicorn guest and the Apple binaries,
-        // so a failure here is worth naming precisely.
+        // so a failure here is worth naming precisely. The Go side wraps
+        // this in recover() too, so any panic surfaces as an NSError here
+        // instead of killing the process.
         guard let fresh = SapbridgeKBSync(hardware.bytes, dsid, &error) else {
-            AppLog.error("kbsync generation failed: " + (error?.localizedDescription ?? "unknown"), .sap)
+            let detail = error?.localizedDescription ?? "unknown"
+            AppLog.error("kbsync generation failed: " + detail, .sap)
+            fputs("[DLiPA] kbsync generation failed: " + detail + "\n", stderr)
             throw error ?? NSError(domain: "SAPSigner", code: 3, userInfo: nil)
         }
         AppLog.info("kbsync generated, " + String(fresh.count) + " bytes", .sap)

@@ -21,6 +21,23 @@ type Signer struct {
         closed   bool
 }
 
+// stepRecovered wraps one handshake step so a panic inside the guest
+// runtime is logged to stderr (visible in iOS syslog) and re-thrown as
+// an error. The top-level New() in package sapbridge installs its own
+// recover() too, but this layer's recover gives us a per-step label so
+// the device log can pinpoint exactly which step panicked.
+func stepRecovered(step string, fn func() error) (err error) {
+        defer func() {
+                r := recover()
+                if r == nil {
+                        return
+                }
+                fmt.Fprintf(os.Stderr, "[SAP] PANIC in %s: %v\n", step, r)
+                err = fmt.Errorf("SAP %s panicked: %v", step, r)
+        }()
+        return fn()
+}
+
 func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (ActionSigner, error) {
         if ctx == nil {
                 return nil, errors.New("SAP signer context is nil")
@@ -36,8 +53,12 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
 
         fmt.Fprintf(os.Stderr, "[SAP] opening guest runtime...\n")
 
-        guest, err := machine.Open(ctx, bundle)
-        if err != nil {
+        var guest *machine.Machine
+        if err := stepRecovered("open runtime", func() error {
+                var openErr error
+                guest, openErr = machine.Open(ctx, bundle)
+                return openErr
+        }); err != nil {
                 return nil, fmt.Errorf("start Apple SAP runtime: %w", err)
         }
 
@@ -54,22 +75,34 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
         }()
 
         fmt.Fprintf(os.Stderr, "[SAP] initializing guest...\n")
-        signer.context, err = guest.Initialize(signer.hardware)
-        if err != nil {
+        if err := stepRecovered("initialize", func() error {
+                var initErr error
+                signer.context, initErr = guest.Initialize(signer.hardware)
+                return initErr
+        }); err != nil {
                 return nil, fmt.Errorf("initialize Apple SAP session: %w", err)
         }
 
         protocol := setupProtocol{client: &http.Client{Timeout: 30 * time.Second}}
 
         fmt.Fprintf(os.Stderr, "[SAP] fetching certificate...\n")
-        certificate, err := protocol.certificate(ctx, config.CertificateURL)
-        if err != nil {
+        var certificate []byte
+        if err := stepRecovered("fetch certificate", func() error {
+                var certErr error
+                certificate, certErr = protocol.certificate(ctx, config.CertificateURL)
+                return certErr
+        }); err != nil {
                 return nil, err
         }
 
         fmt.Fprintf(os.Stderr, "[SAP] first exchange (creating setup message)...\n")
-        request, state, err := guest.Exchange(config.Version, signer.hardware, signer.context, certificate)
-        if err != nil {
+        var request []byte
+        var state int32
+        if err := stepRecovered("first exchange", func() error {
+                var exErr error
+                request, state, exErr = guest.Exchange(config.Version, signer.hardware, signer.context, certificate)
+                return exErr
+        }); err != nil {
                 return nil, fmt.Errorf("create SAP setup message: %w", err)
         }
 
@@ -88,8 +121,11 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
         }
 
         fmt.Fprintf(os.Stderr, "[SAP] got reply (%d bytes), second exchange...\n", len(reply))
-        _, state, err = guest.Exchange(config.Version, signer.hardware, signer.context, reply)
-        if err != nil {
+        if err := stepRecovered("second exchange", func() error {
+                var exErr error
+                _, state, exErr = guest.Exchange(config.Version, signer.hardware, signer.context, reply)
+                return exErr
+        }); err != nil {
                 return nil, fmt.Errorf("complete SAP setup: %w", err)
         }
 
