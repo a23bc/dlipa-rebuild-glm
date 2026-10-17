@@ -14,9 +14,11 @@ final class AppStoreClient {
 
     /// The UA the original DLiPA shipped. Apple gates the private bag on the
     /// Configurator UA: with a generic UA the response contains none of the
-    /// sign-sap-* keys at all.
+    /// sign-sap-* keys at all. The 2.17 UA was found to return a generic
+    /// iTunes Store bag without SAP keys; 2.18 is the current Configurator
+    /// release and returns the full bag with sign-sap-* endpoints.
     static let bagUserAgent =
-        "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
+        "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6"
 
     /// ent/download expects this UA specifically.
     static let downloadUserAgent =
@@ -42,10 +44,11 @@ final class AppStoreClient {
         request.httpMethod = "GET"
         request.setValue("application/xml", forHTTPHeaderField: "Accept")
         request.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
+        AppLog.info("bag request: \(request.url?.absoluteString ?? "?"), UA: \(Self.bagUserAgent)", .network)
 
         let (data, response) = try await session.data(for: request)
         let http = response as? HTTPURLResponse
-        AppLog.info("bag response: HTTP \(http?.statusCode ?? -1), \(data.count) bytes, content-type: \(http?.value(forHTTPHeaderField: "Content-Type") ?? "none")", .network)
+        AppLog.info("bag response: HTTP \(http?.statusCode ?? -1), \(data.count) bytes, content-type: \(http?.value(forHTTPHeaderField: "Content-Type") ?? "none"), final-url: \(http?.url?.absoluteString ?? "?")", .network)
         if data.count < 200 {
             AppLog.warn("bag response too short: " + (String(data: data, encoding: .utf8) ?? "<binary>"), .network)
         }
