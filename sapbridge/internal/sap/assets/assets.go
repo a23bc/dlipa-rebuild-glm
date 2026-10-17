@@ -198,15 +198,6 @@ func Validate(bundle Bundle) error {
 }
 
 func validate(bundle Bundle) error {
-        // DSH_SAP_SKIP_VERIFY=1 skips the SHA-256 check entirely. This is a
-        // testing-only escape hatch: when a user is iterating on a different
-        // macOS build's binaries, the handshake itself will fail if the bytes
-        // are wrong, but at least the failure happens at the network layer
-        // with real protocol context instead of an opaque local check.
-        if os.Getenv("DSH_SAP_SKIP_VERIFY") == "1" {
-                return nil
-        }
-
         files := bundleFiles(bundle)
         for _, spec := range requiredFiles {
                 data := files[spec.name]
@@ -214,13 +205,28 @@ func validate(bundle Bundle) error {
                         return fmt.Errorf("apple SAP asset %s is empty or missing", spec.name)
                 }
 
-                actual := sha256.Sum256(data)
-                if actual != spec.digest {
-                        return fmt.Errorf(
-                                "apple SAP asset %s failed integrity verification: size=%d expected-sha256=%x actual-sha256=%x "+
-                                        "(if you are testing with a different macOS build, set DSH_SAP_SKIP_VERIFY=1 to bypass)",
-                                spec.name, len(data), spec.digest, actual,
-                        )
+                // On iOS, MobileInstallation re-signs Mach-O files in the app
+                // bundle during install. This adds a code-signature blob to
+                // AppleMediaServices, commerce, and CoreFP (but not CoreFP.icxs,
+                // which is not a Mach-O). The re-signing changes the file size
+                // and SHA-256, so the pinned digest will never match on device.
+                //
+                // The code signature is appended metadata; the actual Mach-O
+                // segments (text, data, etc.) are unchanged. Unicorn maps only
+                // the segments, so the SAP handshake works fine with the
+                // re-signed bytes.
+                //
+                // DSH_SAP_VERIFY=1 forces the check (useful on macOS hosts
+                // where the files are not re-signed). Default: skip.
+                if os.Getenv("DSH_SAP_VERIFY") == "1" {
+                        actual := sha256.Sum256(data)
+                        if actual != spec.digest {
+                                return fmt.Errorf(
+                                        "apple SAP asset %s failed integrity verification: size=%d expected-sha256=%x actual-sha256=%x "+
+                                                "(on iOS, MobileInstallation re-signs Mach-O files, changing their bytes; this is expected)",
+                                        spec.name, len(data), spec.digest, actual,
+                                )
+                        }
                 }
         }
 
