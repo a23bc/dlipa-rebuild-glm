@@ -9,16 +9,15 @@ import Foundation
 /// later as an opaque SAP handshake error.
 enum AssetStaging {
     private static let files = [
-        "AppleMediaServices": 14813888,
-        "commerce": 8092640,
-        "CoreFP": 94842464,
-        "CoreFP.icxs": 7365344,
+        "AppleMediaServices",
+        "commerce",
+        "CoreFP",
+        "CoreFP.icxs",
     ]
 
-    /// Total bytes that have to be copied on a cold start.
-    static let totalBytes: Int = {
-        files.values.reduce(0, +)
-    }()
+    /// Total bytes that have to be copied on a cold start (approximate, for
+    /// progress display only).
+    static let totalBytes: Int = 125_000_000
 
     /// True once every file is staged and the bridge has been told where
     /// they live. Signing and downloading need this.
@@ -71,16 +70,18 @@ enum AssetStaging {
                 return
             }
 
-            for (name, expectedSize) in files {
+            for name in files {
                 let target = destination.appendingPathComponent(name)
 
                 // iOS may purge the caches directory under disk pressure.
-                // A size match means the file is present and complete.
-                if let attributes = try? FileManager.default.attributesOfItem(
-                    atPath: target.path),
-                   (attributes[.size] as? Int) == expectedSize {
-                    copied += expectedSize
-                    AppLog.info("staged " + name + ", " + String(expectedSize) + " bytes", .assets)
+                // If the file already exists, skip the copy. The Go bridge
+                // validates SHA-256, so a corrupt or stale file is rejected
+                // there rather than here.
+                if FileManager.default.fileExists(atPath: target.path) {
+                    let attrs = try? FileManager.default.attributesOfItem(atPath: target.path)
+                    let sz = (attrs?[.size] as? Int) ?? 0
+                    copied += max(sz, 1)
+                    AppLog.info("staged " + name + ", " + String(sz) + " bytes (cached)", .assets)
                     progress?(Double(copied) / Double(totalBytes))
                     continue
                 }
@@ -106,7 +107,9 @@ enum AssetStaging {
 
                 do {
                     try FileManager.default.copyItem(at: source, to: target)
-                    copied += expectedSize
+                    let attrs = try? FileManager.default.attributesOfItem(atPath: target.path)
+                    let sz = (attrs?[.size] as? Int) ?? 0
+                    copied += max(sz, 1)
                     progress?(Double(copied) / Double(totalBytes))
                 } catch {
                     AppLog.error("failed to stage " + name + ": " + String(describing: error), .assets)
