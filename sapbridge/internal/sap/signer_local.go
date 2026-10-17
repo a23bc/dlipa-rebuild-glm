@@ -52,6 +52,7 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
         }
 
         fmt.Fprintf(os.Stderr, "[SAP] opening guest runtime...\n")
+        reportRSS("before open runtime")
 
         var guest *machine.Machine
         if err := stepRecovered("open runtime", func() error {
@@ -61,6 +62,8 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
         }); err != nil {
                 return nil, fmt.Errorf("start Apple SAP runtime: %w", err)
         }
+
+        reportRSS("after open runtime")
 
         signer := &Signer{
                 machine:  guest,
@@ -75,13 +78,16 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
         }()
 
         fmt.Fprintf(os.Stderr, "[SAP] initializing guest...\n")
+        reportRSS("before initialize")
         if err := stepRecovered("initialize", func() error {
                 var initErr error
                 signer.context, initErr = guest.Initialize(signer.hardware)
                 return initErr
         }); err != nil {
+                reportRSS("after initialize (failed)")
                 return nil, fmt.Errorf("initialize Apple SAP session: %w", err)
         }
+        reportRSS("after initialize")
 
         protocol := setupProtocol{client: &http.Client{Timeout: 30 * time.Second}}
 
