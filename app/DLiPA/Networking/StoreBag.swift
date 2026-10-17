@@ -52,6 +52,7 @@ enum StoreError: LocalizedError {
     case signingFailed
     case httpError(Int, String)
     case failureType(String, String)
+    case twoFactorRequired
 
     /// User-facing message. Specific detail goes to the log so the alert stays
     /// short and localised the way the original app does it.
@@ -71,6 +72,8 @@ enum StoreError: LocalizedError {
                 return NSLocalizedString(key, comment: "Apple failure type")
             }
             return NSLocalizedString(key, value: message, comment: "Apple failure type with message")
+        case .twoFactorRequired:
+            return NSLocalizedString("alert_2f_auth_message", comment: "2FA required")
         }
     }
 
@@ -103,6 +106,8 @@ enum StoreError: LocalizedError {
             return "HTTP \(code): \(body.prefix(500))"
         case .failureType(let type, let message):
             return type + (message.isEmpty ? "" : ": \(message)")
+        case .twoFactorRequired:
+            return "Apple requires 2FA verification code"
         }
     }
 }

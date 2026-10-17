@@ -44,12 +44,14 @@ final class AppStoreClient {
         request.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await session.data(for: request)
+        let http = response as? HTTPURLResponse
+        AppLog.info("bag response: HTTP \(http?.statusCode ?? -1), \(data.count) bytes, content-type: \(http?.value(forHTTPHeaderField: "Content-Type") ?? "none")", .network)
+        if data.count < 200 {
+            AppLog.warn("bag response too short: " + (String(data: data, encoding: .utf8) ?? "<binary>"), .network)
+        }
         try validate(response, data: data)
         let bag = try StoreBag.parse(xml: data)
 
-        // The bag is the only place the SAP endpoints come from. If it came back
-        // without them, every later step fails with a message that will not say
-        // why, so record it here.
         AppLog.info("bag received, " + String(data.count) + " bytes", .network)
         if bag.hasSAPConfiguration {
             AppLog.info("bag has SAP configuration, version " + String(bag.signSapVersion), .sap)
@@ -74,28 +76,31 @@ final class AppStoreClient {
         var lastName: String
     }
 
-    /// Signs in. `authCode` is appended to the password for 2FA, exactly as the
-    /// original DLiPA did.
+    /// Signs in. When `authCode` is nil the request is sent without a 2FA
+    /// code; Apple responds with a two-factor challenge (failureType -22506
+    /// or similar) which the caller surfaces as StoreError.twoFactorRequired.
+    /// The caller then collects a code and re-invokes with authCode set.
     func authenticate(email: String,
                       password: String,
-                      authCode: String,
+                      authCode: String?,
                       guid: String,
                       endpoint: String,
                       signer: SAPSigner) async throws -> Account {
         // A missing trailing slash gets a 204 and nothing else happens.
         let url = endpoint.hasSuffix("/") ? endpoint : endpoint + "/"
-        AppLog.info("authenticating against " + url, .auth)
+        AppLog.info("authenticating against " + url + (authCode == nil ? " (no 2FA)" : " (with 2FA)"), .auth)
 
         var request = URLRequest(url: URL(string: url)!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
 
+        let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
         let payload: [String: Any] = [
             "appleId": email,
             "attempt": "1",
             "guid": guid,
-            "password": password + authCode.replacingOccurrences(of: " ", with: ""),
+            "password": password + code,
             "rmp": "0",
             "why": "signIn",
         ]
@@ -114,6 +119,12 @@ final class AppStoreClient {
         // Apple reports recoverable failures in the body with HTTP 200.
         if let failure = plist["failureType"] as? String, !failure.isEmpty {
             let message = plist["customerMessage"] as? String ?? ""
+            // -22506 / "NC+SB+DSO" / 2FA challenge — the user must enter a
+            // verification code and retry. ipatool treats these as 2FA.
+            if failure == "-22506" || failure.contains("2FA") || message.contains("verification code") {
+                AppLog.info("2FA required (failureType=\(failure))", .auth)
+                throw StoreError.twoFactorRequired
+            }
             throw StoreError.failureType(failure, message)
         }
 

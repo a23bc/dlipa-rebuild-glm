@@ -12,7 +12,6 @@ final class MainViewController: UIViewController {
     private let statusLabel = UILabel()
     private let emailField = UITextField()
     private let passwordField = UITextField()
-    private let codeField = UITextField()
     private let searchField = UITextField()
     private let signInButton = UIButton(type: .system)
     private let searchButton = UIButton(type: .system)
@@ -88,10 +87,6 @@ final class MainViewController: UIViewController {
         passwordField.borderStyle = .roundedRect
         passwordField.isSecureTextEntry = true
 
-        codeField.placeholder = NSLocalizedString("alert_2f_auth_placeholder", comment: "2FA code field")
-        codeField.borderStyle = .roundedRect
-        codeField.keyboardType = .numberPad
-
         signInButton.setTitle(NSLocalizedString("alert_sign_in", comment: "Sign in button"), for: .normal)
         signInButton.addTarget(self, action: #selector(signIn), for: .touchUpInside)
 
@@ -109,7 +104,7 @@ final class MainViewController: UIViewController {
         logView.layer.borderWidth = 1
         logView.layer.borderColor = UIColor.separator.cgColor
 
-        for view in [statusLabel, emailField, passwordField, codeField,
+        for view in [statusLabel, emailField, passwordField,
                      shareLogButton, signInButton, searchField, searchButton, logView] {
             stack.addArrangedSubview(view)
         }
@@ -139,8 +134,11 @@ final class MainViewController: UIViewController {
             return
         }
 
-        Task { await doSignIn(email: email, password: password,
-                             authCode: codeField.text ?? "") }
+        signInButton.isEnabled = false
+        Task {
+            await doSignIn(email: email, password: password, authCode: nil)
+            await MainActor.run { self.signInButton.isEnabled = true }
+        }
     }
 
     @objc private func search() {
@@ -150,7 +148,7 @@ final class MainViewController: UIViewController {
 
     // MARK: Work
 
-    private func doSignIn(email: String, password: String, authCode: String) async {
+    private func doSignIn(email: String, password: String, authCode: String?) async {
         let hardware = HardwareIdentity.stable()
         log("Device GUID: \(hardware.guid)")
 
@@ -167,27 +165,41 @@ final class MainViewController: UIViewController {
                 return
             }
 
-            let newSigner = try SAPSigner(setupURL: setup,
-                                         certURL: cert,
-                                         version: fetched.signSapVersion,
-                                         hardware: hardware)
-            // Close the previous signer (if any) before overwriting the
-            // reference. The Go side holds a Unicorn engine and ~119 MB of
-            // guest memory; without Close they linger until the Go finalizer
-            // eventually runs, which on iOS can be much later. Repeated
-            // sign-ins would otherwise leak one engine per attempt.
-            self.signer?.close()
-            self.signer = newSigner
-            log("SAP handshake complete; requests will be signed.")
+            // Reuse the existing signer when the SAP handshake has already
+            // succeeded for this session. The second stage (with 2FA) must
+            // not create a new signer or the SAP session state is lost.
+            if self.signer == nil {
+                let newSigner = try SAPSigner(setupURL: setup,
+                                               certURL: cert,
+                                               version: fetched.signSapVersion,
+                                               hardware: hardware)
+                self.signer = newSigner
+                log("SAP handshake complete; requests will be signed.")
+            }
+            guard let signer = self.signer else {
+                log("Signer unavailable; cannot authenticate.")
+                return
+            }
 
             let newAccount = try await client.authenticate(
                 email: email, password: password, authCode: authCode,
-                guid: hardware.guid, endpoint: authenticate, signer: newSigner)
+                guid: hardware.guid, endpoint: authenticate, signer: signer)
             account = newAccount
 
             statusLabel.text = "Signed in as \(newAccount.email)"
             searchButton.isEnabled = true
             log("Authenticated. DSID \(newAccount.dsid), storefront \(newAccount.storefront)")
+        } catch StoreError.twoFactorRequired {
+            // Apple requires a 2FA code. Prompt the user and retry with the
+            // code appended to the password. The signer is reused so the SAP
+            // session established above stays alive.
+            log(NSLocalizedString("alert_2f_auth_message", comment: "2FA prompt"))
+            let code = await promptFor2FACode()
+            guard let code, !code.isEmpty else {
+                log("Sign-in cancelled: no 2FA code entered.")
+                return
+            }
+            await doSignIn(email: email, password: password, authCode: code)
         } catch let error as StoreError {
             // The alert text is short and localised; the detail goes to the log.
             AppLog.error("sign-in failed: " + error.localizedDescription + " [" + error.detail + "]", .auth)
@@ -195,6 +207,29 @@ final class MainViewController: UIViewController {
         } catch {
             AppLog.error("sign-in failed: " + error.localizedDescription, .auth)
             log("Sign-in failed: " + error.localizedDescription)
+        }
+    }
+
+    /// Presents a 2FA code entry alert and resumes with the entered code.
+    private func promptFor2FACode() async -> String? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                let alert = UIAlertController(
+                    title: NSLocalizedString("alert_2f_auth", comment: "2FA title"),
+                    message: NSLocalizedString("alert_2f_auth_message", comment: "2FA message"),
+                    preferredStyle: .alert)
+                alert.addTextField { tf in
+                    tf.placeholder = NSLocalizedString("alert_2f_auth_placeholder", comment: "2FA placeholder")
+                    tf.keyboardType = .numberPad
+                }
+                alert.addAction(UIAlertAction(title: NSLocalizedString("alert_send", comment: "Send"), style: .default) { _ in
+                    continuation.resume(returning: alert.textFields?.first?.text)
+                })
+                alert.addAction(UIAlertAction(title: NSLocalizedString("alert_reset", comment: "Cancel"), style: .cancel) { _ in
+                    continuation.resume(returning: nil)
+                })
+                self.present(alert, animated: true)
+            }
         }
     }
 
