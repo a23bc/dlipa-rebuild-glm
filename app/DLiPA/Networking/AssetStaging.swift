@@ -92,6 +92,18 @@ enum AssetStaging {
                     break
                 }
 
+                // Log start *before* the copy so a hang is localisable to a
+                // specific file. CoreFP is ~95 MB and on older devices the
+                // copy can take noticeable time; without this line the UI just
+                // shows "Waiting for the signing assets to finish staging"
+                // with no indication of which file is in flight.
+                let sourceSize = (try? FileManager.default.attributesOfItem(atPath: source.path)[.size] as? Int) ?? 0
+                AppLog.info(
+                    "staging " + name + " start source=" + source.path
+                        + " size=" + String(sourceSize),
+                    .assets
+                )
+
                 // Remove a partial copy before writing again.
                 if FileManager.default.fileExists(atPath: target.path) {
                     try? FileManager.default.removeItem(at: target)
@@ -103,20 +115,15 @@ enum AssetStaging {
                     let sz = (attrs?[.size] as? Int) ?? 0
                     copied += max(sz, 1)
                     progress?(Double(copied) / Double(totalBytes))
-                    // Log the source path, size and sha256 so a mismatch
-                    // between the bundle's bytes and the pinned digest is
-                    // visible in the device log without needing to repackage
-                    // the IPA to inspect it. The Go side's validate() will
-                    // also print the sha256, but only after every file has
-                    // been staged; per-file logging here localises the bad
-                    // file to its source path.
-                    let stagedSha = sha256(ofFile: target.path)
-                    let sourceSha = sha256(ofFile: source.path)
+                    // SHA-256 is intentionally NOT computed here: on older
+                    // devices hashing 95 MB twice (source + staged) added
+                    // 30-60 seconds per file and made staging appear to hang.
+                    // The Go side's validate() already prints actual vs
+                    // expected sha256 on mismatch, which is sufficient for
+                    // diagnosing a bad bundle.
                     AppLog.info(
-                        "staged " + name + " source=" + source.path
-                            + " size=" + String(sz)
-                            + " source-sha256=" + sourceSha
-                            + " staged-sha256=" + stagedSha,
+                        "staged " + name + " size=" + String(sz)
+                            + " cumulative=" + String(copied) + "/" + String(totalBytes),
                         .assets
                     )
                 } catch {
@@ -155,32 +162,5 @@ enum AssetError: LocalizedError {
         case .missingFromBundle(let name):
             return name + " is not in the app bundle";
         }
-    }
-}
-
-extension AssetStaging {
-    /// SHA-256 of the file at `path`, lowercase hex, or "<err>" on failure.
-    /// Uses CommonCrypto because CryptoKit requires iOS 13+ and the project
-    /// deployment target is iOS 15 (fine), but CommonCrypto is already
-    /// linked and avoids pulling another framework into the bridge header.
-    static func sha256(ofFile path: String) -> String {
-        guard let handle = FileHandle(forReadingAtPath: path) else {
-            return "<no-file>"
-        }
-        defer { try? handle.close() }
-
-        var context = CC_SHA256_CTX()
-        CC_SHA256_Init(&context)
-        let chunkSize = 1 << 20  // 1 MB
-        while true {
-            let data = handle.readData(ofLength: chunkSize)
-            if data.isEmpty { break }
-            data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
-                _ = CC_SHA256_Update(&context, buf.baseAddress, CC_LONG(buf.count))
-            }
-        }
-        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        _ = CC_SHA256_Final(&digest, &context)
-        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
