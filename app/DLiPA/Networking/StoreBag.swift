@@ -84,16 +84,17 @@ struct StoreBag {
 }
 
 /// Minimal plist-XML parser used as a fallback when PropertyListSerialization
-/// rejects Apple's bag.xml. PropertyListSerialization is stricter than the
-/// plist spec (it rejects some DOCTYPE declarations and entity references),
-/// while XMLParser accepts any well-formed XML. This parser only needs to
-/// handle <dict>, <key>, <string>, <integer>, and <array> — the subset used
-/// by bag.xml.
+/// rejects Apple's bag.xml. Apple wraps the plist in an ITMS envelope:
+///   <Document xmlns="..."><Protocol><plist version="1.0">...</plist>...
+/// PropertyListSerialization rejects the <Document> tag, so this parser
+/// walks the XML and extracts the first <dict> inside the <plist> element.
 private final class BagXMLParser: NSObject, XMLParserDelegate {
-    private var stack: [[String: Any]] = [[:]]
+    private var stack: [[String: Any]] = []
     private var currentKey: String?
     private var currentText = ""
     private var failed = false
+    private var inPlist = false
+    private var result: [String: Any]?
 
     static func parse(data: Data) -> [String: Any]? {
         let parser = XMLParser(data: data)
@@ -101,7 +102,7 @@ private final class BagXMLParser: NSObject, XMLParserDelegate {
         parser.delegate = delegate
         parser.shouldProcessNamespaces = false
         guard parser.parse(), !delegate.failed else { return nil }
-        return delegate.stack.first
+        return delegate.result
     }
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
@@ -109,12 +110,12 @@ private final class BagXMLParser: NSObject, XMLParserDelegate {
                 attributes attributeDict: [String: String] = [:]) {
         currentText = ""
         switch elementName {
+        case "plist":
+            inPlist = true
         case "dict":
             stack.append([:])
         case "array":
             stack.append(["__array__": true])
-        case "key", "string", "integer":
-            break
         default:
             break
         }
@@ -128,6 +129,8 @@ private final class BagXMLParser: NSObject, XMLParserDelegate {
                 namespaceURI: String?, qualifiedName qName: String?) {
         let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
         switch elementName {
+        case "plist":
+            inPlist = false
         case "key":
             currentKey = trimmed
         case "string":
@@ -136,7 +139,16 @@ private final class BagXMLParser: NSObject, XMLParserDelegate {
             setValue(Int(trimmed) ?? trimmed)
         case "dict":
             let dict = stack.removeLast()
-            setValue(dict)
+            if stack.isEmpty {
+                // This is the top-level dict inside <plist>; keep it as the
+                // result. If there are multiple top-level dicts we only keep
+                // the first (bag.xml has exactly one).
+                if result == nil {
+                    result = dict
+                }
+            } else {
+                setValue(dict)
+            }
         case "array":
             let dict = stack.removeLast()
             let arr = (dict["__array__"] != nil) ? [] : Array(dict.values)
@@ -151,8 +163,6 @@ private final class BagXMLParser: NSObject, XMLParserDelegate {
         guard !stack.isEmpty else { return }
         let isTopArray = (stack.last?["__array__"] != nil)
         if isTopArray {
-            // Arrays don't use keys; we don't need array contents for bag.xml
-            // parsing, so just record a placeholder.
             return
         }
         if let key = currentKey {

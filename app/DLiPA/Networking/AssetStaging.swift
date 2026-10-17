@@ -24,6 +24,12 @@ enum AssetStaging {
     /// they live. Signing and downloading need this.
     static var isReady = false
 
+    /// True while staging is in progress. Guards against concurrent
+    /// stageIfNeeded invocations (AppDelegate and MainViewController both
+    /// call it on launch).
+    private static var isStaging = false
+    private static let stagingLock = NSLock()
+
     static var stagedDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SapAssets", isDirectory: true)
@@ -38,10 +44,18 @@ enum AssetStaging {
         progress: ((Double) -> Void)? = nil,
         completion: @escaping (Error?) -> Void
     ) {
-        if isReady {
+        // Protect against concurrent invocations (AppDelegate and
+        // MainViewController both call this on launch). The lock ensures
+        // only one staging task runs; subsequent callers wait and then
+        // see isReady=true.
+        stagingLock.lock()
+        if isReady || isStaging {
+            stagingLock.unlock()
             DispatchQueue.main.async { completion(nil) }
             return
         }
+        isStaging = true
+        stagingLock.unlock()
 
         let destination = stagedDirectory
 
@@ -109,12 +123,15 @@ enum AssetStaging {
                                destination: URL,
                                completion: @escaping (Error?) -> Void) {
         AppLog.info("all " + String(files.count) + " assets staged to " + destination.path, .assets)
+        stagingLock.lock()
         if error == nil {
             // Only tell the bridge about the directory once every file is
             // there, so a partial set cannot be mistaken for a valid one.
             SapbridgeSetBundleDir(destination.path)
             isReady = true
         }
+        isStaging = false
+        stagingLock.unlock()
         DispatchQueue.main.async { completion(error) }
     }
 }
