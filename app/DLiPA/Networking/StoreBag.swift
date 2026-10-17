@@ -64,15 +64,45 @@ struct StoreBag {
     }
 
     private static func parseDict(_ bag: [String: Any]) -> StoreBag {
+        // Log all top-level keys so we can see what Apple actually returned
+        // and where the SAP endpoints live (they may be under urlBag or use
+        // a loc- prefix on the wire).
+        let keys = bag.keys.sorted()
+        AppLog.info("bag dict keys (\(keys.count)): " + keys.joined(separator: ", "), .network)
+        if let urlBag = bag["urlBag"] as? [String: Any] {
+            let ubKeys = urlBag.keys.sorted()
+            AppLog.info("urlBag keys (\(ubKeys.count)): " + ubKeys.joined(separator: ", "), .network)
+        }
+        // Also check for loc- prefixed keys at the top level.
+        let locKeys = keys.filter { $0.hasPrefix("loc-") }
+        if !locKeys.isEmpty {
+            AppLog.info("loc- prefixed keys: " + locKeys.joined(separator: ", "), .network)
+        }
+
+        // SAP endpoints may be at the top level, inside urlBag, or use a
+        // loc- prefix. Search all three locations.
+        let bagDict = (bag["urlBag"] as? [String: Any]) ?? bag
+
         var result = StoreBag()
-        result.authenticateAccount = string(bag["authenticateAccount"])
-        result.signSapSetup = string(bag["sign-sap-setup"])
-        result.signSapSetupCert = string(bag["sign-sap-setup-cert"])
-        result.volumeStoreDownloadProduct = string(bag["volumeStoreDownloadProduct"])
-        result.redownloadProduct = string(bag["redownloadProduct"])
-        result.updateProduct = string(bag["updateProduct"])
-        result.signSapVersion = Int32(string(bag["sign-sap-version"]) ?? "") ?? 0
+        result.authenticateAccount = lookup(bag, bagDict, "authenticateAccount")
+        result.signSapSetup = lookup(bag, bagDict, "sign-sap-setup")
+        result.signSapSetupCert = lookup(bag, bagDict, "sign-sap-setup-cert")
+        result.volumeStoreDownloadProduct = lookup(bag, bagDict, "volumeStoreDownloadProduct")
+        result.redownloadProduct = lookup(bag, bagDict, "redownloadProduct")
+        result.updateProduct = lookup(bag, bagDict, "updateProduct")
+        result.signSapVersion = Int32(lookup(bag, bagDict, "sign-sap-version") ?? "") ?? 0
         return result
+    }
+
+    /// Look up a key in the top-level dict, the urlBag dict, and with a loc-
+    /// prefix in both. Returns the first non-empty match.
+    private static func lookup(_ root: [String: Any], _ urlBag: [String: Any], _ key: String) -> String? {
+        let locKey = "loc-" + key
+        if let s = string(root[key]) { return s }
+        if let s = string(root[locKey]) { return s }
+        if let s = string(urlBag[key]) { return s }
+        if let s = string(urlBag[locKey]) { return s }
+        return nil
     }
 
     private static func string(_ value: Any?) -> String? {
