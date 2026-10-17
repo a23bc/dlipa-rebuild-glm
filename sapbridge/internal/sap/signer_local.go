@@ -5,6 +5,7 @@ import (
         "errors"
         "fmt"
         "net/http"
+        "os"
         "sync"
         "time"
 
@@ -33,6 +34,8 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
                 return nil, err
         }
 
+        fmt.Fprintf(os.Stderr, "[SAP] opening guest runtime...\n")
+
         guest, err := machine.Open(ctx, bundle)
         if err != nil {
                 return nil, fmt.Errorf("start Apple SAP runtime: %w", err)
@@ -50,6 +53,7 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
                 }
         }()
 
+        fmt.Fprintf(os.Stderr, "[SAP] initializing guest...\n")
         signer.context, err = guest.Initialize(signer.hardware)
         if err != nil {
                 return nil, fmt.Errorf("initialize Apple SAP session: %w", err)
@@ -57,11 +61,13 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
 
         protocol := setupProtocol{client: &http.Client{Timeout: 30 * time.Second}}
 
+        fmt.Fprintf(os.Stderr, "[SAP] fetching certificate...\n")
         certificate, err := protocol.certificate(ctx, config.CertificateURL)
         if err != nil {
                 return nil, err
         }
 
+        fmt.Fprintf(os.Stderr, "[SAP] first exchange (creating setup message)...\n")
         request, state, err := guest.Exchange(config.Version, signer.hardware, signer.context, certificate)
         if err != nil {
                 return nil, fmt.Errorf("create SAP setup message: %w", err)
@@ -75,11 +81,13 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
                 return nil, errors.New("SAP setup message is empty")
         }
 
+        fmt.Fprintf(os.Stderr, "[SAP] posting setup message to %s (%d bytes)...\n", config.SetupURL, len(request))
         reply, err := protocol.exchange(ctx, config.SetupURL, request)
         if err != nil {
                 return nil, err
         }
 
+        fmt.Fprintf(os.Stderr, "[SAP] got reply (%d bytes), second exchange...\n", len(reply))
         _, state, err = guest.Exchange(config.Version, signer.hardware, signer.context, reply)
         if err != nil {
                 return nil, fmt.Errorf("complete SAP setup: %w", err)
@@ -89,6 +97,7 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
                 return nil, fmt.Errorf("SAP setup completed in unexpected state %d", state)
         }
 
+        fmt.Fprintf(os.Stderr, "[SAP] handshake complete!\n")
         complete = true
 
         return signer, nil
