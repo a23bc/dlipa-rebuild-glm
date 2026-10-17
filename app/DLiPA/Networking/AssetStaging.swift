@@ -71,7 +71,15 @@ enum AssetStaging {
                     continue
                 }
 
-                guard let source = Bundle.main.url(forResource: name, withExtension: nil) else {
+                // The Apple binaries live in the SapAssets/ subdirectory of the
+                // bundle (staged there by scripts/stage-assets.sh and copied
+                // as a folder reference in project.yml). Bundle.main.url(
+                // forResource:withExtension:) does not search arbitrary
+                // subdirectories by default, so pass subdirectory: "SapAssets".
+                // Fall back to a bundle-wide search for safety.
+                let source = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "SapAssets")
+                    ?? Bundle.main.url(forResource: name, withExtension: nil)
+                guard let source else {
                     AppLog.error(name + " is missing from the app bundle", .assets)
                     firstError = AssetError.missingFromBundle(name)
                     break

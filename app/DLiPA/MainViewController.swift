@@ -28,10 +28,12 @@ final class MainViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        print("[DLiPA] MainViewController.viewDidLoad start")
         title = "DLiPA"
         view.backgroundColor = .systemBackground
         buildLayout()
         signInButton.isEnabled = false
+        print("[DLiPA] MainViewController.viewDidLoad buildLayout done")
 
         // Staging the assets takes a while on a cold start. Report
         // progress and only allow sign-in once the bridge can sign.

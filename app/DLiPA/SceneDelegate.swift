@@ -7,11 +7,18 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene,
                willConnectTo session: UISceneSession,
                options connectionOptions: UIScene.ConnectionOptions) {
-        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let windowScene = scene as? UIWindowScene else {
+            print("[DLiPA] SceneDelegate: scene is not UIWindowScene")
+            return
+        }
 
+        print("[DLiPA] SceneDelegate: creating window")
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = UINavigationController(rootViewController: MainViewController())
+        let vc = MainViewController()
+        window.rootViewController = UINavigationController(rootViewController: vc)
+        window.backgroundColor = .systemBackground
         self.window = window
         window.makeKeyAndVisible()
+        print("[DLiPA] SceneDelegate: window visible, rootViewController=\(type(of: vc))")
     }
 }
