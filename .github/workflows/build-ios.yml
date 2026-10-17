@@ -45,8 +45,21 @@ jobs:
 
       - name: Stage the Apple SAP assets
         run: |
+          # VendorAssets/ is excluded from this fork (git-lfs objects not
+          # available). Fetch the four pinned Apple binaries from the upstream
+          # repository, which has them stored in git-lfs.
           git lfs install
-          git lfs pull
+          if [ ! -s VendorAssets/CoreFP ]; then
+            echo "==> VendorAssets missing, cloning from upstream"
+            git clone --depth 1 https://github.com/a23bc/dlipa-rebuild.git /tmp/upstream
+            git -C /tmp/upstream lfs pull
+            mkdir -p VendorAssets
+            cp /tmp/upstream/VendorAssets/* VendorAssets/
+            rm -rf /tmp/upstream
+          else
+            git lfs pull
+          fi
+          ls -la VendorAssets
           sh scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/build/sap-assets"
 
       - name: Run Go unit tests
@@ -176,9 +189,20 @@ jobs:
           ls -la app/build/ios/
       - name: Bundle the Apple SAP assets
         run: |
-          # The four binaries are ~119 MB and stored with git-lfs.
+          # VendorAssets/ is excluded from this fork (git-lfs objects not
+          # available). Fetch the four pinned Apple binaries from the upstream
+          # repository, which has them stored in git-lfs.
           git lfs install
-          git lfs pull
+          if [ ! -s VendorAssets/CoreFP ]; then
+            echo "==> VendorAssets missing, cloning from upstream"
+            git clone --depth 1 https://github.com/a23bc/dlipa-rebuild.git /tmp/upstream
+            git -C /tmp/upstream lfs pull
+            mkdir -p VendorAssets
+            cp /tmp/upstream/VendorAssets/* VendorAssets/
+            rm -rf /tmp/upstream
+          else
+            git lfs pull
+          fi
           ls -la VendorAssets
           ./scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/app/DLiPA/Resources/SapAssets"
 
@@ -277,12 +301,12 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-          	<key>application-identifier</key>
-          	<string>A23BC00001.com.a23bc.dliparebuild</string>
-          	<key>com.apple.developer.team-identifier</key>
-          	<string>A23BC00001</string>
-          	<key>get-task-allow</key>
-          	<true/>
+                <key>application-identifier</key>
+                <string>A23BC00001.com.a23bc.dliparebuild</string>
+                <key>com.apple.developer.team-identifier</key>
+                <string>A23BC00001</string>
+                <key>get-task-allow</key>
+                <true/>
           </dict>
           </plist>
           PLIST
