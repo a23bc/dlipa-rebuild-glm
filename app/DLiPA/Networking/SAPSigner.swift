@@ -96,16 +96,18 @@ final class SAPSigner {
     }
 
     func close() {
-        // Call the gomobile-generated close: method directly. The previous
+        // The gomobile-generated close: method is declared as
+        //   - (BOOL)close:(NSError **)error;
+        // in the bridging header. Swift imports a method whose trailing
+        // NSError ** parameter is named "error" as a throwing method with no
+        // arguments, so the correct call is `try signer.close()`. The earlier
         // implementation used perform(Selector("close:"), with: error), which
-        // passes `error` (an NSError *) where the method expects an NSError **
-        // (pointer to NSError *). On the success path gomobile does not write
-        // through the pointer so nothing crashed, but on the failure path it
-        // would write to *nil and segfault. The direct call below passes
-        // &error, which is the correct NSError ** the method expects.
-        var error: NSError?
-        _ = signer.close(&error)
-        if let error {
+        // passed an NSError * where the method expects an NSError **; on the
+        // failure path gomobile would write through the (nil) pointer and
+        // segfault.
+        do {
+            try signer.close()
+        } catch {
             AppLog.error("close failed: " + error.localizedDescription, .sap)
         }
     }
