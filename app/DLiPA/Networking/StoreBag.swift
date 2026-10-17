@@ -20,13 +20,50 @@ struct StoreBag {
 
     /// Parses the bag. Accepts either a top-level `urlBag` dict or a flat dict.
     static func parse(xml data: Data) throws -> StoreBag {
+        // Log the first 120 bytes so we can see what Apple actually sent
+        // when PropertyListSerialization rejects it.
+        let preview = String(data: data.prefix(120), encoding: .utf8)?
+            .replacingOccurrences(of: "\n", with: "\\n") ?? "<binary>"
+        AppLog.info("bag parse: first 120 bytes: " + preview, .network)
+
+        // Apple's bag.xml sometimes arrives with a BOM or a leading newline
+        // that confuses PropertyListSerialization. Try stripping a UTF-8 BOM
+        // and any leading whitespace before the <?xml declaration.
+        var trimmed = data
+        if trimmed.count > 3 {
+            let bytes = [UInt8](trimmed.prefix(3))
+            if bytes == [0xEF, 0xBB, 0xBF] {
+                trimmed = trimmed.subdata(in: 3..<trimmed.count)
+                AppLog.info("bag parse: stripped UTF-8 BOM", .network)
+            }
+        }
+
         var format = PropertyListSerialization.PropertyListFormat.xml
-        let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
+        let plist: Any
+        do {
+            plist = try PropertyListSerialization.propertyList(from: trimmed, options: [], format: &format)
+        } catch {
+            AppLog.error("bag parse: PropertyListSerialization failed: \(error)", .network)
+            // Fallback: parse the XML manually with XMLParser. Apple's bag.xml
+            // is a standard plist XML, so XMLParser can read it even when
+            // PropertyListSerialization's stricter validator rejects it.
+            guard let parsed = BagXMLParser.parse(data: trimmed) else {
+                AppLog.error("bag parse: XMLParser fallback also failed", .network)
+                throw StoreError.malformedBag
+            }
+            AppLog.info("bag parse: XMLParser fallback succeeded, \(parsed.count) top-level keys", .network)
+            return parseDict(parsed)
+        }
+
         guard let root = plist as? [String: Any] else {
+            AppLog.error("bag parse: root is not [String: Any], got \(type(of: plist))", .network)
             throw StoreError.malformedBag
         }
         let bag = (root["urlBag"] as? [String: Any]) ?? root
+        return parseDict(bag)
+    }
 
+    private static func parseDict(_ bag: [String: Any]) -> StoreBag {
         var result = StoreBag()
         result.authenticateAccount = string(bag["authenticateAccount"])
         result.signSapSetup = string(bag["sign-sap-setup"])
@@ -43,6 +80,90 @@ struct StoreBag {
         // Accept both the raw and the loc- prefixed form.
         if s.hasPrefix("loc-") { return String(s.dropFirst(4)) }
         return s
+    }
+}
+
+/// Minimal plist-XML parser used as a fallback when PropertyListSerialization
+/// rejects Apple's bag.xml. PropertyListSerialization is stricter than the
+/// plist spec (it rejects some DOCTYPE declarations and entity references),
+/// while XMLParser accepts any well-formed XML. This parser only needs to
+/// handle <dict>, <key>, <string>, <integer>, and <array> — the subset used
+/// by bag.xml.
+private final class BagXMLParser: NSObject, XMLParserDelegate {
+    private var stack: [[String: Any]] = [[:]]
+    private var currentKey: String?
+    private var currentText = ""
+    private var failed = false
+
+    static func parse(data: Data) -> [String: Any]? {
+        let parser = XMLParser(data: data)
+        let delegate = BagXMLParser()
+        parser.delegate = delegate
+        parser.shouldProcessNamespaces = false
+        guard parser.parse(), !delegate.failed else { return nil }
+        return delegate.stack.first
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName qName: String?,
+                attributes attributeDict: [String: String] = [:]) {
+        currentText = ""
+        switch elementName {
+        case "dict":
+            stack.append([:])
+        case "array":
+            stack.append(["__array__": true])
+        case "key", "string", "integer":
+            break
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        currentText += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName qName: String?) {
+        let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch elementName {
+        case "key":
+            currentKey = trimmed
+        case "string":
+            setValue(trimmed)
+        case "integer":
+            setValue(Int(trimmed) ?? trimmed)
+        case "dict":
+            let dict = stack.removeLast()
+            setValue(dict)
+        case "array":
+            let dict = stack.removeLast()
+            let arr = (dict["__array__"] != nil) ? [] : Array(dict.values)
+            setValue(arr)
+        default:
+            break
+        }
+        currentText = ""
+    }
+
+    private func setValue(_ value: Any) {
+        guard !stack.isEmpty else { return }
+        let isTopArray = (stack.last?["__array__"] != nil)
+        if isTopArray {
+            // Arrays don't use keys; we don't need array contents for bag.xml
+            // parsing, so just record a placeholder.
+            return
+        }
+        if let key = currentKey {
+            stack[stack.count - 1][key] = value
+            currentKey = nil
+        }
+    }
+
+    func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
+        AppLog.error("bag XMLParser error: \(parseError)", .network)
+        failed = true
     }
 }
 

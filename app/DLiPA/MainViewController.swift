@@ -99,6 +99,7 @@ final class MainViewController: UIViewController {
         searchButton.isEnabled = false
 
         shareLogButton.setTitle(NSLocalizedString("log_share", comment: "Share the log"), for: .normal)
+        shareLogButton.addTarget(self, action: #selector(shareLog), for: .touchUpInside)
         logView.isEditable = false
         logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         logView.layer.borderWidth = 1
