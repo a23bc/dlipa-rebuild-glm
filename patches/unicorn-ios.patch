@@ -1,6 +1,6 @@
 diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-test2/qemu/accel/tcg/translate-all.c
---- a/qemu/accel/tcg/translate-all.c	2026-10-17 23:38:54.538451657 +0000
-+++ b/qemu/accel/tcg/translate-all.c	2026-10-17 23:47:42.280401556 +0000
+--- a/qemu/accel/tcg/translate-all.c    2026-10-17 23:38:54.538451657 +0000
++++ b/qemu/accel/tcg/translate-all.c    2026-10-17 23:47:42.280401556 +0000
 @@ -770,12 +770,10 @@
  #if TCG_TARGET_REG_BITS == 32
  #define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (32 * MiB)
@@ -11,10 +11,10 @@ diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-test2/qemu/
 - * runtime setup via the tb-size control on the command line.
 - */
 -#define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (1 * GiB)
-+/* iOS: default 1 GiB is too large for sandboxed apps. 8 MiB is enough
-+ * for SAP handshake code. uc_ctl(UC_CTL_TCG_BUFFER_SIZE) can override
-+ * this at runtime if needed. */
-+#define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (8 * MiB)
++/* iOS: default 1 GiB is too large for sandboxed apps. 4 MiB is enough
++ * for SAP handshake code (Initialize + first Exchange). uc_ctl can
++ * override at runtime if needed. */
++#define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (4 * MiB)
  #endif
  
  #define DEFAULT_CODE_GEN_BUFFER_SIZE \
@@ -59,8 +59,8 @@ diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-test2/qemu/
  {
      return uc->current_executable;
 diff -ruN '--exclude=.git' uc-orig/qemu/configure uc-test2/qemu/configure
---- a/qemu/configure	2026-10-17 23:38:54.538451657 +0000
-+++ b/qemu/configure	2026-10-17 23:38:59.506479506 +0000
+--- a/qemu/configure    2026-10-17 23:38:54.538451657 +0000
++++ b/qemu/configure    2026-10-17 23:38:59.506479506 +0000
 @@ -2152,7 +2152,7 @@
  if [ "$darwin" = "yes" ] ; then
    cat > $TMPC << EOF
@@ -71,8 +71,8 @@ diff -ruN '--exclude=.git' uc-orig/qemu/configure uc-test2/qemu/configure
    if ! compile_prog ""; then
      have_pthread_jit_protect='no'
 diff -ruN '--exclude=.git' uc-orig/qemu/include/tcg/tcg-apple-jit.h uc-test2/qemu/include/tcg/tcg-apple-jit.h
---- a/qemu/include/tcg/tcg-apple-jit.h	2026-10-17 23:38:54.544451691 +0000
-+++ b/qemu/include/tcg/tcg-apple-jit.h	2026-10-17 23:38:59.506479506 +0000
+--- a/qemu/include/tcg/tcg-apple-jit.h  2026-10-17 23:38:54.544451691 +0000
++++ b/qemu/include/tcg/tcg-apple-jit.h  2026-10-17 23:38:59.506479506 +0000
 @@ -104,13 +104,11 @@
  #endif
  
@@ -92,8 +92,8 @@ diff -ruN '--exclude=.git' uc-orig/qemu/include/tcg/tcg-apple-jit.h uc-test2/qem
  #define JIT_CALLBACK_GUARD(x)                       \
  {                                                   \
 diff -ruN '--exclude=.git' uc-orig/uc.c uc-test2/uc.c
---- a/uc.c	2026-10-17 23:38:54.579451888 +0000
-+++ b/uc.c	2026-10-17 23:38:59.506479506 +0000
+--- a/uc.c      2026-10-17 23:38:54.579451888 +0000
++++ b/uc.c      2026-10-17 23:38:59.506479506 +0000
 @@ -35,8 +35,7 @@
  static uc_err uc_snapshot(uc_engine *uc);
  static uc_err uc_restore_latest_snapshot(uc_engine *uc);

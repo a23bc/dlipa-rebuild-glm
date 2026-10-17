@@ -28,14 +28,14 @@ const (
 	returnAddress = uint64(0x0000000100000000)
 	coreFPBase    = uint64(0x0000100000000000)
 	scratchBase   = uint64(0x0000300000000000)
-	scratchSize   = uint64(8 << 20)  // 8 MB (was 16 MB; tighter for iOS per-process ceiling)
+	scratchSize   = uint64(4 << 20)  // 4 MB (was 8 MB; tighter for iOS jetsam)
 	heapBase      = uint64(0x0000400000000000)
-	heapSize      = uint64(16 << 20) // 16 MB (was 32 MB; tighter for iOS per-process ceiling)
+	heapSize      = uint64(8 << 20)  // 8 MB (was 16 MB; tighter for iOS jetsam)
 	stackBase     = uint64(0x0000500000000000)
-	stackSize     = uint64(2 << 20)  // 2 MB (was 4 MB; tighter for iOS per-process ceiling)
+	stackSize     = uint64(1 << 20)  // 1 MB (was 2 MB; tighter for iOS jetsam)
 	stackEnd      = stackBase + stackSize
 	pageSize      = uint64(0x1000)
-	maxOutputSize = uint64(4 << 20)  // 4 MB (was 8 MB; tighter for iOS per-process ceiling)
+	maxOutputSize = uint64(2 << 20)  // 2 MB (was 4 MB; tighter for iOS jetsam)
 )
 
 var coreExportNames = []string{
