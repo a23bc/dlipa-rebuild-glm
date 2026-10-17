@@ -16,6 +16,26 @@ const (
 	queryTimeout     = 4
 	controlCPUModel  = uint32(7 | 1<<26 | 1<<30)
 	arm64CPUModelMax = uint32(3)
+
+	// UC_CTL_WRITE(UC_CTL_TCG_BUFFER_SIZE, 1) = 13 | (1<<26) | (1<<30).
+	// Shrinks Unicorn's JIT translation cache from the 1 GiB default
+	// (DEFAULT_CODE_GEN_BUFFER_SIZE_1 for 64-bit TCG) to a value that
+	// fits inside an iOS app's per-process memory ceiling. Without this
+	// call, uc_open → uc_init_engine → tcg_exec_init → code_gen_alloc
+	// mmaps 1 GiB of anonymous memory and iOS refuses, producing the
+	// stderr message "Could not allocate dynamic translator buffer"
+	// followed by exit(1).
+	//
+	// The control must be invoked after uc_open but BEFORE any other
+	// Unicorn call that would trigger UC_INIT (uc_mem_map, uc_emu_start,
+	// uc_reg_write, etc). The WRITE path of UC_CTL_TCG_BUFFER_SIZE does
+	// NOT trigger UC_INIT — it just stores the size — so calling it
+	// first means the later UC_INIT will use the smaller size when it
+	// finally runs tcg_exec_init(uc, uc->tcg_buffer_size).
+	//
+	// 16 MiB matches what the upstream ipatool project uses on iOS.
+	controlTCGBufferSize = uint32(13 | 1<<26 | 1<<30)
+	tcgBufferSizeIOS     = uint32(16 << 20) // 16 MiB
 )
 
 const (
@@ -123,6 +143,20 @@ func newEngine(ctx context.Context, loadLibrary func(context.Context) (library, 
 		_ = library.close()
 
 		return nil, fmt.Errorf("create arm64 emulator: %w", err)
+	}
+
+	// Shrink the TCG JIT translation buffer from the 1 GiB default to
+	// 16 MiB. MUST happen before any UC_INIT-triggering call (uc_mem_map,
+	// uc_emu_start, uc_reg_write, uc_ctl READ, etc.) so that the eventual
+	// tcg_exec_init picks up the smaller size. The WRITE path of
+	// UC_CTL_TCG_BUFFER_SIZE just stores the value; it does not init.
+	// Without this, iOS refuses the 1 GiB mmap and Unicorn exits with
+	// "Could not allocate dynamic translator buffer".
+	if err := engine.err(engine.api.ctl(engine.handle, controlTCGBufferSize, tcgBufferSizeIOS)); err != nil {
+		_ = engine.api.close(engine.handle)
+		_ = library.close()
+
+		return nil, fmt.Errorf("set TCG buffer size: %w", err)
 	}
 
 	// Select Unicorn's most capable ARM64 model. The compatibility layer handles
