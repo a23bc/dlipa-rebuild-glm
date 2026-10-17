@@ -103,6 +103,22 @@ enum AssetStaging {
                     let sz = (attrs?[.size] as? Int) ?? 0
                     copied += max(sz, 1)
                     progress?(Double(copied) / Double(totalBytes))
+                    // Log the source path, size and sha256 so a mismatch
+                    // between the bundle's bytes and the pinned digest is
+                    // visible in the device log without needing to repackage
+                    // the IPA to inspect it. The Go side's validate() will
+                    // also print the sha256, but only after every file has
+                    // been staged; per-file logging here localises the bad
+                    // file to its source path.
+                    let stagedSha = sha256(ofFile: target.path)
+                    let sourceSha = sha256(ofFile: source.path)
+                    AppLog.info(
+                        "staged " + name + " source=" + source.path
+                            + " size=" + String(sz)
+                            + " source-sha256=" + sourceSha
+                            + " staged-sha256=" + stagedSha,
+                        .assets
+                    )
                 } catch {
                     AppLog.error("failed to stage " + name + ": " + String(describing: error), .assets)
                     firstError = error
@@ -139,5 +155,32 @@ enum AssetError: LocalizedError {
         case .missingFromBundle(let name):
             return name + " is not in the app bundle";
         }
+    }
+}
+
+extension AssetStaging {
+    /// SHA-256 of the file at `path`, lowercase hex, or "<err>" on failure.
+    /// Uses CommonCrypto because CryptoKit requires iOS 13+ and the project
+    /// deployment target is iOS 15 (fine), but CommonCrypto is already
+    /// linked and avoids pulling another framework into the bridge header.
+    static func sha256(ofFile path: String) -> String {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            return "<no-file>"
+        }
+        defer { try? handle.close() }
+
+        var context = CC_SHA256_CTX()
+        CC_SHA256_Init(&context)
+        let chunkSize = 1 << 20  // 1 MB
+        while true {
+            let data = handle.readData(ofLength: chunkSize)
+            if data.isEmpty { break }
+            data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                _ = CC_SHA256_Update(&context, buf.baseAddress, CC_LONG(buf.count))
+            }
+        }
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        _ = CC_SHA256_Final(&digest, &context)
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
