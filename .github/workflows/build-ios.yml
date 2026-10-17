@@ -259,6 +259,42 @@ jobs:
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
 
+      - name: Write BuildID
+        run: |
+          # Embed a build identifier in the bundle so the device log can
+          # unambiguously report which CI build is running. Without this,
+          # a stale IPA installed via TrollStore looks identical to a fresh
+          # one in the log — same bundle id, same app name — and the only
+          # way to tell them apart is the SHA of the SapAssets bytes, which
+          # is exactly the diagnostic we are trying to localise.
+          #
+          # The file is read by AppLog on startup and printed verbatim, so
+          # any field added here shows up in the device log without code
+          # changes.
+          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::DLiPA.app not found"; exit 1; fi
+
+          # Pin the expected SapAssets digests in the BuildID file too, so
+          # the device log shows what the bytes *should* be alongside what
+          # they *are*. This makes a stale-bundle diagnosis a one-liner.
+          cat > "$APP/BuildID.txt" <<EOF
+          build_commit=${{ github.sha }}
+          build_run=${{ github.run_id }}
+          build_run_attempt=${{ github.run_attempt }}
+          build_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          build_ref=${{ github.ref_name }}
+          ipa_expected_applemediaservices_sha256=95f4558aa2c0ccd9f96ed479e336b630b46bf4b4e0baabc1c1ac8c7d55e21ab4
+          ipa_expected_applemediaservices_size=14813888
+          ipa_expected_commerce_sha256=76de40a4a32f691947cb926ce3b128d2fc446f7cac9755f831c406cf5a316ac9
+          ipa_expected_commerce_size=8092640
+          ipa_expected_corefp_sha256=2c30fa2b5f695fd66c0360dce72f54757d03ddb7107549715c12cb359a003b46
+          ipa_expected_corefp_size=94842464
+          ipa_expected_corefp_icxs_sha256=cb8f55330ec567da3e692dab5f5388bed0312dd9093340477c5759078cc2aa7b
+          ipa_expected_corefp_icxs_size=7365344
+          EOF
+          echo "==> BuildID.txt"
+          cat "$APP/BuildID.txt"
+
       - name: Seal the bundle
         run: |
           # TrollStore error 181 with ApplicationType = System means
