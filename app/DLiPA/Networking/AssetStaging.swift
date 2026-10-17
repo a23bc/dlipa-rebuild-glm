@@ -73,18 +73,10 @@ enum AssetStaging {
             for name in files {
                 let target = destination.appendingPathComponent(name)
 
-                // iOS may purge the caches directory under disk pressure.
-                // If the file already exists, skip the copy. The Go bridge
-                // validates SHA-256, so a corrupt or stale file is rejected
-                // there rather than here.
-                if FileManager.default.fileExists(atPath: target.path) {
-                    let attrs = try? FileManager.default.attributesOfItem(atPath: target.path)
-                    let sz = (attrs?[.size] as? Int) ?? 0
-                    copied += max(sz, 1)
-                    AppLog.info("staged " + name + ", " + String(sz) + " bytes (cached)", .assets)
-                    progress?(Double(copied) / Double(totalBytes))
-                    continue
-                }
+                // Always copy from the bundle. The Go bridge validates
+                // SHA-256, and a stale file from a previous install (with a
+                // different macOS version's binaries) would fail that check.
+                // Copying every time is ~125 MB but only on cold start.
 
                 // The Apple binaries live in the SapAssets/ subdirectory of the
                 // bundle (staged there by scripts/stage-assets.sh and copied
