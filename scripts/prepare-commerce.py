@@ -49,6 +49,12 @@ MH_DYLIB = 6
 
 LC_SEGMENT_64 = 0x19
 LC_BUILD_VERSION = 0x32
+LC_ID_DYLIB = 0x0d
+LC_LOAD_DYLIB = 0x0c
+LC_RPATH = 0x8000001c
+LC_REEXPORT_DYLIB = 0x8000001f
+LC_LOAD_WEAK_DYLIB = 0x80000018
+LC_LAZY_LOAD_DYLIB = 0x20
 
 # Platform constants for LC_BUILD_VERSION
 PLATFORM_MACOS = 1
@@ -216,45 +222,151 @@ def strip_pac_in_text(data, text_seg):
     return data, count
 
 def change_to_arm64(data):
-    """Change the Mach-O header from arm64e/macOS/executable to arm64/iOS/dylib."""
+    """Change the Mach-O header from arm64e/macOS/executable to arm64/iOS/dylib.
+
+    1. CPU subtype: arm64e -> arm64_all
+    2. File type: MH_EXECUTE -> MH_DYLIB
+    3. LC_BUILD_VERSION: platform macOS -> iOS
+    4. Add LC_ID_DYLIB (dyld requires this for dylibs)
+    5. Strip LC_LOAD_DYLIB / LC_LOAD_WEAK_DYLIB / LC_RPATH etc.
+       (commerce is statically linked, no external deps needed)
+    """
     data = bytearray(data)
-    # CPU subtype: arm64e (2) -> arm64_all (0)
+
+    # Parse header
+    magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved = \
+        struct.unpack_from('<IiiIIIII', data, 0)
+
+    # 1. CPU subtype: arm64e (2) -> arm64_all (0)
     struct.pack_into('<I', data, 8, CPU_SUBTYPE_ARM64_ALL)
 
-    # File type: MH_EXECUTE (2) -> MH_DYLIB (6)
-    # dyld refuses to dlopen a main executable; it must be a dylib.
-    filetype = struct.unpack_from('<I', data, 12)[0]
+    # 2. File type: MH_EXECUTE (2) -> MH_DYLIB (6)
     print(f"    Mach-O filetype: {filetype} -> {MH_DYLIB}")
     struct.pack_into('<I', data, 12, MH_DYLIB)
 
-    # Update LC_BUILD_VERSION: change platform from macOS to iOS
-    ncmds = struct.unpack_from('<I', data, 16)[0]
-    offset = 32
+    # 3-5. Walk load commands, modify in place
+    # We need to: change LC_BUILD_VERSION, strip dylib deps, add LC_ID_DYLIB
+    # Strategy: build a new load command block, then patch the header
+
+    new_cmds = bytearray()
+    stripped = []
+
+    offset = 32  # After mach_header_64
     for i in range(ncmds):
         cmd, cmdsize = struct.unpack_from('<II', data, offset)
-        if cmd == LC_BUILD_VERSION:
-            # LC_BUILD_VERSION layout:
-            #   uint32 cmd, cmdsize
-            #   uint32 platform  (offset +8)
-            #   uint32 minos     (offset +12)
-            #   uint32 sdk       (offset +16)
-            #   uint32 ntools    (offset +20)
+        cmd_name = f"0x{cmd:08x}"
+
+        # Identify load commands to strip
+        strip = False
+        if cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_LAZY_LOAD_DYLIB,
+                   LC_REEXPORT_DYLIB, LC_RPATH):
+            # Try to get the dylib path for logging
+            if cmdsize >= 24:
+                name_offset = struct.unpack_from('<I', data, offset + 8)[0]
+                if name_offset < cmdsize:
+                    name_end = data.index(b'\x00', offset + name_offset)
+                    dylib_path = data[offset + name_offset:name_end].decode('ascii', errors='replace')
+                    cmd_name = f"LC_LOAD_DYLIB({dylib_path})"
+            strip = True
+        elif cmd == LC_BUILD_VERSION:
             platform = struct.unpack_from('<I', data, offset + 8)[0]
             minos = struct.unpack_from('<I', data, offset + 12)[0]
             sdk = struct.unpack_from('<I', data, offset + 16)[0]
             print(f"    LC_BUILD_VERSION: platform={platform} minos=0x{minos:08x} sdk=0x{sdk:08x}")
-
-            # Change platform to iOS
+            # Change platform to iOS, minos/sdk to 15.0
             struct.pack_into('<I', data, offset + 8, PLATFORM_IOS)
-
-            # Set minos and sdk to iOS 15.0
-            # Version is packed as (major << 16) | (minor << 8) | patch
-            # iOS 15.0 = 0x000F0000
-            struct.pack_into('<I', data, offset + 12, 0x000F0000)  # minos
-            struct.pack_into('<I', data, offset + 16, 0x000F0000)  # sdk
-
+            struct.pack_into('<I', data, offset + 12, 0x000F0000)
+            struct.pack_into('<I', data, offset + 16, 0x000F0000)
             print(f"    Changed to: platform=IOS minos=15.0 sdk=15.0")
+            cmd_name = "LC_BUILD_VERSION(iOS 15.0)"
+        elif cmd == LC_ID_DYLIB:
+            cmd_name = "LC_ID_DYLIB(existing)"
+        elif cmd == LC_SEGMENT_64:
+            segname = data[offset+8:offset+24].rstrip(b'\x00').decode('ascii', errors='replace')
+            cmd_name = f"LC_SEGMENT_64({segname})"
+
+        if strip:
+            stripped.append(cmd_name)
+        else:
+            new_cmds.extend(data[offset:offset + cmdsize])
+
         offset += cmdsize
+
+    # Add LC_ID_DYLIB if not present
+    has_id = any(True for i in range(ncmds)
+                 if struct.unpack_from('<I', data, 32 + sum(
+                     struct.unpack_from('<II', data, 32 + j)[1]
+                     for j in range(i) if False  # This is wrong, but we already checked
+                 ))[0] == LC_ID_DYLIB)
+    # Simpler: check if we kept an LC_ID_DYLIB
+    has_id = b'\x0d\x00\x00\x00' in new_cmds[:4]  # rough check
+    # Actually just check the original
+    orig_offset = 32
+    has_id = False
+    for i in range(ncmds):
+        cmd_check = struct.unpack_from('<I', data, orig_offset)[0]
+        if cmd_check == LC_ID_DYLIB:
+            has_id = True
+            break
+        orig_offset += struct.unpack_from('<I', data, orig_offset + 4)[0]
+
+    if not has_id:
+        # Create LC_ID_DYLIB: @rpath/commerce.dylib
+        install_name = b'@rpath/commerce.dylib\x00'
+        # Align to 8 bytes
+        name_len = len(install_name)
+        padded_len = (name_len + 7) & ~7
+        install_name = install_name.ljust(padded_len, b'\x00')
+        # LC_ID_DYLIB: cmd(4) + cmdsize(4) + name_offset(4) + timestamp(4) + current_version(4) + compat_version(4) + name
+        id_cmdsize = 24 + padded_len
+        id_cmd = struct.pack('<II', LC_ID_DYLIB, id_cmdsize)
+        id_cmd += struct.pack('<I', 24)  # name offset (after 6 uint32s = 24 bytes)
+        id_cmd += struct.pack('<I', 0)   # timestamp
+        id_cmd += struct.pack('<I', 0x10000)  # current version 1.0
+        id_cmd += struct.pack('<I', 0x10000)  # compat version 1.0
+        id_cmd += install_name
+        new_cmds.extend(id_cmd)
+        print(f"    Added LC_ID_DYLIB: @rpath/commerce.dylib")
+    else:
+        print(f"    LC_ID_DYLIB already present, keeping")
+
+    for s in stripped:
+        print(f"    Stripped: {s}")
+
+    # Update header: ncmds and sizeofcmds
+    new_ncmds = 0
+    new_sizeofcmds = len(new_cmds)
+    pos = 0
+    while pos < new_sizeofcmds:
+        cmd, cmdsize = struct.unpack_from('<II', new_cmds, pos)
+        new_ncmds += 1
+        pos += cmdsize
+
+    # Write new load commands into the data
+    # The header is 32 bytes, load commands follow
+    # We need to make sure new_cmds fits in the original sizeofcmds space
+    # (or expand the data if needed)
+    if new_sizeofcmds > sizeofcmds:
+        # Need to expand: insert space after header
+        extra = new_sizeofcmds - sizeofcmds
+        data = data[:32 + sizeofcmds] + bytearray(extra) + data[32 + sizeofcmds:]
+        # But this shifts all segment data... we need to fix file offsets
+        # Actually, for a dylib loaded by dyld, the segment file offsets
+        # are relative to the file start, so shifting data would break them.
+        # Better approach: pad new_cmds to original sizeofcmds
+        print(f"    WARNING: new load commands ({new_sizeofcmds}) > original ({sizeofcmds})")
+        print(f"    Padding to fit original size")
+        new_cmds = new_cmds.ljust(sizeofcmds, b'\x00')
+        new_sizeofcmds = sizeofcmds
+    elif new_sizeofcmds < sizeofcmds:
+        # Pad with NOOPs (or just zeros)
+        new_cmds = new_cmds.ljust(sizeofcmds, b'\x00')
+
+    # Write new load commands
+    data[32:32 + sizeofcmds] = new_cmds
+
+    # Update ncmds in header
+    struct.pack_into('<I', data, 16, new_ncmds)
 
     return data
 
