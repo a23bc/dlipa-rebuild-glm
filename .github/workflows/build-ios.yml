@@ -62,6 +62,25 @@ jobs:
           ls -la VendorAssets
           sh scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/build/sap-assets"
 
+      # Diagnostic for the dlopen path. Emulation hides the import surface,
+      # because package machine answers external calls with its own shims;
+      # a dlopen load has no shims, so dyld must bind every import itself.
+      # This reports what iOS dyld would actually have to satisfy.
+      - name: Dump the Apple SAP import surface
+        working-directory: sapbridge
+        run: |
+          go run ./cmd/dumpimports \
+            -assets "$GITHUB_WORKSPACE/build/sap-assets" \
+            -machine-dir internal/sap/machine \
+            -out "$GITHUB_WORKSPACE/build/imports.json"
+
+      - name: Upload the import report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-imports
+          path: build/imports.json
+          if-no-files-found: error
+
       - name: Run Go unit tests
         working-directory: sapbridge
         env:
@@ -69,6 +88,35 @@ jobs:
           DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
         run: |
           go test -count=1 ./...
+
+      # The unit tests above skip the live tests when the SAP runtime will not
+      # start, which is honest for a checkout without assets but useless here:
+      # the assets are staged, so a skip would hide whether the pinned macOS
+      # binaries still run at all. These two steps set DSH_SAP_REQUIRE_LIVE to
+      # turn that skip into a failure.
+      #
+      # KBSync needs no network: it only loads the images and calls the
+      # StoreAgent entry point, so if it fails the emulation is genuinely
+      # broken and the build must stop.
+      - name: Require the SAP runtime to run locally
+        working-directory: sapbridge
+        env:
+          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
+          DSH_SAP_REQUIRE_LIVE: "1"
+        run: |
+          go test -count=1 -run TestLiveKBSync -v .
+
+      # The handshake also needs to reach Apple, so a runner-side network
+      # problem is not evidence about our code. Report it without blocking
+      # the IPA: a failure here needs triage, not a red build.
+      - name: Require the live SAP handshake
+        working-directory: sapbridge
+        continue-on-error: true
+        env:
+          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
+          DSH_SAP_REQUIRE_LIVE: "1"
+        run: |
+          go test -count=1 -run TestLiveSAPHandshake -v .
 
       - name: Build Unicorn for iOS arm64
         run: |
