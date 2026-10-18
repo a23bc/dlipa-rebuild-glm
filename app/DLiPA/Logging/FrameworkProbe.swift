@@ -114,7 +114,6 @@ enum FrameworkProbe {
         }
 
         listPrivateFrameworks()
-        scanLoadedImages()
 
         emit("===== END FRAMEWORK PROBE =====")
     }
@@ -164,22 +163,6 @@ enum FrameworkProbe {
             }
         } catch {
             emit("[PROBE] PrivateFrameworks NOT listable | \(error.localizedDescription)")
-        }
-    }
-
-    /// Cross-check against what dyld actually has mapped in this process.
-    /// A framework absent from every dlopen path but present here would
-    /// mean it is reachable under a different install name.
-    private static func scanLoadedImages() {
-        let count = _dyld_image_count()
-        emit("[PROBE] dyld images loaded | count=\(count)")
-
-        for index in 0..<count {
-            guard let raw = _dyld_get_image_name(index) else { continue }
-            let name = String(cString: raw)
-            if isInteresting(name) {
-                emit("[PROBE]   mapped: \(name)")
-            }
         }
     }
 
