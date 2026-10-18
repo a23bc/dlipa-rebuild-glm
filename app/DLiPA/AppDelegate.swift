@@ -17,6 +17,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // we never see why.
         StderrCapture.start()
 
+        // PLAN.md step 0, and the cheapest question in the whole project:
+        // does iOS already ship the FairPlay / Store components we currently
+        // extract from macOS? If it does, they are iOS binaries and dyld can
+        // load them directly, which removes chained fixups, pointer
+        // authentication, the macOS-only framework dependencies, and the need
+        // to emulate anything. Runs first so its output is captured even if a
+        // later step kills the process.
+        FrameworkProbe.run()
+
         // Attempt to enable JIT by setting CS_DEBUGGED via ptrace.
         // This must happen before any Unicorn code runs.
         JITEnabler.enable()
