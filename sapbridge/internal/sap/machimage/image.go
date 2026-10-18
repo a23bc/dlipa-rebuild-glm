@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 
 	"github.com/blacktop/go-macho"
@@ -425,10 +426,30 @@ func (i *Image) Load(memory Memory) error {
 
 	ranges := make([]memoryRange, 0, len(i.segments))
 
+	var mapped uint64
+	var skipped uint64
+
 	for _, item := range i.segments {
 		if item.name == "__PAGEZERO" || item.size == 0 {
 			continue
 		}
+
+		// Skip __LINKEDIT: it contains symbol tables and binding info
+		// that dyld uses at load time. Under Unicorn we've already
+		// resolved all symbols and applied fixups before Load() runs,
+		// so the guest code never touches __LINKEDIT at runtime.
+		// Skipping it saves significant RSS — CoreFP's __LINKEDIT is
+		// ~20 MB, AppleMediaServices' is ~5 MB.
+		if item.name == "__LINKEDIT" {
+			skipped += item.size
+			fmt.Fprintf(os.Stderr, "[SAP]   skip %s %s size=%dMB (LINKEDIT not needed)\n",
+				i.name, item.name, item.size>>20)
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP]   map  %s %s size=%dMB\n",
+			i.name, item.name, item.size>>20)
+		mapped += item.size
 
 		if item.address < i.base {
 			return fmt.Errorf("segment %s in %s precedes image base", item.name, i.name)
@@ -446,6 +467,9 @@ func (i *Image) Load(memory Memory) error {
 
 		ranges = append(ranges, memoryRange{start: address - address%pageSize, end: align(end, pageSize)})
 	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] %s: mapped=%dMB skipped=%dMB\n",
+		i.name, mapped>>20, skipped>>20)
 
 	if len(ranges) == 0 {
 		return fmt.Errorf("%s has no loadable segments", i.name)
@@ -481,7 +505,7 @@ func (i *Image) Load(memory Memory) error {
 	}
 
 	for _, item := range i.segments {
-		if item.name == "__PAGEZERO" || item.fileSize == 0 {
+		if item.name == "__PAGEZERO" || item.name == "__LINKEDIT" || item.fileSize == 0 {
 			continue
 		}
 
