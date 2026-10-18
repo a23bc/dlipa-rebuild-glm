@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/blacktop/go-macho"
+	"github.com/blacktop/go-macho/types"
 )
 
 // assets are the Mach-O images to inspect. CoreFP.icxs is a data blob, not a
@@ -145,31 +146,25 @@ func inspect(path, name string) report {
 }
 
 // openThin returns the arm64 slice of a Mach-O, handling both thin and fat
-// inputs. Reading from memory rather than by path keeps the fat-arch scan
-// independent of the file extension.
+// inputs.
+//
+// CoreFP and commerce are universal binaries whose first slice is x86_64, so
+// taking whatever comes first would describe the wrong architecture: the
+// numbers that matter here are the ones iOS dyld would have to satisfy.
+// Note that types.CPUArm64 formats as "AARCH64", so matching the CPU constant
+// and not its name is the only safe test.
 func openThin(raw []byte) (*macho.File, error) {
-	file, err := macho.NewFile(bytes.NewReader(raw))
-	if err == nil {
-		return file, nil
-	}
-
-	fat, fatErr := macho.NewFatFile(bytes.NewReader(raw))
-	if fatErr != nil {
-		// Report the thin-parse failure: for a non-fat file it is the real one.
-		return nil, err
-	}
-
-	for _, arch := range fat.Arches {
-		if strings.Contains(strings.ToLower(fmt.Sprintf("%v", arch.File.FileHeader.CPU)), "arm64") {
-			return arch.File, nil
+	if fat, err := macho.NewFatFile(bytes.NewReader(raw)); err == nil {
+		for _, arch := range fat.Arches {
+			if arch.File.FileHeader.CPU == types.CPUArm64 {
+				return arch.File, nil
+			}
 		}
+
+		return nil, fmt.Errorf("universal Mach-O has no arm64 slice (%d present)", len(fat.Arches))
 	}
 
-	if len(fat.Arches) > 0 {
-		return fat.Arches[0].File, nil
-	}
-
-	return nil, fmt.Errorf("no Mach-O slice in %d bytes", len(raw))
+	return macho.NewFile(bytes.NewReader(raw))
 }
 
 func dependencies(file *macho.File) []dependency {

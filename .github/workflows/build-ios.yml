@@ -41,7 +41,12 @@ jobs:
 
       - name: Install build tools
         run: |
-          brew install ldid cmake pkg-config
+          # unicorn is for the host, not the target: the live SAP tests run the
+          # emulation on the runner itself, and library_unix.go expects an
+          # installed libunicorn.2.dylib instead of downloading one. Without it
+          # every live test skipped, which looked identical to passing.
+          brew install ldid cmake pkg-config unicorn
+          ls -la /opt/homebrew/lib/libunicorn* 2>/dev/null || echo "no libunicorn under /opt/homebrew/lib"
 
       - name: Stage the Apple SAP assets
         run: |
@@ -111,6 +116,9 @@ jobs:
       # the IPA: a failure here needs triage, not a red build.
       - name: Require the live SAP handshake
         working-directory: sapbridge
+        # always(): the kbsync step above fails the job, and its failure would
+        # otherwise hide this one. Both signals are wanted before triage.
+        if: always()
         continue-on-error: true
         env:
           DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
