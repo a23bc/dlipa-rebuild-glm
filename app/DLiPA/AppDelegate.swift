@@ -17,6 +17,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // we never see why.
         StderrCapture.start()
 
+        // Attempt to enable JIT by setting CS_DEBUGGED via ptrace.
+        // This must happen before any Unicorn code runs.
+        JITEnabler.enable()
+
         // Log the BuildID.txt that CI bakes into the bundle. This is the
         // single most useful line in the device log when chasing a
         // stale-IPA install: it identifies which CI build is *actually*
