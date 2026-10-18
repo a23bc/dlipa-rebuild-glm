@@ -1,6 +1,6 @@
-diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-clean/qemu/accel/tcg/translate-all.c
+diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-mixed/qemu/accel/tcg/translate-all.c
 --- a/qemu/accel/tcg/translate-all.c	2026-10-18 06:51:36.502102611 +0000
-+++ b/qemu/accel/tcg/translate-all.c	2026-10-18 08:08:32.078500375 +0000
++++ b/qemu/accel/tcg/translate-all.c	2026-10-18 08:11:21.692442705 +0000
 @@ -775,7 +775,7 @@
   * Users running large scale system emulation may want to tweak their
   * runtime setup via the tb-size control on the command line.
@@ -19,9 +19,80 @@ diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-clean/qemu/
          return NULL;
      }
  
-diff -ruN '--exclude=.git' uc-orig/qemu/util/oslib-posix.c uc-clean/qemu/util/oslib-posix.c
+@@ -2172,7 +2174,17 @@
+ }
+ 
+ 
+-#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
++/* iOS: code_gen_buffer is MAP_JIT + RWX. mprotect toggle is not needed
++ * because MAP_JIT pages can be both written and executed. Make this
++ * a no-op to avoid mprotect removing PROT_WRITE (which causes SIGBUS
++ * when Unicorn writes more JIT code). */
++void ipatool_jit_write_protect(struct uc_struct *uc, int enabled)
++{
++    (void)uc;
++    (void)enabled;
++}
++
++#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
+ static bool tb_exec_is_locked(struct uc_struct *uc)
+ {
+     return uc->current_executable;
+diff -ruN '--exclude=.git' uc-orig/qemu/configure uc-mixed/qemu/configure
+--- a/qemu/configure	2026-10-18 06:51:36.502102611 +0000
++++ b/qemu/configure	2026-10-18 08:11:21.667442563 +0000
+@@ -2152,7 +2152,7 @@
+ if [ "$darwin" = "yes" ] ; then
+   cat > $TMPC << EOF
+ #include <pthread.h>
+-int main() { pthread_jit_write_protect_supported_np(); return 0;}
++int main() { return 0;}
+ EOF
+   if ! compile_prog ""; then
+     have_pthread_jit_protect='no'
+diff -ruN '--exclude=.git' uc-orig/qemu/include/qemu/osdep.h uc-mixed/qemu/include/qemu/osdep.h
+--- a/qemu/include/qemu/osdep.h	2026-10-18 06:51:36.506102633 +0000
++++ b/qemu/include/qemu/osdep.h	2026-10-18 08:11:21.680442637 +0000
+@@ -129,6 +129,15 @@
+ #if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
+ #define USE_MAP_JIT
+ #endif
++/* Force MAP_JIT on iOS arm64. iOS 15+ supports MAP_JIT for apps with
++ * get-task-allow entitlement. MAP_JIT is required for mprotect(PROT_EXEC)
++ * to work on the code_gen_buffer. Without MAP_JIT, mprotect(PROT_EXEC)
++ * on anonymous memory causes SIGBUS. */
++#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
++#ifndef USE_MAP_JIT
++#define USE_MAP_JIT
++#endif
++#endif
+ 
+ #include <glib_compat.h>
+ #include "qemu/typedefs.h"
+diff -ruN '--exclude=.git' uc-orig/qemu/include/tcg/tcg-apple-jit.h uc-mixed/qemu/include/tcg/tcg-apple-jit.h
+--- a/qemu/include/tcg/tcg-apple-jit.h	2026-10-18 06:51:36.506102633 +0000
++++ b/qemu/include/tcg/tcg-apple-jit.h	2026-10-18 08:11:21.680442637 +0000
+@@ -104,13 +104,11 @@
+ #endif
+ 
+ 
+-#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
++#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
+ 
+-/* write protect enable = write disable */
+-static inline void jit_write_protect(int enabled)
+-{
+-    return pthread_jit_write_protect_np(enabled);
+-}
++struct uc_struct;
++void ipatool_jit_write_protect(struct uc_struct *uc, int enabled);
++#define jit_write_protect(enabled) ipatool_jit_write_protect(uc, enabled)
+ 
+ #define JIT_CALLBACK_GUARD(x)                       \
+ {                                                   \
+diff -ruN '--exclude=.git' uc-orig/qemu/util/oslib-posix.c uc-mixed/qemu/util/oslib-posix.c
 --- a/qemu/util/oslib-posix.c	2026-10-18 06:51:36.537102801 +0000
-+++ b/qemu/util/oslib-posix.c	2026-10-18 08:08:32.078500375 +0000
++++ b/qemu/util/oslib-posix.c	2026-10-18 08:11:21.715442835 +0000
 @@ -237,6 +237,10 @@
      ptr = mmap(guardptr + offset, size, PROT_READ | PROT_WRITE,
                 flags | map_sync_flags, -1, 0);
@@ -33,3 +104,16 @@ diff -ruN '--exclude=.git' uc-orig/qemu/util/oslib-posix.c uc-clean/qemu/util/os
      if (ptr == MAP_FAILED && map_sync_flags) {
          /*
           * if map failed with MAP_SHARED_VALIDATE | MAP_SYNC,
+diff -ruN '--exclude=.git' uc-orig/uc.c uc-mixed/uc.c
+--- a/uc.c	2026-10-18 06:51:36.543102834 +0000
++++ b/uc.c	2026-10-18 08:11:21.704442773 +0000
+@@ -35,8 +35,7 @@
+ static uc_err uc_snapshot(uc_engine *uc);
+ static uc_err uc_restore_latest_snapshot(uc_engine *uc);
+ 
+-#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) &&                 \
+-    (defined(__arm__) || defined(__aarch64__))
++#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
+ static void save_jit_state(uc_engine *uc)
+ {
+     if (!uc->nested) {
