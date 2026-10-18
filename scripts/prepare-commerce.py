@@ -245,51 +245,42 @@ def change_to_arm64(data):
     struct.pack_into('<I', data, 12, MH_DYLIB)
 
     # 3-5. Walk load commands, modify in place
-    # We need to: change LC_BUILD_VERSION, strip dylib deps, add LC_ID_DYLIB
-    # Strategy: build a new load command block, then patch the header
+    # We need to: change LC_BUILD_VERSION, add LC_ID_DYLIB
+    # DO NOT strip LC_LOAD_DYLIB — the chained fixups reference
+    # library ordinals, and stripping them causes "unknown library
+    # ordinal" errors during binding. Instead, keep all LC_LOAD_DYLIB
+    # commands; iOS dyld will resolve them against the shared cache
+    # (most macOS system libs exist on iOS under the same names via
+    # the dyld shared cache, even if the paths differ).
 
     new_cmds = bytearray()
-    stripped = []
 
     offset = 32  # After mach_header_64
     for i in range(ncmds):
         cmd, cmdsize = struct.unpack_from('<II', data, offset)
         cmd_name = f"0x{cmd:08x}"
 
-        # Identify load commands to strip
-        strip = False
-        if cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_LAZY_LOAD_DYLIB,
-                   LC_REEXPORT_DYLIB, LC_RPATH):
-            # Try to get the dylib path for logging
-            if cmdsize >= 24:
-                name_offset = struct.unpack_from('<I', data, offset + 8)[0]
-                if name_offset < cmdsize:
-                    name_end = data.index(b'\x00', offset + name_offset)
-                    dylib_path = data[offset + name_offset:name_end].decode('ascii', errors='replace')
-                    cmd_name = f"LC_LOAD_DYLIB({dylib_path})"
-            strip = True
-        elif cmd == LC_BUILD_VERSION:
+        if cmd == LC_BUILD_VERSION:
             platform = struct.unpack_from('<I', data, offset + 8)[0]
             minos = struct.unpack_from('<I', data, offset + 12)[0]
             sdk = struct.unpack_from('<I', data, offset + 16)[0]
             print(f"    LC_BUILD_VERSION: platform={platform} minos=0x{minos:08x} sdk=0x{sdk:08x}")
-            # Change platform to iOS, minos/sdk to 15.0
             struct.pack_into('<I', data, offset + 8, PLATFORM_IOS)
             struct.pack_into('<I', data, offset + 12, 0x000F0000)
             struct.pack_into('<I', data, offset + 16, 0x000F0000)
             print(f"    Changed to: platform=IOS minos=15.0 sdk=15.0")
-            cmd_name = "LC_BUILD_VERSION(iOS 15.0)"
-        elif cmd == LC_ID_DYLIB:
-            cmd_name = "LC_ID_DYLIB(existing)"
+        elif cmd == LC_LOAD_DYLIB:
+            name_offset = struct.unpack_from('<I', data, offset + 8)[0]
+            if name_offset < cmdsize:
+                name_end = data.index(b'\x00', offset + name_offset)
+                dylib_path = data[offset + name_offset:name_end].decode('ascii', errors='replace')
+                print(f"    LC_LOAD_DYLIB: {dylib_path} (keeping)")
         elif cmd == LC_SEGMENT_64:
             segname = data[offset+8:offset+24].rstrip(b'\x00').decode('ascii', errors='replace')
             cmd_name = f"LC_SEGMENT_64({segname})"
 
-        if strip:
-            stripped.append(cmd_name)
-        else:
-            new_cmds.extend(data[offset:offset + cmdsize])
-
+        # Keep all load commands
+        new_cmds.extend(data[offset:offset + cmdsize])
         offset += cmdsize
 
     # Add LC_ID_DYLIB if not present
@@ -329,9 +320,6 @@ def change_to_arm64(data):
         print(f"    Added LC_ID_DYLIB: @rpath/commerce.dylib")
     else:
         print(f"    LC_ID_DYLIB already present, keeping")
-
-    for s in stripped:
-        print(f"    Stripped: {s}")
 
     # Update header: ncmds and sizeofcmds
     new_ncmds = 0
