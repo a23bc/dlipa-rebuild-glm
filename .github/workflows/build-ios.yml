@@ -223,18 +223,37 @@ jobs:
       - name: Prepare commerce binary for native execution
         run: |
           # Strip PAC instructions from the commerce binary and create
-          # an arm64 Mach-O that can be mmap'd with PROT_EXEC on iOS.
+          # an arm64 Mach-O dylib that can be loaded via dlopen on iOS.
+          # iOS forbids mmap(PROT_EXEC) on files, but dyld can load
+          # signed dylibs with the disable-library-validation entitlement.
           python3 scripts/prepare-commerce.py \
             VendorAssets/commerce \
             app/DLiPA/Resources/commerce_native
-          # Sign with ldid so iOS AMFI accepts the code signature
-          if [ -x /tmp/ldid-src/ldid ]; then
-            /tmp/ldid-src/ldid -S app/DLiPA/Resources/commerce_native
-          else
-            ldid -S app/DLiPA/Resources/commerce_native
+          # Create a dylib wrapper: the stripped commerce code as a dylib
+          # so dlopen can load it. We use ld to create a minimal dylib
+          # that contains the commerce __TEXT segment.
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          # Create a dylib from the commerce binary
+          clang -arch arm64 -isysroot "$SDK" \
+            -dynamiclib -o app/DLiPA/Resources/commerce.dylib \
+            -Wl,-force_load,app/DLiPA/Resources/commerce_native \
+            -install_name @rpath/commerce.dylib \
+            -framework Foundation \
+            -miphoneos-version-min=15.0 \
+            -Wl,-dead_strip 2>&1 || true
+          # If clang fails (commerce_native is not a proper .o), try
+          # just renaming it as a dylib — ldid can sign any Mach-O
+          if [ ! -f app/DLiPA/Resources/commerce.dylib ]; then
+            cp app/DLiPA/Resources/commerce_native app/DLiPA/Resources/commerce.dylib
           fi
-          ls -la app/DLiPA/Resources/commerce_native
-          file app/DLiPA/Resources/commerce_native
+          # Sign the dylib with ldid
+          if [ -x /tmp/ldid-src/ldid ]; then
+            /tmp/ldid-src/ldid -S app/DLiPA/Resources/commerce.dylib
+          else
+            ldid -S app/DLiPA/Resources/commerce.dylib
+          fi
+          ls -la app/DLiPA/Resources/commerce.dylib
+          file app/DLiPA/Resources/commerce.dylib
 
       - name: Build the app (unsigned)
         working-directory: app
@@ -275,12 +294,13 @@ jobs:
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
 
-      - name: Copy commerce_native into bundle
+      - name: Copy commerce.dylib into bundle
         run: |
-          # xcodegen may not include this file; copy it manually.
+          # Copy the signed dylib into the app bundle.
           APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
-          cp app/DLiPA/Resources/commerce_native "$APP/commerce_native"
-          ls -la "$APP/commerce_native"
+          mkdir -p "$APP/Frameworks"
+          cp app/DLiPA/Resources/commerce.dylib "$APP/Frameworks/commerce.dylib"
+          ls -la "$APP/Frameworks/commerce.dylib"
 
       - name: Write BuildID
         run: |

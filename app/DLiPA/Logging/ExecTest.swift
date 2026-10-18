@@ -1,74 +1,64 @@
 import Foundation
 import Darwin
 
-/// Tests whether iOS allows mmap with PROT_EXEC on a code-signed file
-/// in the app bundle. This is the fundamental requirement for the
-/// native execution approach (replacing Unicorn).
+/// Tests whether iOS allows dlopen() on a code-signed dylib in the
+/// app bundle. This is the fundamental requirement for the native
+/// execution approach.
 ///
-/// If this test passes, we can mmap the stripped commerce binary with
-/// PROT_EXEC and execute its ARM64 code natively — no Unicorn, no JIT,
-/// no anonymous executable memory needed.
+/// iOS forbids mmap(PROT_EXEC) on files (EPERM). But dyld can load
+/// signed dylibs. With the com.apple.security.cs.disable-library-
+/// validation entitlement, third-party (non-Apple) dylibs can be
+/// loaded. dlopen goes through dyld, not mmap, so it bypasses the
+/// PROT_EXEC restriction.
 ///
-/// If this test fails, the native execution approach won't work on
-/// this device/iOS version, and we need a different strategy.
+/// If this test passes, we can load the stripped commerce binary as
+/// a dylib and execute its ARM64 code natively via function pointers.
 enum ExecTest {
     static func testBundleFileExec() {
-        guard let url = Bundle.main.url(forResource: "commerce_native", withExtension: nil) else {
-            AppLog.error("ExecTest: commerce_native not found in bundle", .app)
+        // Try dlopen on commerce.dylib
+        guard let url = Bundle.main.url(forResource: "commerce", withExtension: "dylib") else {
+            AppLog.error("ExecTest: commerce.dylib not found in bundle", .app)
+            // Also check if it's in a Frameworks/ subdirectory
+            let frameworksPath = Bundle.main.bundlePath + "/Frameworks/commerce.dylib"
+            if FileManager.default.fileExists(atPath: frameworksPath) {
+                AppLog.info("ExecTest: found at \(frameworksPath), trying dlopen", .app)
+                testDlopen(frameworksPath)
+            }
             return
         }
+        testDlopen(url.path)
+    }
 
-        let path = url.path
-        AppLog.info("ExecTest: testing mmap(PROT_EXEC) on \(path)", .app)
+    static func testDlopen(_ path: String) {
+        AppLog.info("ExecTest: testing dlopen on \(path)", .app)
+        fputs("[DLiPA] ExecTest: testing dlopen on \(path)\n", stderr)
 
-        // Open the file
-        let fd = open(path, O_RDONLY)
-        guard fd >= 0 else {
-            AppLog.error("ExecTest: open failed: errno=\(errno) (\(String(cString: strerror(errno))))", .app)
-            return
-        }
-        defer { close(fd) }
+        // Try dlopen
+        let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL)
+        if handle == nil {
+            let err = String(cString: dlerror())
+            AppLog.error("ExecTest: dlopen FAILED: \(err)", .app)
+            fputs("[DLiPA] ExecTest: dlopen FAILED: \(err)\n", stderr)
 
-        // Get file size
-        var st = stat()
-        guard fstat(fd, &st) == 0 else {
-            AppLog.error("ExecTest: fstat failed: errno=\(errno)", .app)
-            return
-        }
-        let size = Int(st.st_size)
-        AppLog.info("ExecTest: file size = \(size) bytes", .app)
-
-        // Try mmap with PROT_READ | PROT_EXEC
-        let ptr = mmap(nil, size, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0)
-        if ptr == MAP_FAILED || ptr == nil {
-            let err = errno
-            AppLog.error("ExecTest: mmap(PROT_READ|PROT_EXEC) FAILED: errno=\(err) (\(String(cString: strerror(err))))", .app)
-            fputs("[DLiPA] ExecTest: mmap PROT_EXEC failed: errno=\(err) (\(String(cString: strerror(err))))\n", stderr)
-
-            // Also try PROT_READ only (control test)
-            let ptr2 = mmap(nil, size, PROT_READ, MAP_PRIVATE, fd, 0)
-            if ptr2 == MAP_FAILED || ptr2 == nil {
-                AppLog.error("ExecTest: mmap(PROT_READ) also failed — file unreadable", .app)
-            } else {
-                AppLog.info("ExecTest: mmap(PROT_READ) succeeded — file is readable but not executable", .app)
-                munmap(ptr2, size)
+            // Also try RTLD_LAZY
+            let handle2 = dlopen(path, RTLD_LAZY | RTLD_LOCAL)
+            if handle2 != nil {
+                AppLog.info("ExecTest: dlopen(RTLD_LAZY) SUCCEEDED!", .app)
+                fputs("[DLiPA] ExecTest: dlopen(RTLD_LAZY) SUCCEEDED!\n", stderr)
+                dlclose(handle2)
             }
             return
         }
 
-        // Success! We have executable memory.
-        // Read the first 4 bytes (should be Mach-O magic 0xfeedfacf)
-        let magic = ptr!.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee }
-        AppLog.info("ExecTest: mmap(PROT_EXEC) SUCCEEDED! ptr=\(String(format: "%p", Int(bitPattern: ptr!))) magic=0x\(String(magic, radix: 16))", .app)
-        fputs("[DLiPA] ExecTest: mmap PROT_EXEC SUCCEEDED! magic=0x\(String(magic, radix: 16))\n", stderr)
+        AppLog.info("ExecTest: dlopen SUCCEEDED! handle=\(String(describing: handle))", .app)
+        fputs("[DLiPA] ExecTest: dlopen SUCCEEDED!\n", stderr)
 
-        // Try to read a few instruction bytes (just to verify we can access the memory)
-        let bytes = ptr!.withMemoryRebound(to: UInt8.self, capacity: 4) { p -> [UInt8] in
-            return [p[0], p[1], p[2], p[3]]
-        }
-        AppLog.info("ExecTest: first 4 bytes: \(bytes.map { String(format: "%02x", $0) }.joined(separator: " "))", .app)
+        // Try to find a symbol (any symbol — just to verify we can
+        // call code from the dylib)
+        // The commerce binary has no standard exports, so we just
+        // verify dlopen succeeded. Actual symbol resolution will
+        // happen when we implement the native execution layer.
 
-        // Don't munmap — we might use this memory later
-        // munmap(ptr, size)
+        dlclose(handle)
     }
 }
