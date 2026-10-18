@@ -274,7 +274,21 @@ def change_to_arm64(data):
             if name_offset < cmdsize:
                 name_end = data.index(b'\x00', offset + name_offset)
                 dylib_path = data[offset + name_offset:name_end].decode('ascii', errors='replace')
-                print(f"    LC_LOAD_DYLIB: {dylib_path} (keeping)")
+                print(f"    LC_LOAD_DYLIB: {dylib_path}")
+
+                # Change macOS-only frameworks to LC_LOAD_WEAK_DYLIB so
+                # dyld doesn't fail when they're not found on iOS.
+                # SAP core only needs basic libc functions (malloc, free,
+                # arc4random, etc.) which are in libSystem.B.dylib.
+                # Frameworks like AppleMediaServices, CommerceKit, etc.
+                # are macOS-only and not needed for SAP signing.
+                # Weak-linking them means: if the symbol is never called,
+                # the missing library doesn't matter.
+                if '/PrivateFrameworks/' in dylib_path or \
+                   '/Frameworks/' in dylib_path and 'libsystem' not in dylib_path.lower():
+                    # Change LC_LOAD_DYLIB (0x0c) to LC_LOAD_WEAK_DYLIB (0x80000018)
+                    struct.pack_into('<I', data, offset, LC_LOAD_WEAK_DYLIB)
+                    print(f"      -> changed to LC_LOAD_WEAK_DYLIB (macOS-only framework)")
         elif cmd == LC_SEGMENT_64:
             segname = data[offset+8:offset+24].rstrip(b'\x00').decode('ascii', errors='replace')
             cmd_name = f"LC_SEGMENT_64({segname})"
