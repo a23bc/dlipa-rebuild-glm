@@ -1,6 +1,6 @@
 diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-patched/qemu/accel/tcg/translate-all.c
 --- a/qemu/accel/tcg/translate-all.c	2026-10-18 06:51:36.502102611 +0000
-+++ b/qemu/accel/tcg/translate-all.c	2026-10-18 07:07:08.634198328 +0000
++++ b/qemu/accel/tcg/translate-all.c	2026-10-18 07:19:58.162390166 +0000
 @@ -770,12 +770,10 @@
  #if TCG_TARGET_REG_BITS == 32
  #define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (32 * MiB)
@@ -32,17 +32,17 @@ diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-patched/qem
  
  
 -#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
-+/* iOS CLI processes cannot use MAP_JIT outside an app sandbox. Toggle the
-+ * translation buffer between writable and executable instead of using RWX. */
++/* iOS: the code_gen_buffer is mmap'd with PROT_READ|PROT_WRITE|PROT_EXEC
++ * (RWX). With the com.apple.security.cs.allow-unsigned-executable-memory
++ * entitlement, iOS allows RWX anonymous mmap. Since the buffer is already
++ * RWX, toggling permissions is unnecessary AND harmful: mprotect to
++ * PROT_READ|PROT_EXEC removes PROT_WRITE, causing SIGBUS when Unicorn
++ * tries to write more JIT code. Make this a no-op. */
 +void ipatool_jit_write_protect(struct uc_struct *uc, int enabled)
 +{
-+    TCGContext *ctx = uc->tcg_ctx;
-+    if (ctx && ctx->initial_buffer &&
-+        mprotect(ctx->initial_buffer, ctx->initial_buffer_size,
-+                 PROT_READ | (enabled ? PROT_EXEC : PROT_WRITE)) != 0) {
-+        perror("protect Unicorn translation buffer");
-+        abort();
-+    }
++    (void)uc;
++    (void)enabled;
++    /* no-op: buffer is RWX, no toggle needed */
 +}
 +
 +#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
