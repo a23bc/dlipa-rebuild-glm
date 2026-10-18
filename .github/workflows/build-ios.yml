@@ -220,6 +220,25 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Prepare commerce binary for native execution
+        run: |
+          # Strip PAC instructions from the commerce binary and create
+          # an arm64 Mach-O that can be mmap'd with PROT_EXEC on iOS.
+          # The output is included in the app bundle as a resource.
+          python3 scripts/prepare-commerce.py \
+            VendorAssets/commerce \
+            app/DLiPA/Resources/commerce_native
+          # Sign with ldid so iOS AMFI accepts the code signature
+          # when the file is mmap'd with PROT_EXEC at runtime.
+          # Use the procursus ldid that was cloned earlier.
+          if [ -x /tmp/ldid-src/ldid ]; then
+            /tmp/ldid-src/ldid -S app/DLiPA/Resources/commerce_native
+          else
+            ldid -S app/DLiPA/Resources/commerce_native
+          fi
+          ls -la app/DLiPA/Resources/commerce_native
+          file app/DLiPA/Resources/commerce_native
+
       - name: Build the app (unsigned)
         working-directory: app
         run: |

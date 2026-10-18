@@ -21,6 +21,11 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // This must happen before any Unicorn code runs.
         JITEnabler.enable()
 
+        // Test whether iOS allows mmap(PROT_EXEC) on a signed bundle file.
+        // This determines if the native execution approach (replacing Unicorn)
+        // is viable on this device.
+        ExecTest.testBundleFileExec()
+
         // Log the BuildID.txt that CI bakes into the bundle. This is the
         // single most useful line in the device log when chasing a
         // stale-IPA install: it identifies which CI build is *actually*
