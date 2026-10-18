@@ -126,6 +126,20 @@ jobs:
         run: |
           go test -count=1 -run TestLiveSAPHandshake -v .
 
+      # Sizes the dlopen path. The binaries declare 196 / 976 / 289 external
+      # symbols; what matters is how many the SAP paths actually enter. Non
+      # blocking because it has to reach Apple, but these are the numbers every
+      # later decision rests on.
+      - name: Report the external calls the SAP paths make
+        working-directory: sapbridge
+        if: always()
+        continue-on-error: true
+        env:
+          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
+          DSH_SAP_REQUIRE_LIVE: "1"
+        run: |
+          go test -count=1 -run TestReportExternalCalls -v .
+
       - name: Build Unicorn for iOS arm64
         run: |
           sh scripts/build-unicorn-ios.sh

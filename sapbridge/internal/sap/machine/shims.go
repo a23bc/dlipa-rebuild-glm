@@ -184,6 +184,11 @@ func (s *shims) dispatch(address uint64, _ uint32) {
 		return
 	}
 
+	// Count every entry before running the handler: a handler that faults
+	// still tells us the guest wanted this symbol, which is the whole point
+	// of the measurement.
+	recordExternalCall(entry.name)
+
 	if err := entry.handler(); err != nil {
 		s.fail(fmt.Errorf("%s: %w", entry.name, err))
 	}
