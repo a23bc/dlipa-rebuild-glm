@@ -1,0 +1,135 @@
+name: Build SAP framework probe
+
+# PLAN.md step 0, as its own app and its own workflow.
+#
+# Why it is separate from the main build: the main DLiPA IPA stopped
+# installing under TrollStore, and it carries a lot that has nothing to do
+# with the question being asked - 119 MB of extracted macOS binaries, the
+# gomobile framework, and a long list of entitlements that includes
+# com.apple.private.cs.debugger. A minimal app isolates whether the install
+# problem is the payload, the entitlements, or something else entirely.
+#
+# The probe itself only talks to the sandbox, dyld and dlsym, so it needs no
+# assets, no bridge and no emulator.
+
+on:
+  push:
+    paths:
+      - "probeapp/**"
+      - ".github/workflows/build-probe.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the probe IPA
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Compile the app
+        run: |
+          # No Xcode project: one source file, compiled straight against the
+          # iOS SDK. A project would add nothing here and a lot of surface.
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos swiftc \
+            -target arm64-apple-ios15.0 \
+            -sdk "$SDK" \
+            -O \
+            -o probeapp/ProbeApp \
+            probeapp/ProbeApp.swift
+          ls -la probeapp/ProbeApp
+          file probeapp/ProbeApp
+
+      - name: Assemble the bundle
+        run: |
+          APP="$GITHUB_WORKSPACE/build/ProbeApp.app"
+          rm -rf "$GITHUB_WORKSPACE/build"
+          mkdir -p "$APP"
+          cp probeapp/ProbeApp "$APP/ProbeApp"
+          cp probeapp/Info.plist "$APP/Info.plist"
+          printf 'APPL????' > "$APP/PkgInfo"
+          # Identifies which build is actually on the device. Without it an
+          # over-install that kept the old bundle is indistinguishable from a
+          # fresh one.
+          echo "commit=${GITHUB_SHA}" > "$APP/BuildID.txt"
+          echo "run=${GITHUB_RUN_ID}" >> "$APP/BuildID.txt"
+          echo "==> bundle root"
+          ls -la "$APP"
+
+      - name: Sign the executable
+        run: |
+          # The version matters. Homebrew ldid 2.1.5 asserts flag_S because the
+          # upstream release dropped it. The procursus build kept -S.
+          git clone --depth 1 --branch v2.1.5-procursus5 \
+            https://github.com/opa334/ldid.git /tmp/ldid-src
+          make -C /tmp/ldid-src -j"$(sysctl -n hw.ncpu)"
+
+          # Deliberately minimal next to the main app's set. Only
+          # disable-library-validation is unusual, and it is required: without
+          # it dyld refuses to load Apple's private frameworks.
+          #
+          # application-identifier has to name the application. Signing with
+          # only get-task-allow leaves the signature without it, so
+          # MobileInstallation cannot type the bundle as an application; it
+          # stays System and registration fails with 181.
+          cat > ent.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+                <key>application-identifier</key>
+                <string>A23BC00001.com.a23bc.dlipaprobe</string>
+                <key>com.apple.developer.team-identifier</key>
+                <string>A23BC00001</string>
+                <key>get-task-allow</key>
+                <true/>
+                <key>com.apple.security.cs.disable-library-validation</key>
+                <true/>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint ent.plist
+
+          # -I sets the CodeDirectory identifier, with no space: ldid reads the
+          # value from argv+2, so a space makes it read an empty identifier and
+          # then treat the bundle id as a file path.
+          /tmp/ldid-src/ldid -Sent.plist "-Icom.a23bc.dlipaprobe" \
+            "$GITHUB_WORKSPACE/build/ProbeApp.app/ProbeApp"
+          rm -f ent.plist
+          echo "==> executable sealed"
+
+      - name: Seal the bundle
+        run: |
+          # MobileInstallation needs _CodeSignature/CodeResources to type the
+          # bundle as an application. Without it, registration fails with 181
+          # even though ldid and the CoreTrust bypass both succeed.
+          python3 scripts/make-coderesources.py "$GITHUB_WORKSPACE/build/ProbeApp.app"
+          find "$GITHUB_WORKSPACE/build/ProbeApp.app" -name CodeResources -print -exec cat {} \;
+
+      - name: Package as IPA
+        id: ipa
+        run: |
+          SHA=$(shasum -a 256 "$GITHUB_WORKSPACE/build/ProbeApp.app/ProbeApp" | cut -c1-8)
+          NAME="ProbeApp-${SHA}.ipa"
+          sh scripts/package-ipa.sh "$GITHUB_WORKSPACE/build/ProbeApp.app" "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Report IPA contents
+        run: |
+          unzip -l "${{ steps.ipa.outputs.name }}"
+          echo "--- size ---"
+          du -h "${{ steps.ipa.outputs.name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProbeApp-ipa
+          path: ${{ steps.ipa.outputs.name }}
+          retention-days: 30
+          if-no-files-found: error
