@@ -37,8 +37,14 @@ jobs:
         run: |
           # No Xcode project: one source file, compiled straight against the
           # iOS SDK. A project would add nothing here and a lot of surface.
+          #
+          # -parse-as-library is required. Without it swiftc treats the file
+          # as a script, and then rejects @UIApplicationMain with
+          # "cannot be used in a module that contains top-level code" -
+          # the file-scope probe tables count as top-level code.
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun --sdk iphoneos swiftc \
+            -parse-as-library \
             -target arm64-apple-ios15.0 \
             -sdk "$SDK" \
             -O \
