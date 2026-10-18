@@ -69,6 +69,13 @@ jobs:
           echo "==> bundle root"
           ls -la "$APP"
 
+      - name: Install signing dependencies
+        run: |
+          # Building the procursus ldid from source needs libplist headers
+          # (plist/plist.h), which brew's ldid pulls in as a dependency.
+          # pkg-config is what makes the build find them.
+          brew install ldid libplist pkg-config
+
       - name: Sign the executable
         run: |
           # The version matters. Homebrew ldid 2.1.5 asserts flag_S because the
