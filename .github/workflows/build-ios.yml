@@ -224,13 +224,10 @@ jobs:
         run: |
           # Strip PAC instructions from the commerce binary and create
           # an arm64 Mach-O that can be mmap'd with PROT_EXEC on iOS.
-          # The output is included in the app bundle as a resource.
           python3 scripts/prepare-commerce.py \
             VendorAssets/commerce \
             app/DLiPA/Resources/commerce_native
           # Sign with ldid so iOS AMFI accepts the code signature
-          # when the file is mmap'd with PROT_EXEC at runtime.
-          # Use the procursus ldid that was cloned earlier.
           if [ -x /tmp/ldid-src/ldid ]; then
             /tmp/ldid-src/ldid -S app/DLiPA/Resources/commerce_native
           else
@@ -277,6 +274,13 @@ jobs:
           if [ -z "$APP" ]; then echo "::error::DLiPA.app not found"; exit 1; fi
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
+
+      - name: Copy commerce_native into bundle
+        run: |
+          # xcodegen may not include this file; copy it manually.
+          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
+          cp app/DLiPA/Resources/commerce_native "$APP/commerce_native"
+          ls -la "$APP/commerce_native"
 
       - name: Write BuildID
         run: |
