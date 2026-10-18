@@ -48,6 +48,11 @@ CPU_SUBTYPE_ARM64_ALL = 0
 LC_SEGMENT_64 = 0x19
 LC_BUILD_VERSION = 0x32
 
+# Platform constants for LC_BUILD_VERSION
+PLATFORM_MACOS = 1
+PLATFORM_IOS = 2
+PLATFORM_IOSSIMULATOR = 7
+
 # PAC instruction patterns (arm64e)
 # These are the instructions we need to rewrite.
 # Encoding: top 8 bits + mask to identify the instruction.
@@ -209,23 +214,38 @@ def strip_pac_in_text(data, text_seg):
     return data, count
 
 def change_to_arm64(data):
-    """Change the Mach-O header from arm64e to arm64."""
+    """Change the Mach-O header from arm64e/macOS to arm64/iOS."""
     data = bytearray(data)
     # CPU subtype: arm64e (2) -> arm64_all (0)
     struct.pack_into('<I', data, 8, CPU_SUBTYPE_ARM64_ALL)
 
-    # Also update LC_BUILD_VERSION if present
+    # Update LC_BUILD_VERSION: change platform from macOS to iOS
     ncmds = struct.unpack_from('<I', data, 16)[0]
     offset = 32
     for i in range(ncmds):
         cmd, cmdsize = struct.unpack_from('<II', data, offset)
         if cmd == LC_BUILD_VERSION:
-            # platform, minos, sdk, ntools
-            platform, minos, sdk = struct.unpack_from('<III', data, offset + 8)
-            # Keep platform (macOS=1, iOS=2), change if needed
-            # For iOS: platform = 2
-            # But we keep it as-is; the code signature is what matters
-            pass
+            # LC_BUILD_VERSION layout:
+            #   uint32 cmd, cmdsize
+            #   uint32 platform  (offset +8)
+            #   uint32 minos     (offset +12)
+            #   uint32 sdk       (offset +16)
+            #   uint32 ntools    (offset +20)
+            platform = struct.unpack_from('<I', data, offset + 8)[0]
+            minos = struct.unpack_from('<I', data, offset + 12)[0]
+            sdk = struct.unpack_from('<I', data, offset + 16)[0]
+            print(f"    LC_BUILD_VERSION: platform={platform} minos=0x{minos:08x} sdk=0x{sdk:08x}")
+
+            # Change platform to iOS
+            struct.pack_into('<I', data, offset + 8, PLATFORM_IOS)
+
+            # Set minos and sdk to iOS 15.0
+            # Version is packed as (major << 16) | (minor << 8) | patch
+            # iOS 15.0 = 0x000F0000
+            struct.pack_into('<I', data, offset + 12, 0x000F0000)  # minos
+            struct.pack_into('<I', data, offset + 16, 0x000F0000)  # sdk
+
+            print(f"    Changed to: platform=IOS minos=15.0 sdk=15.0")
         offset += cmdsize
 
     return data
