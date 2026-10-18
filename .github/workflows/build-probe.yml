@@ -12,11 +12,10 @@ name: Build SAP framework probe
 # The probe itself only talks to the sandbox, dyld and dlsym, so it needs no
 # assets, no bridge and no emulator.
 
+# Manual only, for the same reason as the main build: firing on every push
+# wasted a ten-minute runner on commits that had nothing to do with it.
+#   gh workflow run "Build SAP framework probe"
 on:
-  push:
-    paths:
-      - "probeapp/**"
-      - ".github/workflows/build-probe.yml"
   workflow_dispatch:
 
 concurrency:
