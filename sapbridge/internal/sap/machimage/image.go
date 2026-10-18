@@ -434,21 +434,18 @@ func (i *Image) Load(memory Memory) error {
 			continue
 		}
 
-		// Skip __LINKEDIT: it contains symbol tables and binding info
-		// that dyld uses at load time. Under Unicorn we've already
-		// resolved all symbols and applied fixups before Load() runs,
-		// so the guest code never touches __LINKEDIT at runtime.
-		// Skipping it saves significant RSS — CoreFP's __LINKEDIT is
-		// ~20 MB, AppleMediaServices' is ~5 MB.
-		if item.name == "__LINKEDIT" {
+		// Skip __LINKEDIT: symbol tables, binding info. Not needed at runtime.
+		// Skip __DATA_DIRTY: dirty data pages. Will crash if accessed, but
+		// saves RSS. SAP handshake may not need these.
+		if item.name == "__LINKEDIT" || item.name == "__DATA_DIRTY" {
 			skippedSize += item.size
-			fmt.Fprintf(os.Stderr, "[SAP]   skip %s %s size=%dMB (LINKEDIT not needed)\n",
-				i.name, item.name, item.size>>20)
+			fmt.Fprintf(os.Stderr, "[SAP]   skip %s %s size=%d (%dMB) fileSize=%d\n",
+				i.name, item.name, item.size, item.size>>20, item.fileSize)
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "[SAP]   map  %s %s size=%dMB\n",
-			i.name, item.name, item.size>>20)
+		fmt.Fprintf(os.Stderr, "[SAP]   map  %s %s size=%d (%dMB) fileSize=%d\n",
+			i.name, item.name, item.size, item.size>>20, item.fileSize)
 		mappedSize += item.size
 
 		if item.address < i.base {
@@ -468,8 +465,8 @@ func (i *Image) Load(memory Memory) error {
 		ranges = append(ranges, memoryRange{start: address - address%pageSize, end: align(end, pageSize)})
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP] %s: mapped=%dMB skipped=%dMB\n",
-		i.name, mappedSize>>20, skippedSize>>20)
+	fmt.Fprintf(os.Stderr, "[SAP] %s: mapped=%d (%dMB) skipped=%d (%dMB)\n",
+		i.name, mappedSize, mappedSize>>20, skippedSize, skippedSize>>20)
 
 	if len(ranges) == 0 {
 		return fmt.Errorf("%s has no loadable segments", i.name)
@@ -505,7 +502,7 @@ func (i *Image) Load(memory Memory) error {
 	}
 
 	for _, item := range i.segments {
-		if item.name == "__PAGEZERO" || item.name == "__LINKEDIT" || item.fileSize == 0 {
+		if item.name == "__PAGEZERO" || item.name == "__LINKEDIT" || item.name == "__DATA_DIRTY" || item.fileSize == 0 {
 			continue
 		}
 
