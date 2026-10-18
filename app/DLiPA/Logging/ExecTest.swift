@@ -17,7 +17,7 @@ import Darwin
 /// in the bundle so we can read its Mach-O data for linking.
 enum ExecTest {
     static func testBundleFileExec() {
-        guard let url = Bundle.main.url(forResource: "commerce_native", withExtension: nil) else {
+        guard let url = Bundle.main.url(forResource: "commerce_native", withExtension: "bin") else {
             AppLog.error("ExecTest: commerce_native not found in bundle", .app)
             return
         }

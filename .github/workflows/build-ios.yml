@@ -274,8 +274,10 @@ jobs:
       - name: Copy commerce_native into bundle
         run: |
           APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
-          cp app/DLiPA/Resources/commerce_native "$APP/commerce_native"
-          ls -la "$APP/commerce_native"
+          # Use .bin extension so MobileInstallation doesn't treat it
+          # as a nested executable (which would cause install failure).
+          cp app/DLiPA/Resources/commerce_native "$APP/commerce_native.bin"
+          ls -la "$APP/commerce_native.bin"
 
       - name: Write BuildID
         run: |
@@ -400,7 +402,7 @@ jobs:
           APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
           echo "==> bundle root before cleanup"
           ls -la "$APP"
-          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" ! -name "BuildID.txt" ! -name "commerce_native" -print -delete
+          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" ! -name "BuildID.txt" ! -name "commerce_native.bin" -print -delete
           echo "==> bundle root after cleanup"
           ls -la "$APP"
 
