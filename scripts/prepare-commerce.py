@@ -44,6 +44,8 @@ MH_MAGIC_64 = 0xfeedfacf
 CPU_TYPE_ARM64 = 0x100000c
 CPU_SUBTYPE_ARM64E = 2
 CPU_SUBTYPE_ARM64_ALL = 0
+MH_EXECUTE = 2
+MH_DYLIB = 6
 
 LC_SEGMENT_64 = 0x19
 LC_BUILD_VERSION = 0x32
@@ -214,10 +216,16 @@ def strip_pac_in_text(data, text_seg):
     return data, count
 
 def change_to_arm64(data):
-    """Change the Mach-O header from arm64e/macOS to arm64/iOS."""
+    """Change the Mach-O header from arm64e/macOS/executable to arm64/iOS/dylib."""
     data = bytearray(data)
     # CPU subtype: arm64e (2) -> arm64_all (0)
     struct.pack_into('<I', data, 8, CPU_SUBTYPE_ARM64_ALL)
+
+    # File type: MH_EXECUTE (2) -> MH_DYLIB (6)
+    # dyld refuses to dlopen a main executable; it must be a dylib.
+    filetype = struct.unpack_from('<I', data, 12)[0]
+    print(f"    Mach-O filetype: {filetype} -> {MH_DYLIB}")
+    struct.pack_into('<I', data, 12, MH_DYLIB)
 
     # Update LC_BUILD_VERSION: change platform from macOS to iOS
     ncmds = struct.unpack_from('<I', data, 16)[0]
