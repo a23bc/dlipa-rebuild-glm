@@ -343,6 +343,12 @@ jobs:
                 <string>A23BC00001</string>
                 <key>get-task-allow</key>
                 <true/>
+                <key>com.apple.security.cs.allow-jit</key>
+                <true/>
+                <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+                <true/>
+                <key>com.apple.security.cs.disable-library-validation</key>
+                <true/>
           </dict>
           </plist>
           PLIST
