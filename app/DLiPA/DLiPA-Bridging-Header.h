@@ -9,6 +9,11 @@
 //
 
 #import <Foundation/Foundation.h>
+#include <sys/types.h>
+
+// ptrace is not in the public iOS SDK headers but exists in libSystem.
+// PT_TRACE_ME = 0; used to set CS_DEBUGGED for JIT support.
+extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 NS_ASSUME_NONNULL_BEGIN
 
