@@ -1,16 +1,24 @@
-diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-mixed/qemu/accel/tcg/translate-all.c
+diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-patched/qemu/accel/tcg/translate-all.c
 --- a/qemu/accel/tcg/translate-all.c	2026-10-18 06:51:36.502102611 +0000
-+++ b/qemu/accel/tcg/translate-all.c	2026-10-18 08:11:21.692442705 +0000
-@@ -775,7 +775,7 @@
-  * Users running large scale system emulation may want to tweak their
-  * runtime setup via the tb-size control on the command line.
-  */
++++ b/qemu/accel/tcg/translate-all.c	2026-10-18 07:19:58.162390166 +0000
+@@ -770,12 +770,10 @@
+ #if TCG_TARGET_REG_BITS == 32
+ #define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (32 * MiB)
+ #else /* TCG_TARGET_REG_BITS == 64 */
+-/*
+- * We expect most system emulation to run one or two guests per host.
+- * Users running large scale system emulation may want to tweak their
+- * runtime setup via the tb-size control on the command line.
+- */
 -#define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (1 * GiB)
-+#define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (4 * MiB)
++/* iOS: default 1 GiB is too large for sandboxed apps. 8 MiB is enough
++ * for SAP handshake code. uc_ctl(UC_CTL_TCG_BUFFER_SIZE) can override
++ * this at runtime if needed. */
++#define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (8 * MiB)
  #endif
  
  #define DEFAULT_CODE_GEN_BUFFER_SIZE \
-@@ -1028,6 +1028,8 @@
+@@ -1028,6 +1026,8 @@
  #endif
      buf = mmap(NULL, size, prot, flags, -1, 0);
      if (buf == MAP_FAILED) {
@@ -19,65 +27,49 @@ diff -ruN '--exclude=.git' uc-orig/qemu/accel/tcg/translate-all.c uc-mixed/qemu/
          return NULL;
      }
  
-@@ -2172,7 +2174,17 @@
+@@ -2172,7 +2172,20 @@
  }
  
  
 -#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
-+/* iOS: code_gen_buffer is MAP_JIT + RWX. mprotect toggle is not needed
-+ * because MAP_JIT pages can be both written and executed. Make this
-+ * a no-op to avoid mprotect removing PROT_WRITE (which causes SIGBUS
-+ * when Unicorn writes more JIT code). */
++/* iOS: the code_gen_buffer is mmap'd with PROT_READ|PROT_WRITE|PROT_EXEC
++ * (RWX). With the com.apple.security.cs.allow-unsigned-executable-memory
++ * entitlement, iOS allows RWX anonymous mmap. Since the buffer is already
++ * RWX, toggling permissions is unnecessary AND harmful: mprotect to
++ * PROT_READ|PROT_EXEC removes PROT_WRITE, causing SIGBUS when Unicorn
++ * tries to write more JIT code. Make this a no-op. */
 +void ipatool_jit_write_protect(struct uc_struct *uc, int enabled)
 +{
 +    (void)uc;
 +    (void)enabled;
++    /* no-op: buffer is RWX, no toggle needed */
 +}
 +
-+#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
++#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
  static bool tb_exec_is_locked(struct uc_struct *uc)
  {
      return uc->current_executable;
-diff -ruN '--exclude=.git' uc-orig/qemu/configure uc-mixed/qemu/configure
+diff -ruN '--exclude=.git' uc-orig/qemu/configure uc-patched/qemu/configure
 --- a/qemu/configure	2026-10-18 06:51:36.502102611 +0000
-+++ b/qemu/configure	2026-10-18 08:11:21.667442563 +0000
++++ b/qemu/configure	2026-10-18 06:51:36.610103198 +0000
 @@ -2152,7 +2152,7 @@
  if [ "$darwin" = "yes" ] ; then
    cat > $TMPC << EOF
  #include <pthread.h>
 -int main() { pthread_jit_write_protect_supported_np(); return 0;}
-+int main() { return 0;}
++int main() { pthread_jit_write_protect_supported_np(); pthread_jit_write_protect_np(0); return 0;}
  EOF
    if ! compile_prog ""; then
      have_pthread_jit_protect='no'
-diff -ruN '--exclude=.git' uc-orig/qemu/include/qemu/osdep.h uc-mixed/qemu/include/qemu/osdep.h
---- a/qemu/include/qemu/osdep.h	2026-10-18 06:51:36.506102633 +0000
-+++ b/qemu/include/qemu/osdep.h	2026-10-18 08:11:21.680442637 +0000
-@@ -129,6 +129,15 @@
- #if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
- #define USE_MAP_JIT
- #endif
-+/* Force MAP_JIT on iOS arm64. iOS 15+ supports MAP_JIT for apps with
-+ * get-task-allow entitlement. MAP_JIT is required for mprotect(PROT_EXEC)
-+ * to work on the code_gen_buffer. Without MAP_JIT, mprotect(PROT_EXEC)
-+ * on anonymous memory causes SIGBUS. */
-+#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
-+#ifndef USE_MAP_JIT
-+#define USE_MAP_JIT
-+#endif
-+#endif
- 
- #include <glib_compat.h>
- #include "qemu/typedefs.h"
-diff -ruN '--exclude=.git' uc-orig/qemu/include/tcg/tcg-apple-jit.h uc-mixed/qemu/include/tcg/tcg-apple-jit.h
+diff -ruN '--exclude=.git' uc-orig/qemu/include/tcg/tcg-apple-jit.h uc-patched/qemu/include/tcg/tcg-apple-jit.h
 --- a/qemu/include/tcg/tcg-apple-jit.h	2026-10-18 06:51:36.506102633 +0000
-+++ b/qemu/include/tcg/tcg-apple-jit.h	2026-10-18 08:11:21.680442637 +0000
++++ b/qemu/include/tcg/tcg-apple-jit.h	2026-10-18 06:51:36.610103198 +0000
 @@ -104,13 +104,11 @@
  #endif
  
  
 -#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
-+#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
++#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
  
 -/* write protect enable = write disable */
 -static inline void jit_write_protect(int enabled)
@@ -90,13 +82,16 @@ diff -ruN '--exclude=.git' uc-orig/qemu/include/tcg/tcg-apple-jit.h uc-mixed/qem
  
  #define JIT_CALLBACK_GUARD(x)                       \
  {                                                   \
-diff -ruN '--exclude=.git' uc-orig/qemu/util/oslib-posix.c uc-mixed/qemu/util/oslib-posix.c
+diff -ruN '--exclude=.git' uc-orig/qemu/util/oslib-posix.c uc-patched/qemu/util/oslib-posix.c
 --- a/qemu/util/oslib-posix.c	2026-10-18 06:51:36.537102801 +0000
-+++ b/qemu/util/oslib-posix.c	2026-10-18 08:11:21.715442835 +0000
-@@ -237,6 +237,10 @@
++++ b/qemu/util/oslib-posix.c	2026-10-18 06:51:36.610103198 +0000
+@@ -237,6 +237,13 @@
      ptr = mmap(guardptr + offset, size, PROT_READ | PROT_WRITE,
                 flags | map_sync_flags, -1, 0);
  
++    /* iOS: hint that these pages can be reclaimed without writing back.
++     * This lets the kernel delay physical page allocation until actual
++     * access, reducing RSS for large unused guest RAM regions. */
 +    if (ptr != MAP_FAILED) {
 +        madvise(ptr, size, MADV_FREE);
 +    }
@@ -104,16 +99,16 @@ diff -ruN '--exclude=.git' uc-orig/qemu/util/oslib-posix.c uc-mixed/qemu/util/os
      if (ptr == MAP_FAILED && map_sync_flags) {
          /*
           * if map failed with MAP_SHARED_VALIDATE | MAP_SYNC,
-diff -ruN '--exclude=.git' uc-orig/uc.c uc-mixed/uc.c
+diff -ruN '--exclude=.git' uc-orig/uc.c uc-patched/uc.c
 --- a/uc.c	2026-10-18 06:51:36.543102834 +0000
-+++ b/uc.c	2026-10-18 08:11:21.704442773 +0000
++++ b/uc.c	2026-10-18 06:51:36.611103203 +0000
 @@ -35,8 +35,7 @@
  static uc_err uc_snapshot(uc_engine *uc);
  static uc_err uc_restore_latest_snapshot(uc_engine *uc);
  
 -#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) &&                 \
 -    (defined(__arm__) || defined(__aarch64__))
-+#if defined(__APPLE__) && (defined(__arm__) || defined(__aarch64__))
++#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
  static void save_jit_state(uc_engine *uc)
  {
      if (!uc->nested) {
