@@ -15,22 +15,22 @@ import (
 // returns garbage data. MACH_TASK_BASIC_INFO (flavor 20) always
 // returns 64-bit fields and is the only correct flavor on iOS arm64.
 const (
-	machTaskBasicInfo      = 20  // MACH_TASK_BASIC_INFO
-	machTaskBasicInfoCount = 12  // sizeof(mach_task_basic_info_data_t) / sizeof(natural_t) = 48/4
+	machTaskBasicInfoFlavor      = 20  // MACH_TASK_BASIC_INFO
+	machTaskBasicInfoFlavorCount = 12  // sizeof(mach_task_basic_info_data_t) / sizeof(natural_t) = 48/4
 )
 
 // mach_task_basic_info_data_t (mach/task_info.h):
 //
-//	struct mach_task_basic_info {
-//	    mach_vm_size_t virtual_size;       // 8 bytes
-//	    mach_vm_size_t resident_size;      // 8 bytes  ← what we want
-//	    mach_vm_size_t resident_size_max;  // 8 bytes
-//	    time_value_t   user_time;          // 8 bytes
-//	    time_value_t   system_time;        // 8 bytes
-//	    policy_t       policy;             // 4 bytes
-//	    integer_t      suspend_count;      // 4 bytes
-//	};
-type machTaskBasicInfo struct {
+//      struct mach_task_basic_info {
+//          mach_vm_size_t virtual_size;       // 8 bytes
+//          mach_vm_size_t resident_size;      // 8 bytes  ← what we want
+//          mach_vm_size_t resident_size_max;  // 8 bytes
+//          time_value_t   user_time;          // 8 bytes
+//          time_value_t   system_time;        // 8 bytes
+//          policy_t       policy;             // 4 bytes
+//          integer_t      suspend_count;      // 4 bytes
+//      };
+type machTaskBasicInfoData struct {
 	virtualSize       uint64
 	residentSize      uint64 // ← the field we want
 	residentSizeMax   uint64
@@ -76,10 +76,10 @@ func rssBytesMach() uint64 {
 	var taskInfo func(uint32, uint32, unsafe.Pointer, *uint32) int32
 	purego.RegisterLibFunc(&taskInfo, libSystem, "task_info")
 
-	var info machTaskBasicInfo
-	count := uint32(machTaskBasicInfoCount)
+	var info machTaskBasicInfoData
+	count := uint32(machTaskBasicInfoFlavorCount)
 	task := taskSelf()
-	kr := taskInfo(task, machTaskBasicInfo, unsafe.Pointer(&info), &count)
+	kr := taskInfo(task, machTaskBasicInfoFlavor, unsafe.Pointer(&info), &count)
 	if kr != 0 {
 		fmt.Fprintf(os.Stderr, "[SAP] rss: task_info kr=%d\n", kr)
 		return 0
