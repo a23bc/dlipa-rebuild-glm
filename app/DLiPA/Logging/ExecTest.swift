@@ -59,7 +59,7 @@ enum ExecTest {
         // Success! We have executable memory.
         // Read the first 4 bytes (should be Mach-O magic 0xfeedfacf)
         let magic = ptr!.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee }
-        AppLog.info("ExecTest: mmap(PROT_EXEC) SUCCEEDED! ptr=\(String(format: "%p", ptr!)) magic=0x\(String(magic, radix: 16))", .app)
+        AppLog.info("ExecTest: mmap(PROT_EXEC) SUCCEEDED! ptr=\(String(format: "%p", Int(bitPattern: ptr!))) magic=0x\(String(magic, radix: 16))", .app)
         fputs("[DLiPA] ExecTest: mmap PROT_EXEC SUCCEEDED! magic=0x\(String(magic, radix: 16))\n", stderr)
 
         // Try to read a few instruction bytes (just to verify we can access the memory)
