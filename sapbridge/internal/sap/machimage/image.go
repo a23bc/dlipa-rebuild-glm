@@ -426,8 +426,8 @@ func (i *Image) Load(memory Memory) error {
 
 	ranges := make([]memoryRange, 0, len(i.segments))
 
-	var mapped uint64
-	var skipped uint64
+	var mappedSize uint64
+	var skippedSize uint64
 
 	for _, item := range i.segments {
 		if item.name == "__PAGEZERO" || item.size == 0 {
@@ -441,7 +441,7 @@ func (i *Image) Load(memory Memory) error {
 		// Skipping it saves significant RSS — CoreFP's __LINKEDIT is
 		// ~20 MB, AppleMediaServices' is ~5 MB.
 		if item.name == "__LINKEDIT" {
-			skipped += item.size
+			skippedSize += item.size
 			fmt.Fprintf(os.Stderr, "[SAP]   skip %s %s size=%dMB (LINKEDIT not needed)\n",
 				i.name, item.name, item.size>>20)
 			continue
@@ -449,7 +449,7 @@ func (i *Image) Load(memory Memory) error {
 
 		fmt.Fprintf(os.Stderr, "[SAP]   map  %s %s size=%dMB\n",
 			i.name, item.name, item.size>>20)
-		mapped += item.size
+		mappedSize += item.size
 
 		if item.address < i.base {
 			return fmt.Errorf("segment %s in %s precedes image base", item.name, i.name)
@@ -469,7 +469,7 @@ func (i *Image) Load(memory Memory) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] %s: mapped=%dMB skipped=%dMB\n",
-		i.name, mapped>>20, skipped>>20)
+		i.name, mappedSize>>20, skippedSize>>20)
 
 	if len(ranges) == 0 {
 		return fmt.Errorf("%s has no loadable segments", i.name)
