@@ -231,8 +231,12 @@ jobs:
       - name: Package as IPA
         id: ipa
         run: |
+          # The run id is in the name because the hash covers only the
+          # executable: a rebuild that changed nothing but the bundled
+          # fixtures produced an identically named file, and an old install
+          # was then indistinguishable from a new one.
           SHA=$(shasum -a 256 "$GITHUB_WORKSPACE/build/ProbeApp.app/ProbeApp" | cut -c1-8)
-          NAME="ProbeApp-${SHA}.ipa"
+          NAME="ProbeApp-${SHA}-r${GITHUB_RUN_ID}.ipa"
           sh scripts/package-ipa.sh "$GITHUB_WORKSPACE/build/ProbeApp.app" "$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 

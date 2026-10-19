@@ -164,6 +164,15 @@ private func probeOne(label: String, path: String, symbols: [String]) -> String 
 }
 
 private func runProbe(_ sink: (String) -> Void) {
+    // Say which build this is, first thing. The IPA name is derived from the
+    // executable's hash, so a run that only changed bundled fixtures produced
+    // an identically named file and an old install was indistinguishable from
+    // a new one. This makes every report self-identifying.
+    let buildIDURL = Bundle.main.bundleURL.appendingPathComponent("BuildID.txt")
+    let buildID = (try? String(contentsOf: buildIDURL, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+    sink("[BUILD] \(buildID.replacingOccurrences(of: "\n", with: " "))")
+
     let device = UIDevice.current
     sink("===== FRAMEWORK PROBE (PLAN.md step 0) =====")
     sink("[PROBE] device | \(device.model) \(device.systemName) \(device.systemVersion)")
