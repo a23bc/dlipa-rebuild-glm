@@ -60,6 +60,20 @@ const (
 	lcBuildVersion    = 0x32
 	lcVersionMinMacosx = 0x24
 
+	lcSymtab                = 0x02
+	lcDysymtab              = 0x0b
+	lcDyldInfo              = 0x22
+	lcDyldInfoOnly          = 0x80000022
+	lcCodeSignature         = 0x1d
+	lcSegmentSplitInfo      = 0x1e
+	lcFunctionStarts        = 0x26
+	lcDataInCode            = 0x29
+	lcDylibCodeSignDRs      = 0x2b
+	lcLinkerOptimizationHint = 0x2e
+	lcEncryptionInfo64      = 0x2c
+	lcDyldExportsTrie       = 0x8000001f
+	lcDyldChainedFixups     = 0x80000034
+
 	platformIOS = 0x2
 
 	// iOS 15.0, as dyld packs it: major in the high half, minor and patch in
@@ -174,12 +188,60 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Re-parse the result before writing it. The bug this catches is real and
+	// was shipped once: appending a load command to the end of the file
+	// instead of to the end of the command region produced a file that dyld
+	// rejected with "malformed load command ... size (0x0) too small", and
+	// nothing noticed until it was on a device.
+	if err := verify(converted); err != nil {
+		fmt.Fprintf(os.Stderr, "converted output does not parse: %v\n", err)
+		os.Exit(1)
+	}
+
 	if err := os.WriteFile(*out, converted, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write %s: %v\n", *out, err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("==> wrote %s (%d bytes)\n", *out, len(converted))
+}
+
+// verify re-reads the converted image and walks its load commands, which is
+// the same walk dyld does.
+func verify(data []byte) error {
+	file, err := macho.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("open converted image: %w", err)
+	}
+
+	ncmds := binary.LittleEndian.Uint32(data[16:])
+	sizeofcmds := binary.LittleEndian.Uint32(data[20:])
+	if uint64(32+sizeofcmds) > uint64(len(data)) {
+		return fmt.Errorf("sizeofcmds %d exceeds the %d byte file", sizeofcmds, len(data))
+	}
+
+	offset := 32
+	seen := 0
+
+	for i := uint32(0); i < ncmds; i++ {
+		if offset+8 > len(data) {
+			return fmt.Errorf("load command %d starts past the end of the file", i)
+		}
+
+		size := int(binary.LittleEndian.Uint32(data[offset+4:]))
+		if size < 8 || offset+size > len(data) {
+			return fmt.Errorf("load command %d has size %d at %d, past the %d byte file",
+				i, size, offset, len(data))
+		}
+
+		offset += size
+		seen++
+	}
+
+	fmt.Printf("    verified: %d commands, %d bytes, type %v, subtype %v\n",
+		seen, sizeofcmds, file.FileHeader.Type, file.FileHeader.SubCPU)
+
+	return nil
 }
 
 // openThin returns the arm64 slice and just its bytes. Writing a thin file
@@ -313,14 +375,114 @@ func convert(data []byte, file *macho.File, install string) ([]byte, error) {
 	}
 
 	if len(extra) > 0 {
-		// Append after the existing commands and fix up the header.
-		sizeofcmds := int(binary.LittleEndian.Uint32(out[20:]))
-		out = append(out, extra...)
-		binary.LittleEndian.PutUint32(out[16:], uint32(ncmds+2))
-		binary.LittleEndian.PutUint32(out[20:], uint32(sizeofcmds+len(extra)))
+		out = insertCommands(out, offset, extra)
 	}
 
 	return out, nil
+}
+
+// insertCommands splices new load commands in at the end of the command
+// region and shifts every file offset in the existing commands to match.
+//
+// Appending to the end of the file - which is what the first version did -
+// leaves the commands non-contiguous with the header. dyld walks them
+// sequentially from offset 32, so it reads past the last real command
+// straight into segment data and reports
+// "malformed load command #N ... size (0x0) too small".
+func insertCommands(data []byte, commandsEnd int, extra []byte) []byte {
+	delta := uint64(len(extra))
+
+	out := make([]byte, 0, len(data)+len(extra))
+	out = append(out, data[:commandsEnd]...)
+	out = append(out, extra...)
+	out = append(out, data[commandsEnd:]...)
+
+	shiftFileOffsets(out, delta)
+
+	ncmds := binary.LittleEndian.Uint32(out[16:])
+	sizeofcmds := binary.LittleEndian.Uint32(out[20:])
+	binary.LittleEndian.PutUint32(out[16:], ncmds+uint32(countCommands(extra)))
+	binary.LittleEndian.PutUint32(out[20:], sizeofcmds+uint32(len(extra)))
+
+	return out
+}
+
+func countCommands(commands []byte) int {
+	count := 0
+
+	for at := 0; at+8 <= len(commands); {
+		size := int(binary.LittleEndian.Uint32(commands[at+4:]))
+		if size <= 0 {
+			break
+		}
+		count++
+		at += size
+	}
+
+	return count
+}
+
+// File-offset fields that must move when the command region grows.
+//
+// Indices are byte offsets from the start of each load command. Only
+// commands that actually carry file offsets are listed; a command that is
+// not listed here has none, or only holds counts and indices.
+var offsetFields = map[uint32][]int{
+	lcSegment64: {40},            // fileoff
+	lcSymtab:    {8, 16},         // symoff, stroff
+	lcDysymtab:  {32, 40, 48, 56, 64, 72},
+	lcDyldInfo:  {8, 16, 24, 32, 40},
+	lcDyldInfoOnly: {8, 16, 24, 32, 40},
+}
+
+// Commands with a single dataoff at +8: everything in the linkedit family.
+var dataoffCommands = []uint32{
+	lcCodeSignature, lcSegmentSplitInfo, lcFunctionStarts, lcDataInCode,
+	lcDylibCodeSignDRs, lcLinkerOptimizationHint, lcDyldExportsTrie,
+	lcDyldChainedFixups, lcEncryptionInfo64,
+}
+
+func shiftFileOffsets(data []byte, delta uint64) {
+	ncmds := int(binary.LittleEndian.Uint32(data[16:]))
+	offset := 32
+
+	for i := 0; i < ncmds; i++ {
+		if offset+8 > len(data) {
+			return
+		}
+
+		cmd := binary.LittleEndian.Uint32(data[offset:])
+		size := int(binary.LittleEndian.Uint32(data[offset+4:]))
+		if size <= 0 || offset+size > len(data) {
+			return
+		}
+
+		fields := offsetFields[cmd]
+		for _, base := range fields {
+			bumpOffset(data, offset+base, delta)
+		}
+
+		for _, candidate := range dataoffCommands {
+			if cmd == candidate {
+				bumpOffset(data, offset+8, delta)
+			}
+		}
+
+		offset += size
+	}
+}
+
+func bumpOffset(data []byte, at int, delta uint64) {
+	if at+8 > len(data) {
+		return
+	}
+
+	value := binary.LittleEndian.Uint64(data[at:])
+	if value == 0 {
+		return
+	}
+
+	binary.LittleEndian.PutUint64(data[at:], value+delta)
 }
 
 func segmentName(data []byte, offset int) string {
