@@ -74,6 +74,8 @@ jobs:
       - name: Convert commerce for iOS
         working-directory: sapbridge
         run: |
+          # The fixture step has not run yet, so the directory does not exist.
+          mkdir -p "$GITHUB_WORKSPACE/fixture-build"
           go run ./cmd/prepareasset \
             -in "$GITHUB_WORKSPACE/VendorAssets/commerce" \
             -out "$GITHUB_WORKSPACE/fixture-build/commerce.dylib" \
