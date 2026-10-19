@@ -3,7 +3,7 @@
 //
 // ## What the device established
 //
-// A matrix of 1 KB dylibs settled every constraint before this was written:
+// A matrix of 1 KB dylibs settled the constraints before this was written:
 //
 //	ios-classic     dlopen=OK
 //	ios-chained     dlopen=OK           chained fixups are accepted
@@ -14,6 +14,10 @@
 // So the platform must become iOS and the CPU subtype must become plain
 // arm64. Both are hard rejections with their own error text. Chained fixups
 // are not the obstacle.
+//
+// commerce itself confirmed the first two on a real device: after
+// conversion it no longer complains about platform or architecture, only
+// about what comes next.
 //
 // ## What this does
 //
@@ -26,11 +30,10 @@
 //
 // ## What it deliberately does not do yet
 //
-// It leaves the fixup chains alone. That is the next step and it is not
-// small: the chains are encoded as arm64e and the subtype change invalidates
-// them. Shipping this first is deliberate - it puts the cheapest possible
-// question to the device, and dyld's error for the not-yet-converted chains
-// tells us what the conversion has to produce.
+// It leaves the fixup chains alone. They are encoded as arm64e and the
+// subtype change invalidates them, but converting them is the expensive
+// part, and dyld's complaint about the unconverted chains is what should
+// decide what the conversion has to produce.
 //
 // The assets are not in this repository. Run it where they are:
 //
@@ -53,38 +56,26 @@ const (
 	mhExecute = 0x2
 	mhDylib   = 0x6
 
-	lcSegment64       = 0x19
-	lcIDDylib         = 0x0d
-	lcLoadDylib       = 0x0c
-	lcLoadWeakDylib   = 0x80000018
-	lcBuildVersion    = 0x32
+	lcSegment64        = 0x19
+	lcIDDylib          = 0x0d
+	lcLoadDylib        = 0x0c
+	lcLoadWeakDylib    = 0x80000018
+	lcBuildVersion     = 0x32
 	lcVersionMinMacosx = 0x24
-
-	lcSymtab                = 0x02
-	lcDysymtab              = 0x0b
-	lcDyldInfo              = 0x22
-	lcDyldInfoOnly          = 0x80000022
-	lcCodeSignature         = 0x1d
-	lcSegmentSplitInfo      = 0x1e
-	lcFunctionStarts        = 0x26
-	lcDataInCode            = 0x29
-	lcDylibCodeSignDRs      = 0x2b
-	lcLinkerOptimizationHint = 0x2e
-	lcEncryptionInfo64      = 0x2c
-	lcDyldExportsTrie       = 0x8000001f
-	lcDyldChainedFixups     = 0x80000034
 
 	platformIOS = 0x2
 
-	// iOS 15.0, as dyld packs it: major in the high half, minor and patch in
-	// the low bytes.
+	// iOS 15.0, as dyld packs it: major in the high half.
 	ios15 = 0x000F0000
 
 	// CPU_SUBTYPE_ARM64_ALL. Writing 0 also drops the 0x80000000 capability
 	// bit that marks the arm64e PTRAUTH ABI, which is the part dyld rejects.
 	subtypeARM64All = 0x0
 
-	// NOP.
+	// arm64 page size. dyld mmaps each segment at its file offset, and mmap
+	// requires that offset to be a multiple of this.
+	pageSize = 0x4000
+
 	nop = 0xd503201f
 )
 
@@ -122,16 +113,16 @@ var libOnIOS = map[string]bool{
 	"libcompression.dylib":   true,
 }
 
-// swiftPrefixes matches the Swift runtime and the libsystem sublibraries,
-// which ship on iOS under these directories and are numerous enough to match
-// by prefix rather than enumerate.
-var swiftPrefixes = []string{
+// libPrefixesOnIOS matches the Swift runtime and the libsystem
+// sublibraries, which ship on iOS under these directories and are numerous
+// enough to match by prefix rather than enumerate.
+var libPrefixesOnIOS = []string{
 	"/usr/lib/swift/",
 	"/usr/lib/system/",
 }
 
 func availableOnIOS(path string) bool {
-	for _, prefix := range swiftPrefixes {
+	for _, prefix := range libPrefixesOnIOS {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
@@ -188,11 +179,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Re-parse the result before writing it. The bug this catches is real and
-	// was shipped once: appending a load command to the end of the file
-	// instead of to the end of the command region produced a file that dyld
-	// rejected with "malformed load command ... size (0x0) too small", and
-	// nothing noticed until it was on a device.
+	// Re-parse and re-walk the result before writing it. Two structural bugs
+	// reached a device before this existed, and both were visible here.
 	if err := verify(converted); err != nil {
 		fmt.Fprintf(os.Stderr, "converted output does not parse: %v\n", err)
 		os.Exit(1)
@@ -206,44 +194,6 @@ func main() {
 	fmt.Printf("==> wrote %s (%d bytes)\n", *out, len(converted))
 }
 
-// verify re-reads the converted image and walks its load commands, which is
-// the same walk dyld does.
-func verify(data []byte) error {
-	file, err := macho.NewFile(bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("open converted image: %w", err)
-	}
-
-	ncmds := binary.LittleEndian.Uint32(data[16:])
-	sizeofcmds := binary.LittleEndian.Uint32(data[20:])
-	if uint64(32+sizeofcmds) > uint64(len(data)) {
-		return fmt.Errorf("sizeofcmds %d exceeds the %d byte file", sizeofcmds, len(data))
-	}
-
-	offset := 32
-	seen := 0
-
-	for i := uint32(0); i < ncmds; i++ {
-		if offset+8 > len(data) {
-			return fmt.Errorf("load command %d starts past the end of the file", i)
-		}
-
-		size := int(binary.LittleEndian.Uint32(data[offset+4:]))
-		if size < 8 || offset+size > len(data) {
-			return fmt.Errorf("load command %d has size %d at %d, past the %d byte file",
-				i, size, offset, len(data))
-		}
-
-		offset += size
-		seen++
-	}
-
-	fmt.Printf("    verified: %d commands, %d bytes, type %v, subtype %v\n",
-		seen, sizeofcmds, file.FileHeader.Type, file.FileHeader.SubCPU)
-
-	return nil
-}
-
 // openThin returns the arm64 slice and just its bytes. Writing a thin file
 // keeps every offset below relative to the Mach-O header, which is what the
 // conversions assume.
@@ -254,9 +204,9 @@ func openThin(data []byte) (*macho.File, []byte, error) {
 				continue
 			}
 
-			start := arch.Offset
-			end := arch.Offset + arch.Size
-			if uint64(len(data)) < uint64(end) {
+			start := int(arch.Offset)
+			end := start + int(arch.Size)
+			if end > len(data) {
 				return nil, nil, fmt.Errorf("arch slice %#x..%#x exceeds the file", start, end)
 			}
 
@@ -297,7 +247,7 @@ func report(file *macho.File) {
 		case *macho.BuildVersion:
 			fmt.Printf("    LC_BUILD_VERSION platform=%d\n", typed.Platform)
 		case *macho.VersionMinMacOSX:
-			fmt.Printf("    LC_VERSION_MIN_MACOSX (no build version)\n")
+			fmt.Printf("    LC_VERSION_MIN_MACOSX present, no build version to patch\n")
 		case *macho.LoadDylib:
 			fmt.Printf("    dep %s\n", typed.Name)
 		}
@@ -318,12 +268,11 @@ func convert(data []byte, file *macho.File, install string) ([]byte, error) {
 		fmt.Printf("    filetype %d -> MH_DYLIB\n", fileType)
 	}
 
-	headerSize := 32
 	ncmds := int(binary.LittleEndian.Uint32(out[16:]))
-	offset := headerSize
+	sizeofcmds := int(binary.LittleEndian.Uint32(out[20:]))
+	offset := 32
 	hasBuildVersion := false
 	hasID := false
-
 	extra := []byte{}
 
 	for i := 0; i < ncmds; i++ {
@@ -332,7 +281,7 @@ func convert(data []byte, file *macho.File, install string) ([]byte, error) {
 
 		switch cmd {
 		case lcSegment64:
-			if name := segmentName(out, offset); name == "__TEXT" {
+			if segmentName(out, offset) == "__TEXT" {
 				// LC_SEGMENT_64: segname(8) vmaddr(24) vmsize(32)
 				// fileoff(40) filesize(48). The first two are virtual, and
 				// using them here walks off the end of the file.
@@ -346,15 +295,11 @@ func convert(data []byte, file *macho.File, install string) ([]byte, error) {
 			binary.LittleEndian.PutUint32(out[offset+12:], ios15)
 			binary.LittleEndian.PutUint32(out[offset+16:], ios15)
 			fmt.Printf("    LC_BUILD_VERSION -> platform=iOS minos=sdk 15.0\n")
-		case lcVersionMinMacosx:
-			// No LC_BUILD_VERSION to patch; one is appended below.
-			fmt.Printf("    LC_VERSION_MIN_MACOSX present, appending LC_BUILD_VERSION\n")
 		case lcIDDylib:
 			hasID = true
 		case lcLoadDylib:
 			// 4. Weakly link anything iOS does not have.
-			path := dylibName(out, offset)
-			if !availableOnIOS(path) {
+			if path := dylibName(out, offset); !availableOnIOS(path) {
 				binary.LittleEndian.PutUint32(out[offset:], lcLoadWeakDylib)
 				fmt.Printf("    weak: %s\n", path)
 			}
@@ -375,36 +320,53 @@ func convert(data []byte, file *macho.File, install string) ([]byte, error) {
 	}
 
 	if len(extra) > 0 {
-		out = insertCommands(out, offset, extra)
+		// Place the new commands in the padding between the end of the load
+		// commands and the first section. Nothing moves, so no file offset
+		// needs adjusting.
+		//
+		// Making room by shifting the file - what an earlier version did -
+		// breaks the page alignment of every following segment's file
+		// offset, and dyld's mmap of that segment then fails with EINVAL.
+		// That is what the device reported.
+		room := unusedSlack(file, offset)
+		if room < len(extra) {
+			return nil, fmt.Errorf(
+				"need %d bytes for new load commands, only %d free after them; "+
+					"refusing to shift the file and break page alignment",
+				len(extra), room)
+		}
+
+		copy(out[offset:offset+len(extra)], extra)
+		binary.LittleEndian.PutUint32(out[16:], uint32(ncmds+countCommands(extra)))
+		binary.LittleEndian.PutUint32(out[20:], uint32(sizeofcmds+len(extra)))
+		fmt.Printf("    placed %d bytes of new commands in %d bytes of padding\n",
+			len(extra), room)
 	}
 
 	return out, nil
 }
 
-// insertCommands splices new load commands in at the end of the command
-// region and shifts every file offset in the existing commands to match.
-//
-// Appending to the end of the file - which is what the first version did -
-// leaves the commands non-contiguous with the header. dyld walks them
-// sequentially from offset 32, so it reads past the last real command
-// straight into segment data and reports
-// "malformed load command #N ... size (0x0) too small".
-func insertCommands(data []byte, commandsEnd int, extra []byte) []byte {
-	delta := uint64(len(extra))
+// unusedSlack reports how many bytes between the end of the load commands
+// and the first section are not referenced by anything. That gap is padding
+// - usually because sections start at page-aligned offsets - so it is safe
+// to write into.
+func unusedSlack(file *macho.File, commandsEnd int) int {
+	lowest := -1
 
-	out := make([]byte, 0, len(data)+len(extra))
-	out = append(out, data[:commandsEnd]...)
-	out = append(out, extra...)
-	out = append(out, data[commandsEnd:]...)
+	for _, section := range file.Sections {
+		if section.Offset == 0 {
+			continue
+		}
+		if lowest < 0 || int(section.Offset) < lowest {
+			lowest = int(section.Offset)
+		}
+	}
 
-	shiftFileOffsets(out, delta)
+	if lowest <= commandsEnd {
+		return 0
+	}
 
-	ncmds := binary.LittleEndian.Uint32(out[16:])
-	sizeofcmds := binary.LittleEndian.Uint32(out[20:])
-	binary.LittleEndian.PutUint32(out[16:], ncmds+uint32(countCommands(extra)))
-	binary.LittleEndian.PutUint32(out[20:], sizeofcmds+uint32(len(extra)))
-
-	return out
+	return lowest - commandsEnd
 }
 
 func countCommands(commands []byte) int {
@@ -422,79 +384,12 @@ func countCommands(commands []byte) int {
 	return count
 }
 
-// File-offset fields that must move when the command region grows.
-//
-// Indices are byte offsets from the start of each load command. Only
-// commands that actually carry file offsets are listed; a command that is
-// not listed here has none, or only holds counts and indices.
-var offsetFields = map[uint32][]int{
-	lcSegment64: {40},            // fileoff
-	lcSymtab:    {8, 16},         // symoff, stroff
-	lcDysymtab:  {32, 40, 48, 56, 64, 72},
-	lcDyldInfo:  {8, 16, 24, 32, 40},
-	lcDyldInfoOnly: {8, 16, 24, 32, 40},
-}
-
-// Commands with a single dataoff at +8: everything in the linkedit family.
-var dataoffCommands = []uint32{
-	lcCodeSignature, lcSegmentSplitInfo, lcFunctionStarts, lcDataInCode,
-	lcDylibCodeSignDRs, lcLinkerOptimizationHint, lcDyldExportsTrie,
-	lcDyldChainedFixups, lcEncryptionInfo64,
-}
-
-func shiftFileOffsets(data []byte, delta uint64) {
-	ncmds := int(binary.LittleEndian.Uint32(data[16:]))
-	offset := 32
-
-	for i := 0; i < ncmds; i++ {
-		if offset+8 > len(data) {
-			return
-		}
-
-		cmd := binary.LittleEndian.Uint32(data[offset:])
-		size := int(binary.LittleEndian.Uint32(data[offset+4:]))
-		if size <= 0 || offset+size > len(data) {
-			return
-		}
-
-		fields := offsetFields[cmd]
-		for _, base := range fields {
-			bumpOffset(data, offset+base, delta)
-		}
-
-		for _, candidate := range dataoffCommands {
-			if cmd == candidate {
-				bumpOffset(data, offset+8, delta)
-			}
-		}
-
-		offset += size
-	}
-}
-
-func bumpOffset(data []byte, at int, delta uint64) {
-	if at+8 > len(data) {
-		return
-	}
-
-	value := binary.LittleEndian.Uint64(data[at:])
-	if value == 0 {
-		return
-	}
-
-	binary.LittleEndian.PutUint64(data[at:], value+delta)
-}
-
 func segmentName(data []byte, offset int) string {
-	end := offset + 24
-	name := strings.TrimRight(string(data[offset+8:end]), "\x00")
-
-	return name
+	return strings.TrimRight(string(data[offset+8:offset+24]), "\x00")
 }
 
 func dylibName(data []byte, offset int) string {
-	nameOffset := int(binary.LittleEndian.Uint32(data[offset+8:]))
-	start := offset + nameOffset
+	start := offset + int(binary.LittleEndian.Uint32(data[offset+8:]))
 	if start >= len(data) {
 		return ""
 	}
@@ -507,7 +402,6 @@ func dylibName(data []byte, offset int) string {
 
 func buildVersionCommand() []byte {
 	buf := new(bytes.Buffer)
-	// cmd, cmdsize, platform, minos, sdk, ntools
 	for _, v := range []uint32{lcBuildVersion, 24, platformIOS, ios15, ios15, 0} {
 		_ = binary.Write(buf, binary.LittleEndian, v)
 	}
@@ -530,8 +424,9 @@ func idDylibCommand(install string) []byte {
 	return buf.Bytes()
 }
 
-// stripPAC rewrites pointer-authentication instructions inside an executable
-// range. The A10 in the target device has no PAC, so these would be undefined.
+// stripPAC rewrites pointer-authentication instructions inside an
+// executable range. The A10 in the target device has no PAC, so these would
+// be undefined.
 //
 // Ported from scripts/prepare-commerce.py, which already did this for
 // commerce. Branches and returns keep their meaning and lose only the
@@ -599,4 +494,61 @@ func isPAC(word uint32) bool {
 	}
 
 	return false
+}
+
+// verify re-reads the converted image and walks its load commands, which is
+// the same walk dyld does. It also checks the one invariant that broke
+// silently: dyld mmaps each segment at its file offset, and mmap requires
+// that offset to be page aligned.
+func verify(data []byte) error {
+	file, err := macho.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("open converted image: %w", err)
+	}
+
+	ncmds := binary.LittleEndian.Uint32(data[16:])
+	sizeofcmds := binary.LittleEndian.Uint32(data[20:])
+	if uint64(32+sizeofcmds) > uint64(len(data)) {
+		return fmt.Errorf("sizeofcmds %d exceeds the %d byte file", sizeofcmds, len(data))
+	}
+
+	offset := 32
+	seen := 0
+
+	for i := uint32(0); i < ncmds; i++ {
+		if offset+8 > len(data) {
+			return fmt.Errorf("load command %d starts past the end of the file", i)
+		}
+
+		size := int(binary.LittleEndian.Uint32(data[offset+4:]))
+		if size < 8 || offset+size > len(data) {
+			return fmt.Errorf("load command %d has size %d at %d, past the %d byte file",
+				i, size, offset, len(data))
+		}
+
+		offset += size
+		seen++
+	}
+
+	for _, load := range file.Loads {
+		segment, ok := load.(*macho.Segment)
+		if !ok {
+			continue
+		}
+
+		if segment.Offset%pageSize != 0 {
+			return fmt.Errorf("segment %s file offset %#x is not %#x aligned; dyld's mmap will fail with EINVAL",
+				segment.Name, segment.Offset, pageSize)
+		}
+
+		if uint64(segment.Offset+segment.Filesz) > uint64(len(data)) {
+			return fmt.Errorf("segment %s spans %#x..%#x past the %d byte file",
+				segment.Name, segment.Offset, segment.Offset+segment.Filesz, len(data))
+		}
+	}
+
+	fmt.Printf("    verified: %d commands, %d bytes, type %v, subtype %v\n",
+		seen, sizeofcmds, file.FileHeader.Type, file.FileHeader.SubCPU)
+
+	return nil
 }
