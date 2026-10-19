@@ -93,6 +93,14 @@ jobs:
           xcrun clang -target arm64-apple-macos12.0 -isysroot "$MACOSX_SDK" \
             -shared -o "$FIX/macos-chained.dylib" probeapp/fixtures/fixture.c
 
+          # The question the matrix exists to answer. Platform and chained
+          # fixups are now known; what is not is whether this device's dyld
+          # accepts an arm64e slice at all. The pinned Apple binaries are
+          # arm64e, so a rejection here is what forces the CPU subtype change
+          # and the rewrite of every fixup chain.
+          xcrun clang -target arm64e-apple-ios15.0 -isysroot "$IPHONEOS_SDK" \
+            -shared -o "$FIX/ios-arm64e.dylib" probeapp/fixtures/fixture.c
+
           for f in "$FIX"/*.dylib; do
             echo "--- $(basename "$f") ---"
             file "$f"

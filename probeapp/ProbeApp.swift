@@ -90,6 +90,7 @@ private let targets: [ProbeTarget] = [
 private let fixtureNames = [
     "ios-classic",
     "ios-chained",
+    "ios-arm64e",
     "macos-classic",
     "macos-chained",
 ]
