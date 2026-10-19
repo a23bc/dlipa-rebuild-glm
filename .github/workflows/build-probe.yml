@@ -74,11 +74,12 @@ jobs:
       - name: Convert commerce for iOS
         working-directory: sapbridge
         run: |
-          # The fixture step has not run yet, so the directory does not exist.
-          mkdir -p "$GITHUB_WORKSPACE/fixture-build"
+          # Not fixture-build/: that step removes it before recreating, which
+          # would delete this file. Converted assets live in their own place.
+          mkdir -p "$GITHUB_WORKSPACE/converted"
           go run ./cmd/prepareasset \
             -in "$GITHUB_WORKSPACE/VendorAssets/commerce" \
-            -out "$GITHUB_WORKSPACE/fixture-build/commerce.dylib" \
+            -out "$GITHUB_WORKSPACE/converted/commerce.dylib" \
             -name "@rpath/commerce.dylib"
 
       - name: Build the dyld acceptance fixtures
@@ -154,6 +155,7 @@ jobs:
           # as System and reject registration with 181.
           mkdir -p "$APP/fixtures"
           cp "$GITHUB_WORKSPACE/fixture-build"/*.dylib "$APP/fixtures/"
+          cp "$GITHUB_WORKSPACE/converted"/*.dylib "$APP/fixtures/"
           # Identifies which build is actually on the device. Without it an
           # over-install that kept the old bundle is indistinguishable from a
           # fresh one.

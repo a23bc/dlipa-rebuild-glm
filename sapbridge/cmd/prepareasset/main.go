@@ -131,7 +131,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	file, err := openThin(data)
+	file, slice, err := openThin(data)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
@@ -144,7 +144,10 @@ func main() {
 		install = "@rpath/" + baseName(*out)
 	}
 
-	converted, err := convert(data, file, install)
+	// Operate on the slice, never on the original buffer. These assets are
+	// universal binaries, so the Mach-O header is not at offset 0 - editing
+	// offset 0 would rewrite the fat header and produce nonsense.
+	converted, err := convert(slice, file, install)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "convert: %v\n", err)
 		os.Exit(1)
@@ -158,18 +161,40 @@ func main() {
 	fmt.Printf("==> wrote %s (%d bytes)\n", *out, len(converted))
 }
 
-func openThin(data []byte) (*macho.File, error) {
+// openThin returns the arm64 slice and just its bytes. Writing a thin file
+// keeps every offset below relative to the Mach-O header, which is what the
+// conversions assume.
+func openThin(data []byte) (*macho.File, []byte, error) {
 	if fat, err := macho.NewFatFile(bytes.NewReader(data)); err == nil {
 		for _, arch := range fat.Arches {
-			if arch.File.FileHeader.CPU == types.CPUArm64 {
-				return arch.File, nil
+			if arch.File.FileHeader.CPU != types.CPUArm64 {
+				continue
 			}
+
+			start := arch.Offset
+			end := arch.Offset + arch.Size
+			if uint64(len(data)) < uint64(end) {
+				return nil, nil, fmt.Errorf("arch slice %#x..%#x exceeds the file", start, end)
+			}
+
+			slice := make([]byte, arch.Size)
+			copy(slice, data[start:end])
+
+			return arch.File, slice, nil
 		}
 
-		return nil, fmt.Errorf("universal binary has no arm64 slice (%d present)", len(fat.Arches))
+		return nil, nil, fmt.Errorf("universal binary has no arm64 slice (%d present)", len(fat.Arches))
 	}
 
-	return macho.NewFile(bytes.NewReader(data))
+	file, err := macho.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	slice := make([]byte, len(data))
+	copy(slice, data)
+
+	return file, slice, nil
 }
 
 func baseName(path string) string {
