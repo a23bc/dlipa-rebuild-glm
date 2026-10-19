@@ -86,6 +86,19 @@ jobs:
           path: build/imports.json
           if-no-files-found: error
 
+      # The device settled the constraints: CPU subtype must be arm64, not
+      # arm64e, and platform must be iOS - both hard rejections from dyld.
+      # Chained fixups in either form are accepted, so the format is not the
+      # problem; the problem is that changing the subtype forces the fixup
+      # data, encoded as arm64e chains, to be rewritten too. Count what that
+      # means before writing the rewriter.
+      - name: Count the fixups a rewrite would touch
+        working-directory: sapbridge
+        env:
+          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
+        run: |
+          go run ./cmd/fixupinventory
+
       - name: Run Go unit tests
         working-directory: sapbridge
         env:
