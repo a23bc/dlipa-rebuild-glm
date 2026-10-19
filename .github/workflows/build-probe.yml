@@ -52,6 +52,43 @@ jobs:
           ls -la probeapp/ProbeApp
           file probeapp/ProbeApp
 
+      - name: Build the dyld acceptance fixtures
+        run: |
+          # Four 1 KB dylibs: two platforms x two address-fixup eras. They get
+          # dlopen'd on the device to establish what iOS 15 dyld actually
+          # accepts, before any effort goes into converting 119 MB of real
+          # Apple binaries.
+          #
+          # Chained fixups became available at iOS 15 / macOS 12, so an older
+          # deployment target is what makes the linker emit the classic
+          # LC_DYLD_INFO_ONLY form. The loop below reports which form each one
+          # really got, because trusting the target to imply it is exactly the
+          # kind of assumption this probe exists to remove.
+          FIX="$GITHUB_WORKSPACE/build/fixtures"
+          mkdir -p "$FIX"
+          IPHONEOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          MACOSX_SDK=$(xcrun --sdk macosx --show-sdk-path)
+
+          xcrun clang -target arm64-apple-ios14.0 -isysroot "$IPHONEOS_SDK" \
+            -shared -o "$FIX/ios-classic.dylib" probeapp/fixtures/fixture.c
+          xcrun clang -target arm64-apple-ios15.0 -isysroot "$IPHONEOS_SDK" \
+            -shared -o "$FIX/ios-chained.dylib" probeapp/fixtures/fixture.c
+          xcrun clang -target arm64-apple-macos11.0 -isysroot "$MACOSX_SDK" \
+            -shared -o "$FIX/macos-classic.dylib" probeapp/fixtures/fixture.c
+          xcrun clang -target arm64-apple-macos12.0 -isysroot "$MACOSX_SDK" \
+            -shared -o "$FIX/macos-chained.dylib" probeapp/fixtures/fixture.c
+
+          for f in "$FIX"/*.dylib; do
+            echo "--- $(basename "$f") ---"
+            file "$f"
+            if otool -l "$f" | grep -q LC_DYLD_CHAINED_FIXUPS; then
+              echo "  fixups: CHAINED"
+            else
+              echo "  fixups: classic (LC_DYLD_INFO_ONLY)"
+            fi
+            otool -l "$f" | grep -E "^ *platform " | head -n 1
+          done
+
       - name: Assemble the bundle
         run: |
           APP="$GITHUB_WORKSPACE/build/ProbeApp.app"
@@ -60,6 +97,11 @@ jobs:
           cp probeapp/ProbeApp "$APP/ProbeApp"
           cp probeapp/Info.plist "$APP/Info.plist"
           printf 'APPL????' > "$APP/PkgInfo"
+          # In a subdirectory, not at the bundle root: a stray unrecognised
+          # file at the root is what makes MobileInstallation type the bundle
+          # as System and reject registration with 181.
+          mkdir -p "$APP/fixtures"
+          cp "$GITHUB_WORKSPACE/build/fixtures"/*.dylib "$APP/fixtures/"
           # Identifies which build is actually on the device. Without it an
           # over-install that kept the old bundle is indistinguishable from a
           # fresh one.
@@ -114,8 +156,15 @@ jobs:
           # then treat the bundle id as a file path.
           /tmp/ldid-src/ldid -Sent.plist "-Icom.a23bc.dlipaprobe" \
             "$GITHUB_WORKSPACE/build/ProbeApp.app/ProbeApp"
+
+          # The fixtures are separate Mach-Os inside the bundle, so each needs
+          # its own seal. They carry no entitlements; -S alone is enough.
+          for f in "$GITHUB_WORKSPACE/build/ProbeApp.app/fixtures"/*.dylib; do
+            /tmp/ldid-src/ldid -S "$f"
+          done
+
           rm -f ent.plist
-          echo "==> executable sealed"
+          echo "==> executable and fixtures sealed"
 
       - name: Seal the bundle
         run: |

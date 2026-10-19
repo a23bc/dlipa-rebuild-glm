@@ -78,6 +78,45 @@ private let targets: [ProbeTarget] = [
                 symbols: []),
 ]
 
+/// Four 1 KB dylibs shipped inside the bundle: two platforms x two address
+/// fixup eras. dlopen'ing them establishes what this device's dyld accepts,
+/// which is the one thing worth knowing before any effort goes into
+/// converting the 119 MB of real Apple binaries.
+///
+/// The interesting rows are the macOS ones. iOS-platform dylibs must work,
+/// they are the control; if a macOS-platform one also loads, then the platform
+/// field is not what stops us, and if only the classic-fixup one loads then
+/// chained fixups are the wall.
+private let fixtureNames = [
+    "ios-classic",
+    "ios-chained",
+    "macos-classic",
+    "macos-chained",
+]
+
+private func probeFixtures(_ sink: (String) -> Void) {
+    sink("[FIXTURE] --- dyld acceptance matrix ---")
+
+    for name in fixtureNames {
+        let path = Bundle.main.bundlePath + "/fixtures/" + name + ".dylib"
+
+        if let handle = dlopen(path, RTLD_NOW) {
+            if let symbol = dlsym(handle, "probe_fixture_value") {
+                typealias FixtureFn = @convention(c) () -> Int32
+                let call = unsafeBitCast(symbol, to: FixtureFn.self)
+                sink("[FIXTURE] \(name) | dlopen=OK | dlsym=OK | value=\(call())")
+            } else {
+                sink("[FIXTURE] \(name) | dlopen=OK | dlsym=FAIL")
+            }
+            _ = dlclose(handle)
+        } else if let error = dlerror() {
+            sink("[FIXTURE] \(name) | dlopen=FAIL \(String(cString: error))")
+        } else {
+            sink("[FIXTURE] \(name) | dlopen=FAIL (no dlerror)")
+        }
+    }
+}
+
 private func isInteresting(_ name: String) -> Bool {
     let lowered = name.lowercased()
     let needles = ["corefp", "applemedia", "commerce", "fairplay", "storefoundation"]
@@ -146,6 +185,8 @@ private func runProbe(_ sink: (String) -> Void) {
     } catch {
         sink("[PROBE] PrivateFrameworks NOT listable | \(error.localizedDescription)")
     }
+
+    probeFixtures(sink)
 
     sink("===== END FRAMEWORK PROBE =====")
 }
