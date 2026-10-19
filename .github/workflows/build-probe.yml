@@ -52,6 +52,27 @@ jobs:
           ls -la probeapp/ProbeApp
           file probeapp/ProbeApp
 
+      - name: Fetch the Apple binaries
+        run: |
+          # Only commerce for now - at 8 MB it is the smallest of the four and
+          # small enough to ship inside this app, which is the whole point:
+          # it lets the device answer whether the converted form loads.
+          git lfs install
+          git clone --depth 1 https://github.com/a23bc/dlipa-rebuild.git /tmp/upstream
+          git -C /tmp/upstream lfs pull
+          mkdir -p "$GITHUB_WORKSPACE/VendorAssets"
+          cp /tmp/upstream/VendorAssets/commerce "$GITHUB_WORKSPACE/VendorAssets/"
+          rm -rf /tmp/upstream
+          ls -la "$GITHUB_WORKSPACE/VendorAssets"
+
+      - name: Convert commerce for iOS
+        working-directory: sapbridge
+        run: |
+          go run ./cmd/prepareasset \
+            -in "$GITHUB_WORKSPACE/VendorAssets/commerce" \
+            -out "$GITHUB_WORKSPACE/fixture-build/commerce.dylib" \
+            -name "@rpath/commerce.dylib"
+
       - name: Build the dyld acceptance fixtures
         run: |
           # Four 1 KB dylibs: two platforms x two address-fixup eras. They get

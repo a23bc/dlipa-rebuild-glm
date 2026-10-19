@@ -93,6 +93,9 @@ private let fixtureNames = [
     "ios-arm64e",
     "macos-classic",
     "macos-chained",
+    // A real converted Apple binary. It exports no probe_fixture_value, so
+    // only the dlopen line matters here - that is the question.
+    "commerce",
 ]
 
 private func probeFixtures(_ sink: (String) -> Void) {
