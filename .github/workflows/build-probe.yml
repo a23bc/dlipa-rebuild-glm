@@ -52,6 +52,12 @@ jobs:
           ls -la probeapp/ProbeApp
           file probeapp/ProbeApp
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
       - name: Fetch the Apple binaries
         run: |
           # Only commerce for now - at 8 MB it is the smallest of the four and
