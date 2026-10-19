@@ -74,44 +74,65 @@ const (
 	nop = 0xd503201f
 )
 
-// onIOS lists the install names that exist on iOS. Everything else becomes a
-// weak link, because a weak dependency that is never called costs nothing
-// while a strong one that is missing fails the whole load.
-//
-// The set is deliberately narrow: the dynamic call profile measured earlier
-// showed the SAP paths touch about twenty symbols, all of them in libSystem,
-// libdispatch or libobjc.
-var onIOS = map[string]bool{
-	"/usr/lib/libSystem.B.dylib":              true,
-	"/usr/lib/libobjc.A.dylib":                true,
-	"/usr/lib/libc++.1.dylib":                 true,
-	"/usr/lib/libc++abi.dylib":                true,
-	"/usr/lib/libsqlite3.dylib":               true,
-	"/usr/lib/libz.1.dylib":                   true,
-	"/usr/lib/libresolv.9.dylib":              true,
-	"/usr/lib/libMobileGestalt.dylib":         true,
-	"/usr/lib/libcompression.dylib":           true,
-	"/usr/lib/system/libdispatch.dylib":       true,
-	"/System/Library/Frameworks/Accelerate.framework/Accelerate":                 true,
-	"/System/Library/Frameworks/Accounts.framework/Accounts":                     true,
-	"/System/Library/Frameworks/CFNetwork.framework/CFNetwork":                   true,
-	"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation":         true,
-	"/System/Library/Frameworks/CoreServices.framework/CoreServices":             true,
-	"/System/Library/Frameworks/CoreText.framework/CoreText":                     true,
-	"/System/Library/Frameworks/Foundation.framework/Foundation":                 true,
-	"/System/Library/Frameworks/IOKit.framework/IOKit":                           true,
-	"/System/Library/Frameworks/LocalAuthentication.framework/LocalAuthentication": true,
-	"/System/Library/Frameworks/Network.framework/Network":                       true,
-	"/System/Library/Frameworks/Security.framework/Security":                     true,
-	"/System/Library/Frameworks/UniformTypeIdentifiers.framework/UniformTypeIdentifiers": true,
-	"/System/Library/Frameworks/UserNotifications.framework/UserNotifications":   true,
+// frameworkOnIOS and libOnIOS are matched by name, not by full path,
+// because the same framework sits at a different path on each platform:
+// macOS uses /Versions/A/..., iOS often /Versions/C/... or none at all.
+// Matching the whole path silently weakened Foundation, CoreFoundation,
+// IOKit and Security in the first run.
+var frameworkOnIOS = map[string]bool{
+	"Accelerate.framework":             true,
+	"Accounts.framework":               true,
+	"CFNetwork.framework":              true,
+	"CoreFoundation.framework":         true,
+	"CoreServices.framework":           true,
+	"CoreText.framework":               true,
+	"CryptoKit.framework":              true,
+	"Foundation.framework":             true,
+	"IOKit.framework":                  true,
+	"LocalAuthentication.framework":    true,
+	"Network.framework":                true,
+	"Security.framework":               true,
+	"UniformTypeIdentifiers.framework": true,
+	"UserNotifications.framework":      true,
 }
 
-// swiftOnIOS matches the Swift runtime libraries, which ship on iOS under
-// /usr/lib/swift and are numerous enough to match by prefix.
+var libOnIOS = map[string]bool{
+	"libSystem.B.dylib":      true,
+	"libobjc.A.dylib":        true,
+	"libc++.1.dylib":         true,
+	"libc++abi.dylib":        true,
+	"libsqlite3.dylib":       true,
+	"libz.1.dylib":           true,
+	"libresolv.9.dylib":      true,
+	"libMobileGestalt.dylib": true,
+	"libcompression.dylib":   true,
+}
+
+// swiftPrefixes matches the Swift runtime and the libsystem sublibraries,
+// which ship on iOS under these directories and are numerous enough to match
+// by prefix rather than enumerate.
 var swiftPrefixes = []string{
 	"/usr/lib/swift/",
 	"/usr/lib/system/",
+}
+
+func availableOnIOS(path string) bool {
+	for _, prefix := range swiftPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+
+	if i := strings.Index(path, ".framework"); i >= 0 {
+		name := path[:i+len(".framework")]
+		if j := strings.LastIndex(name, "/"); j >= 0 {
+			name = name[j+1:]
+		}
+
+		return frameworkOnIOS[name]
+	}
+
+	return libOnIOS[baseName(path)]
 }
 
 func main() {
@@ -250,8 +271,11 @@ func convert(data []byte, file *macho.File, install string) ([]byte, error) {
 		switch cmd {
 		case lcSegment64:
 			if name := segmentName(out, offset); name == "__TEXT" {
-				stripPAC(out, binary.LittleEndian.Uint64(out[offset+24:]),
-					binary.LittleEndian.Uint64(out[offset+32:]))
+				// LC_SEGMENT_64: segname(8) vmaddr(24) vmsize(32)
+				// fileoff(40) filesize(48). The first two are virtual, and
+				// using them here walks off the end of the file.
+				stripPAC(out, binary.LittleEndian.Uint64(out[offset+40:]),
+					binary.LittleEndian.Uint64(out[offset+48:]))
 			}
 		case lcBuildVersion:
 			// 3. platform macOS -> iOS.
@@ -317,20 +341,6 @@ func dylibName(data []byte, offset int) string {
 	}
 
 	return string(data[start:])
-}
-
-func availableOnIOS(path string) bool {
-	if onIOS[path] {
-		return true
-	}
-
-	for _, prefix := range swiftPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func buildVersionCommand() []byte {
