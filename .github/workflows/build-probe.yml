@@ -64,17 +64,32 @@ jobs:
           # LC_DYLD_INFO_ONLY form. The loop below reports which form each one
           # really got, because trusting the target to imply it is exactly the
           # kind of assumption this probe exists to remove.
-          FIX="$GITHUB_WORKSPACE/build/fixtures"
+          # Outside build/: the assemble step starts by removing build/, which
+          # would take these with it.
+          FIX="$GITHUB_WORKSPACE/fixture-build"
+          rm -rf "$FIX"
           mkdir -p "$FIX"
           IPHONEOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           MACOSX_SDK=$(xcrun --sdk macosx --show-sdk-path)
 
-          xcrun clang -target arm64-apple-ios14.0 -isysroot "$IPHONEOS_SDK" \
-            -shared -o "$FIX/ios-classic.dylib" probeapp/fixtures/fixture.c
+          # ld emits chained fixups by default even for older deployment
+          # targets, so ask for the classic form explicitly and fall back if
+          # this linker does not know the flag.
+          classic() { # out sdkroot target
+            if xcrun clang -target "$3" -isysroot "$2" -shared \
+              -Wl,-no_fixup_chains -o "$1" probeapp/fixtures/fixture.c 2>/dev/null; then
+              echo "  ($1: classic forced)"
+              return
+            fi
+            xcrun clang -target "$3" -isysroot "$2" -shared \
+              -o "$1" probeapp/fixtures/fixture.c
+            echo "  ($1: could not force classic)"
+          }
+
+          classic "$FIX/ios-classic.dylib" "$IPHONEOS_SDK" arm64-apple-ios15.0
+          classic "$FIX/macos-classic.dylib" "$MACOSX_SDK" arm64-apple-macos12.0
           xcrun clang -target arm64-apple-ios15.0 -isysroot "$IPHONEOS_SDK" \
             -shared -o "$FIX/ios-chained.dylib" probeapp/fixtures/fixture.c
-          xcrun clang -target arm64-apple-macos11.0 -isysroot "$MACOSX_SDK" \
-            -shared -o "$FIX/macos-classic.dylib" probeapp/fixtures/fixture.c
           xcrun clang -target arm64-apple-macos12.0 -isysroot "$MACOSX_SDK" \
             -shared -o "$FIX/macos-chained.dylib" probeapp/fixtures/fixture.c
 
@@ -101,7 +116,7 @@ jobs:
           # file at the root is what makes MobileInstallation type the bundle
           # as System and reject registration with 181.
           mkdir -p "$APP/fixtures"
-          cp "$GITHUB_WORKSPACE/build/fixtures"/*.dylib "$APP/fixtures/"
+          cp "$GITHUB_WORKSPACE/fixture-build"/*.dylib "$APP/fixtures/"
           # Identifies which build is actually on the device. Without it an
           # over-install that kept the old bundle is indistinguishable from a
           # fresh one.
