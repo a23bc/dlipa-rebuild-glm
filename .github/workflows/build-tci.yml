@@ -1,0 +1,90 @@
+name: Build TCI Unicorn for iOS
+
+# Builds the no-JIT (tiny code interpreter) fork of Unicorn for iOS arm64.
+#
+# Why this exists: on a non-jailbroken device the emulator's TCG code buffer
+# is the only thing that cannot be allocated, because iOS refuses executable
+# anonymous memory. The TCI fork makes the JIT target a virtual machine that
+# is interpreted, so alloc_code_gen_buffer maps the buffer PROT_READ|PROT_WRITE
+# only and no executable page is ever requested.
+#
+# Stage 1 only proves it compiles and links for iOS. Whether it can run Apple's
+# x86-64 SAP binaries is a separate question, answered later on a device.
+#
+# Manual only, like the other builds:
+#   gh workflow run "Build TCI Unicorn for iOS"
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build libunicorn.a (TCI, iOS arm64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Install build tools
+        run: brew install cmake ninja
+
+      - name: Fetch the TCI fork
+        run: |
+          # The fork ships the QEMU tree with tci.c already restored, so there
+          # is no patch to apply - unlike our 2.1.4 build, which patches JIT
+          # behaviour in. Pinned by commit so the build is reproducible.
+          curl -fL --retry 3 -o /tmp/tci.tar.gz \
+            https://codeload.github.com/1rhino2/unicorn-tci/tar.gz/e3f075a627
+          mkdir -p /tmp/tci
+          tar -xzf /tmp/tci.tar.gz -C /tmp/tci --strip-components=1
+          ls -la /tmp/tci
+          ls -la /tmp/tci/unicorn-engine-sys-tci | head -30
+          grep -n "UNICORN_INTERPRETER" /tmp/tci/unicorn-engine-sys-tci/CMakeLists.txt
+
+      - name: Configure
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          cmake -S /tmp/tci/unicorn-engine-sys-tci -B /tmp/build \
+            -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_C_FLAGS="-target arm64-apple-ios15.0" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DUNICORN_ARCH=x86 \
+            -DUNICORN_INTERPRETER=on \
+            -DUNICORN_BUILD_TESTS=OFF \
+            -DUNICORN_INSTALL=OFF
+
+      - name: Build
+        run: cmake --build /tmp/build --parallel $(sysctl -n hw.ncpu)
+
+      - name: Verify the archive
+        run: |
+          LIB=$(find /tmp/build -name "libunicorn.a" | head -n 1)
+          echo "lib=$LIB"
+          ls -la "$LIB"
+          # The entry points our Go bridge resolves through purego.
+          nm -gU "$LIB" 2>/dev/null | grep -E "uc_version|uc_open|uc_emu_start|uc_ctl" | head -20
+          echo "--- interpreter marker ---"
+          nm -gU "$LIB" 2>/dev/null | grep -ci tci || true
+          # Prove no JIT target was compiled: the tci target must be present and
+          # the host code generator absent.
+          echo "--- object files mentioning tci ---"
+          ar t "$LIB" | grep -i tci | head -10
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libunicorn-tci-ios
+          path: |
+            /tmp/build/**/libunicorn.a
+          if-no-files-found: error
+          retention-days: 30
