@@ -16,7 +16,9 @@
 #include "tciprobe.h"
 
 #include <errno.h>
+#include <libkern/OSCacheControl.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -162,14 +164,20 @@ static void report_div(char *out, size_t cap, size_t *used)
 
 static void report_loop(char *out, size_t cap, size_t *used)
 {
-	/* mov rax,0 ; mov rcx,5 ; loop: inc rax ; dec rcx ; test rcx,rcx ; jne loop */
+	/* mov rax,0 ; mov rcx,5 ; loop: inc rax ; dec rcx ; test rcx,rcx ; jne loop
+	 *
+	 * The displacement is 11 bytes back from the end of the jne, not 9: the
+	 * jne itself is two bytes and the loop body starts at the first inc. An
+	 * earlier version used -9, which landed inside the inc's encoding and
+	 * executed an operand byte as an opcode. That was a bug in this test, not
+	 * in the interpreter. */
 	static const uint8_t code[] = {
 		0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00,
 		0x48, 0xc7, 0xc1, 0x05, 0x00, 0x00, 0x00,
 		0x48, 0xff, 0xc0,
 		0x48, 0xff, 0xc9,
 		0x48, 0x85, 0xc9,
-		0x75, 0xf7,
+		0x75, 0xf5,
 	};
 
 	uc_engine *uc = NULL;
@@ -203,4 +211,56 @@ void tciprobe_report(char *out, size_t cap)
 	report_arith(out, cap, &used);
 	report_div(out, cap, &used);
 	report_loop(out, cap, &used);
+}
+
+/* Decisive follow-up to the control above.
+ *
+ * The control showed that an RWX mapping is granted on this device, which
+ * contradicts what this project previously recorded (PROT_EXEC = EPERM).
+ * A granted mapping is not the same as an executable one: iOS is known to
+ * allow the mmap and then kill the process the moment the CPU jumps into an
+ * unsigned page, because code signing is enforced at execution, not at
+ * mapping.
+ *
+ * So this asks the only question that matters: emit a leaf function that
+ * returns 42, flush the instruction cache, and call it. If it returns, JIT is
+ * available here and the entire interpreter route is unnecessary. If the
+ * process dies, the mapping was a decoy.
+ *
+ * Deliberately behind its own button: a refusal is a SIGKILL, and that would
+ * take the rest of the report with it. */
+void jitprobe_report(char *out, size_t cap)
+{
+	if (cap == 0) {
+		return;
+	}
+	out[0] = 0;
+	size_t used = 0;
+
+	size_t page = 0x4000;
+	uint8_t *p = mmap(NULL, page, PROT_READ | PROT_WRITE | PROT_EXEC,
+	                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (p == MAP_FAILED) {
+		append(out, cap, &used, "[JIT] mmap rwx: FAILED errno=%d\n", errno);
+		return;
+	}
+	append(out, cap, &used, "[JIT] mmap rwx: OK\n");
+
+	/* mov w0, #42 ; ret */
+	static const uint8_t code[] = {
+		0x40, 0x05, 0x80, 0x52,
+		0xc0, 0x03, 0x5f, 0xd6,
+	};
+	memcpy(p, code, sizeof(code));
+	sys_icache_invalidate(p, page);
+
+	append(out, cap, &used, "[JIT] jumping into the generated page\n");
+
+	int (*fn)(void) = (int (*)(void))(void *)p;
+	int value = fn();
+
+	append(out, cap, &used, "[JIT] returned %d expected=42 %s\n",
+	       value, value == 42 ? "OK" : "MISMATCH");
+
+	munmap(p, page);
 }

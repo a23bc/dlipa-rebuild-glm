@@ -263,7 +263,14 @@ final class ProbeViewController: UIViewController {
         shareButton.setTitle("Share result", for: .normal)
         shareButton.addTarget(self, action: #selector(shareResult), for: .touchUpInside)
 
-        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton])
+        // Its own button because a refusal is a SIGKILL: if it ran as part of
+        // the main report, a decision not to allow generated code would take
+        // the entire report down with it.
+        let jitButton = UIButton(type: .system)
+        jitButton.setTitle("Test JIT", for: .normal)
+        jitButton.addTarget(self, action: #selector(testJIT), for: .touchUpInside)
+
+        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton])
         buttons.axis = .horizontal
         buttons.distribution = .fillEqually
 
@@ -293,6 +300,16 @@ final class ProbeViewController: UIViewController {
 
         report = lines.joined(separator: "\n")
         textView.text = report
+    }
+
+    // Appends rather than replaces, so the main report survives either way.
+    @objc private func testJIT() {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        jitprobe_report(&buffer, buffer.count)
+        let text = String(cString: buffer)
+        report += "\n" + text
+        textView.text = report
+        UIPasteboard.general.string = report
     }
 
     @objc private func copyResult() {
