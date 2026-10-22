@@ -32,23 +32,74 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.app
 
+      - name: Build the TCI emulator
+        run: |
+          # The one hard limit on this device is executable memory, so the
+          # emulator is built in interpreter mode: TCG emits code for a virtual
+          # machine that is interpreted, and the translation buffer is mapped
+          # PROT_READ|PROT_WRITE only. Nothing here is JIT.
+          #
+          # Pinned by commit. The fork restores qemu/tcg/tci.c, which upstream
+          # Unicorn 2.1.4 dropped, so there is no patch to apply.
+          curl -fL --retry 3 -o /tmp/tci.tar.gz \
+            https://codeload.github.com/1rhino2/unicorn-tci/tar.gz/e3f075a627
+          mkdir -p /tmp/tci
+          tar -xzf /tmp/tci.tar.gz -C /tmp/tci --strip-components=1
+
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          cmake -S /tmp/tci/unicorn-engine-sys-tci -B /tmp/tcibuild \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_C_FLAGS="-target arm64-apple-ios15.0" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DUNICORN_ARCH=x86 \
+            -DUNICORN_INTERPRETER=on \
+            -DUNICORN_BUILD_TESTS=OFF \
+            -DUNICORN_INSTALL=OFF
+          cmake --build /tmp/tcibuild --parallel "$(sysctl -n hw.ncpu)"
+
+          TCI_LIB=$(find /tmp/tcibuild -name libunicorn.a | head -n 1)
+          echo "lib=$TCI_LIB"
+          ls -la "$TCI_LIB"
+          ar t "$TCI_LIB" | grep -i tci
+
       - name: Compile the app
         run: |
-          # No Xcode project: one source file, compiled straight against the
-          # iOS SDK. A project would add nothing here and a lot of surface.
+          # No Xcode project: one Swift file plus one C file, compiled straight
+          # against the iOS SDK. A project would add nothing here and a lot of
+          # surface.
           #
           # -parse-as-library is required. Without it swiftc treats the file
           # as a script, and then rejects @UIApplicationMain with
           # "cannot be used in a module that contains top-level code" -
           # the file-scope probe tables count as top-level code.
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          TCI_INC=/tmp/tci/unicorn-engine-sys-tci/include
+          TCI_LIB=$(find /tmp/tcibuild -name libunicorn.a | head -n 1)
+
+          # The C side owns every Unicorn type, so Swift only ever sees the
+          # one function that returns a finished report. That keeps enum values
+          # and calling conventions out of Swift entirely.
+          xcrun --sdk iphoneos clang \
+            -target arm64-apple-ios15.0 \
+            -isysroot "$SDK" \
+            -O2 \
+            -I"$TCI_INC" \
+            -c probeapp/tciprobe.c -o /tmp/tciprobe.o
+
           xcrun --sdk iphoneos swiftc \
             -parse-as-library \
             -target arm64-apple-ios15.0 \
             -sdk "$SDK" \
+            -import-objc-header probeapp/tciprobe.h \
             -O \
             -o probeapp/ProbeApp \
-            probeapp/ProbeApp.swift
+            probeapp/ProbeApp.swift \
+            /tmp/tciprobe.o \
+            "$TCI_LIB"
           ls -la probeapp/ProbeApp
           file probeapp/ProbeApp
 

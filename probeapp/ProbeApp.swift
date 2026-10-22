@@ -163,6 +163,22 @@ private func probeOne(label: String, path: String, symbols: [String]) -> String 
     return line
 }
 
+// Stage 1 of the TCI route. The emulator either interprets a few x86-64
+// instructions on this device or it does not; everything else about the SAP
+// port depends on that answer, so it is asked before any of it is written.
+//
+// The report opens with a control that tries to allocate exactly the memory
+// the JIT build needs. If that fails and the guest still runs, the interpreter
+// provably did not use executable memory - which is the whole point.
+private func probeTCI(_ sink: (String) -> Void) {
+    var buffer = [CChar](repeating: 0, count: 8192)
+    tciprobe_report(&buffer, buffer.count)
+    let text = String(cString: buffer)
+    text.enumerateLines { line, _ in
+        sink(line)
+    }
+}
+
 private func runProbe(_ sink: (String) -> Void) {
     // Say which build this is, first thing. The IPA name is derived from the
     // executable's hash, so a run that only changed bundled fixtures produced
@@ -200,6 +216,8 @@ private func runProbe(_ sink: (String) -> Void) {
     }
 
     probeFixtures(sink)
+
+    probeTCI(sink)
 
     sink("===== END FRAMEWORK PROBE =====")
 }
