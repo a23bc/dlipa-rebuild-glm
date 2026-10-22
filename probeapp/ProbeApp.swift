@@ -173,9 +173,11 @@ private func probeOne(label: String, path: String, symbols: [String]) -> String 
 private func probeTCI(_ sink: (String) -> Void) {
     var buffer = [CChar](repeating: 0, count: 8192)
     tciprobe_report(&buffer, buffer.count)
+    // Split by hand: enumerateLines takes an escaping closure, and sink is
+    // non-escaping, which swiftc rejects at the capture.
     let text = String(cString: buffer)
-    text.enumerateLines { line, _ in
-        sink(line)
+    for line in text.split(separator: "\n") {
+        sink(String(line))
     }
 }
 
