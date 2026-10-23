@@ -1136,6 +1136,24 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	}
 	append(out, cap, &used, "[X64] applied %u binds\n", bind_count);
 
+	/* The lazy-binding stubs in the image jump through slots like 0x288668. One
+	 * of them was seen sending execution to an address in the heap, which is
+	 * data, not code. Print the slot, the import it belongs to and the value it
+	 * actually holds, so a wrong bind shows up as a wrong bind. */
+	for (uint32_t bi = 0; bi < bind_count; bi++) {
+		uint64_t baddr = rd64(bind_data + (size_t)bi * 16);
+		uint32_t bslot = rd32(bind_data + (size_t)bi * 16 + 8);
+		if (baddr >= 0x288600 && baddr <= 0x288690) {
+			uint64_t held = 0;
+			uc_mem_read(uc, g_base + baddr, &held, 8);
+			append(out, cap, &used,
+			       "[X64] bind %#llx slot=%u name=%s holds=%#llx\n",
+			       (unsigned long long)baddr, bslot,
+			       bslot < import_count ? import_names[bslot] : "?",
+			       (unsigned long long)held);
+		}
+	}
+
 	/* One page holding a bare ret: the place guest calls return to. */
 	uint64_t trampoline = 0x500000000ULL;
 	if (uc_mem_map(uc, trampoline, 0x1000, UC_PROT_ALL) != UC_ERR_OK) {
