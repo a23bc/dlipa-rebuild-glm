@@ -61,8 +61,11 @@ jobs:
         run: |
           # Only fetches on a cache miss; the script re-verifies every file
           # against its pinned SHA-256 either way.
+          # Absolute path: this step runs with working-directory sapbridge, so
+          # a relative scripts/ would resolve inside the Go module.
           if [ ! -s "$GITHUB_WORKSPACE/osx109/CommerceKit" ]; then
-            python3 scripts/fetch-osx109-assets.py --out "$GITHUB_WORKSPACE/osx109"
+            python3 "$GITHUB_WORKSPACE/scripts/fetch-osx109-assets.py" \
+              --out "$GITHUB_WORKSPACE/osx109"
           else
             echo "==> osx109 restored from cache"
           fi
