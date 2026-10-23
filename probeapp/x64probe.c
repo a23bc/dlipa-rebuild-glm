@@ -23,6 +23,7 @@
 #include <unicorn/x86.h>
 
 #include "objcruntime.h"
+#include "sapcert.h"
 
 /* CommerceKit carries 392 imports, so the old ceiling of 320 rejected it
  * outright with "counts out of range". */
@@ -804,9 +805,13 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			 * block holding a uint32 length followed by up to twenty ID bytes. */
 			context_slot = guest_alloc(8);
 			hardware_addr = guest_alloc(24);
-			uint32_t length = 20;
-			uint8_t id[20];
-			memset(id, 'A', sizeof(id));
+			/* The hardware ID is a MAC address, not an arbitrary blob: the
+			 * reference implementation derives it from the interface's
+			 * hardware address and rejects anything outside 1..20 bytes. Six
+			 * bytes of a locally administered address is what a real client
+			 * sends. */
+			uint32_t length = 6;
+			uint8_t id[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
 			uc_mem_write(uc, hardware_addr, &length, 4);
 			uc_mem_write(uc, hardware_addr + 4, id, sizeof(id));
 			uc_reg_write(uc, UC_X86_REG_RDI, &context_slot);
@@ -1008,20 +1013,25 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 					uint64_t context_value = 0;
 					uc_mem_read(uc, context_slot, &context_value, 8);
 
-					uint64_t input_addr = guest_alloc(16);
+					/* The exchange input for the first leg is the SAP setup
+					 * certificate, not a server challenge: the certificate is
+					 * fetched over HTTPS, fed to the guest, and the guest's
+					 * output is what gets posted to the setup endpoint. An
+					 * empty input can only ever produce an empty result. */
+					uint64_t input_addr = guest_alloc(SAP_SETUP_CERT_LEN);
 					uint64_t out_field = guest_alloc(8);
 					uint64_t len_field = guest_alloc(8);
 					uint64_t res_field = guest_alloc(4);
 					uint64_t zero = 0;
 					uint32_t zero32 = 0;
-					uc_mem_write(uc, input_addr, &zero, 8);
+					uc_mem_write(uc, input_addr, sap_setup_cert, SAP_SETUP_CERT_LEN);
 					uc_mem_write(uc, out_field, &zero, 8);
 					uc_mem_write(uc, len_field, &zero, 8);
 					uc_mem_write(uc, res_field, &zero32, 4);
 
 					uint64_t args[8] = {
 						200, hardware_addr, context_value, input_addr,
-						0, out_field, len_field, res_field,
+						SAP_SETUP_CERT_LEN, out_field, len_field, res_field,
 					};
 
 					/* Replaying the late initialisers did not change the status at
@@ -1066,10 +1076,14 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						exchange_reported = 1;
 
 						append(out, cap, &used,
-						       "[X64] version %-3llu: err=%u status=%lld result=%u len=%llu\n",
-						       (unsigned long long)candidate_versions[v], xerr,
+						       "[X64] exchange: version=%llu in=%u err=%u status=%lld state=%u outlen=%llu\n",
+						       (unsigned long long)candidate_versions[v],
+						       SAP_SETUP_CERT_LEN, xerr,
 						       (long long)(int32_t)exchange_status, result_code,
 						       (unsigned long long)out_len);
+						append(out, cap, &used,
+						       "[X64]   expected state 1 after the certificate leg and 0 after "
+						       "the server reply; status must be 0\n");
 
 						/* Any initialiser the call registered is replayed before
 						 * the next attempt, so the sweep does not just repeat the
