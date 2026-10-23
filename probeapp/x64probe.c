@@ -665,9 +665,13 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 		 * would ever report. A 10.9-era string is the consistent answer. */
 		if (strcmp(key, "kern.osversion") == 0) {
 			static const char version[] = "13A603";
-			uint64_t oldp = a.rdi;
-			uint64_t oldlenp = a.rsi;
-			(void)oldp;
+			/* sysctlbyname(name, oldp, oldlenp, newp, newlen): the value
+			 * pointer is rsi and the length pointer is rdx. Reading them from
+			 * rdi and rsi - one register late - wrote the version string over
+			 * the caller's length and answered -1. The guest treats a failed
+			 * version query as a reason to abandon the exchange. */
+			uint64_t oldp = a.rsi;
+			uint64_t oldlenp = a.rdx;
 
 			uint64_t capacity = 0;
 			if (oldlenp != 0) {
@@ -675,8 +679,8 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 			}
 			uint64_t needed = sizeof(version);
 
-			if (capacity >= needed && a.rdx != 0) {
-				uc_mem_write(uc, a.rdx, version, needed);
+			if (capacity >= needed && oldp != 0) {
+				uc_mem_write(uc, oldp, version, needed);
 				uint64_t written = needed;
 				uc_mem_write(uc, oldlenp, &written, 8);
 				set_rax(uc, 0);
@@ -687,9 +691,9 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 				 * exchange. Truncating into whatever room it offered keeps the
 				 * call successful, which is what a real host would do when the
 				 * value fits in the caller's buffer. */
-				if (a.rdx != 0 && capacity > 0) {
+				if (oldp != 0 && capacity > 0) {
 					uint64_t room = capacity < needed ? capacity : needed;
-					uc_mem_write(uc, a.rdx, version, room);
+					uc_mem_write(uc, oldp, version, room);
 					uint64_t written = room;
 					uc_mem_write(uc, oldlenp, &written, 8);
 					set_rax(uc, 0);
