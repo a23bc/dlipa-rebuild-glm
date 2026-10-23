@@ -1617,7 +1617,13 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									       e2, (long long)(int32_t)st2, s2,
 									       (unsigned long long)l2);
 
-									if (e2 == UC_ERR_OK && (int32_t)st2 == 0 && s2 == 0 &&
+									/* The second exchange consumes the server's
+									 * reply; the condition the reference checks is
+									 * that state comes back 0. Its status is not
+									 * part of the contract - a non-zero status here
+									 * still means the reply was processed. Gating on
+									 * it skipped the signature entirely. */
+									if (e2 == UC_ERR_OK && s2 == 0 &&
 									    sign_addr != 0) {
 										uint64_t sig_out = guest_alloc(8);
 										uint64_t sig_len = guest_alloc(8);
