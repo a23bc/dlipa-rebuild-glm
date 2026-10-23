@@ -5,49 +5,148 @@ import Foundation
 /// The header is not a country code. It looks like `143441-1,29`: the leading
 /// number identifies which country's store the account belongs to, and the
 /// trailing parts are internal to Apple (a store version and a language id).
-/// Showing the raw string is why the account row was unreadable.
 enum Storefront {
 
-    /// The country a storefront id belongs to.
+    /// Storefront id to ISO country code.
     ///
-    /// Deliberately a short list of the ids that are well established rather
-    /// than a guess at all of them: an unknown id is reported as a number
-    /// instead of being labelled with a country it may not be.
-    private static let regions: [String: String] = [
-        "143441": "United States",
-        "143442": "France",
-        "143443": "Germany",
-        "143444": "United Kingdom",
-        "143445": "Austria",
-        "143446": "Belgium",
-        "143448": "Greece",
-        "143449": "Ireland",
-        "143450": "Italy",
-        "143452": "Netherlands",
-        "143453": "Portugal",
-        "143454": "Spain",
-        "143455": "Canada",
-        "143456": "Sweden",
-        "143457": "Norway",
-        "143458": "Denmark",
-        "143459": "Switzerland",
-        "143460": "Australia",
-        "143461": "New Zealand",
-        "143462": "Japan",
-        "143463": "Hong Kong",
-        "143464": "Singapore",
-        "143465": "China",
-        "143466": "Taiwan",
-        "143467": "Korea",
-        "143468": "India",
-        "143469": "Mexico",
-        "143470": "Brazil",
-        "143471": "Russia",
-        "143472": "South Africa",
-        "143473": "Saudi Arabia",
-        "143474": "United Arab Emirates",
-        "143475": "Turkey",
-        "143476": "Poland",
+    /// Copied from ipatool's storeFronts table (pkg/appstore/storefront.go)
+    /// rather than written by hand: a wrong entry here labels an account with
+    /// the wrong country, which is worse than showing the bare number.
+    private static let countries: [String: String] = [
+        "143441": "US",
+        "143442": "FR",
+        "143443": "DE",
+        "143444": "GB",
+        "143445": "AT",
+        "143446": "BE",
+        "143447": "FI",
+        "143448": "GR",
+        "143449": "IE",
+        "143450": "IT",
+        "143451": "LU",
+        "143452": "NL",
+        "143453": "PT",
+        "143454": "ES",
+        "143455": "CA",
+        "143456": "SE",
+        "143457": "NO",
+        "143458": "DK",
+        "143459": "CH",
+        "143460": "AU",
+        "143461": "NZ",
+        "143462": "JP",
+        "143463": "HK",
+        "143464": "SG",
+        "143465": "CN",
+        "143466": "KR",
+        "143467": "IN",
+        "143468": "MX",
+        "143469": "RU",
+        "143470": "TW",
+        "143471": "VN",
+        "143472": "ZA",
+        "143473": "MY",
+        "143474": "PH",
+        "143475": "TH",
+        "143476": "ID",
+        "143477": "PK",
+        "143478": "PL",
+        "143479": "SA",
+        "143480": "TR",
+        "143481": "AE",
+        "143482": "HU",
+        "143483": "CL",
+        "143484": "NP",
+        "143485": "PA",
+        "143486": "LK",
+        "143487": "RO",
+        "143488": "MV",
+        "143489": "CZ",
+        "143490": "BD",
+        "143491": "IL",
+        "143492": "UA",
+        "143493": "KW",
+        "143494": "HR",
+        "143495": "CR",
+        "143496": "SK",
+        "143497": "LB",
+        "143498": "QA",
+        "143499": "SI",
+        "143500": "RS",
+        "143501": "CO",
+        "143502": "VE",
+        "143503": "BR",
+        "143504": "GT",
+        "143505": "AR",
+        "143506": "SV",
+        "143507": "PE",
+        "143508": "DO",
+        "143509": "EC",
+        "143510": "HN",
+        "143511": "JM",
+        "143512": "NI",
+        "143513": "PY",
+        "143514": "UY",
+        "143515": "MO",
+        "143516": "EG",
+        "143517": "KZ",
+        "143518": "EE",
+        "143519": "LV",
+        "143520": "LT",
+        "143521": "MT",
+        "143522": "LI",
+        "143523": "MD",
+        "143524": "AM",
+        "143525": "BW",
+        "143526": "BG",
+        "143527": "CI",
+        "143528": "JO",
+        "143529": "KE",
+        "143530": "MK",
+        "143531": "MG",
+        "143532": "ML",
+        "143533": "MU",
+        "143534": "NE",
+        "143535": "SN",
+        "143536": "TN",
+        "143537": "UG",
+        "143538": "AI",
+        "143539": "BS",
+        "143540": "AG",
+        "143541": "BB",
+        "143542": "BM",
+        "143543": "VG",
+        "143544": "KY",
+        "143545": "DM",
+        "143546": "GD",
+        "143547": "MS",
+        "143548": "KN",
+        "143549": "LC",
+        "143550": "VC",
+        "143551": "TT",
+        "143552": "TC",
+        "143553": "GY",
+        "143554": "SR",
+        "143555": "BZ",
+        "143556": "BO",
+        "143557": "CY",
+        "143558": "IS",
+        "143559": "BH",
+        "143560": "BN",
+        "143561": "NG",
+        "143562": "OM",
+        "143563": "DZ",
+        "143564": "AO",
+        "143565": "BY",
+        "143566": "UZ",
+        "143568": "AZ",
+        "143571": "YE",
+        "143572": "TZ",
+        "143573": "GH",
+        "143575": "AL",
+        "143592": "MN",
+        "143615": "GE",
+        "143617": "IQ",
     ]
 
     /// The leading id, or nil when the header is empty or malformed.
@@ -58,23 +157,23 @@ enum Storefront {
         return digits.isEmpty ? nil : String(digits)
     }
 
-    /// A readable label, e.g. "United States" or "Region 143999". Falls back to
-    /// the raw header when there is nothing to parse, so a surprise format is
-    /// shown rather than hidden.
+    /// The ISO country code for the storefront, when it is known.
+    static func countryCode(_ raw: String?) -> String? {
+        guard let id = regionID(raw) else { return nil }
+        return countries[id]
+    }
+
+    /// A readable label: the country in the user's own language, or the id when
+    /// the storefront is not in the table.
     static func label(_ raw: String?) -> String {
         guard let id = regionID(raw) else {
             let trimmed = raw?.trimmingCharacters(in: .whitespaces) ?? ""
             return trimmed.isEmpty ? "Unknown" : trimmed
         }
-        if let name = regions[id] {
+        if let code = countries[id],
+           let name = Locale.current.localizedString(forRegionCode: code) {
             return name
         }
         return "Region " + id
-    }
-
-    /// The id on its own, for the detail line under the label.
-    static func detail(_ raw: String?) -> String? {
-        guard let id = regionID(raw) else { return nil }
-        return "storefront " + id
     }
 }

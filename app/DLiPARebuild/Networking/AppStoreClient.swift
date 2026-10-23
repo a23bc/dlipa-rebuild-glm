@@ -265,16 +265,105 @@ final class AppStoreClient {
             lastName: address["lastName"] as? String ?? "")
     }
 
+    // MARK: - Search
+
+    /// Searches the public catalogue.
+    ///
+    /// No signature and no account are needed; this is the same endpoint the
+    /// App Store itself uses. The country picks which catalogue is searched, so
+    /// it comes from the active account's storefront when there is one.
+    func search(term: String, country: String, limit: Int = 25) async throws -> [StoreApp] {
+        var components = URLComponents(string: "https://itunes.apple.com/search")!
+        components.queryItems = [
+            URLQueryItem(name: "entity", value: "software"),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "media", value: "software"),
+            URLQueryItem(name: "term", value: term),
+            URLQueryItem(name: "country", value: country),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        AppLog.info("search: " + term + " in " + country, .network)
+
+        let (data, response) = try await session.data(for: request)
+        try validate(response, data: data)
+        do {
+            let decoded = try JSONDecoder().decode(StoreSearchResponse.self, from: data)
+            AppLog.info("search returned " + String(decoded.resultCount) + " results", .network)
+            return decoded.results
+        } catch {
+            AppLog.error("search decode failed: " + error.localizedDescription, .network)
+            throw StoreError.failureType("search", "could not read the search response")
+        }
+    }
+
     // MARK: - Download
 
-    /// Requests a download from `ent/download`, which is where Apple now serves
-    /// the bag's `volumeStoreDownloadProduct` key.
+    /// The external version identifiers Apple knows for an app.
+    struct VersionList {
+        /// The version the store would hand out today.
+        let latest: String
+        /// Every version it still lists, newest first.
+        let identifiers: [String]
+    }
+
+    /// Lists the versions available for an app.
+    ///
+    /// There is no version endpoint: the list rides along in the download
+    /// product response as `softwareVersionExternalIdentifiers` in the item
+    /// metadata, so asking for versions means asking for the download and
+    /// throwing the URL away.
+    func listVersions(appId: String,
+                      guid: String,
+                      account: Account,
+                      bag: StoreBag,
+                      signer: SAPSigner) async throws -> VersionList {
+        let plist = try await downloadProduct(
+            appId: appId, externalVersionId: nil,
+            guid: guid, account: account, bag: bag, signer: signer)
+
+        guard let items = plist["songList"] as? [Any],
+              let first = items.first as? [String: Any] else {
+            throw StoreError.failureType("versions", "apple returned no items")
+        }
+        let metadata = first["metadata"] as? [String: Any] ?? [:]
+        let raw = metadata["softwareVersionExternalIdentifiers"] as? [Any] ?? []
+        let identifiers = raw.map { String(describing: $0) }
+        guard let latestRaw = metadata["softwareVersionExternalIdentifier"] else {
+            throw StoreError.failureType("versions", "apple returned no latest version")
+        }
+        AppLog.info("versions for " + appId + ": " + String(identifiers.count), .download)
+        return VersionList(latest: String(describing: latestRaw), identifiers: identifiers)
+    }
+
+    /// Requests a download and returns its URL.
     func requestDownload(appId: String,
                          externalVersionId: String?,
                          guid: String,
                          account: Account,
                          bag: StoreBag,
                          signer: SAPSigner) async throws -> URL {
+        let plist = try await downloadProduct(
+            appId: appId, externalVersionId: externalVersionId,
+            guid: guid, account: account, bag: bag, signer: signer)
+
+        guard let items = plist["songList"] as? [Any],
+              let first = items.first as? [String: Any],
+              let urlString = first["URL"] as? String,
+              let url = URL(string: urlString) else {
+            throw StoreError.failureType("Invalid response", "")
+        }
+        return url
+    }
+
+    /// The `ent/download` round trip, returning the decoded response.
+    private func downloadProduct(appId: String,
+                                 externalVersionId: String?,
+                                 guid: String,
+                                 account: Account,
+                                 bag: StoreBag,
+                                 signer: SAPSigner) async throws -> [String: Any] {
         guard let endpoint = bag.volumeStoreDownloadProduct else {
             AppLog.error("no download endpoint in the bag", .download)
             throw StoreError.noBagEndpoint
@@ -324,13 +413,7 @@ final class AppStoreClient {
             throw StoreError.failureType(failure, message)
         }
 
-        guard let items = plist["songList"] as? [Any],
-              let first = items.first as? [String: Any],
-              let urlString = first["URL"] as? String,
-              let url = URL(string: urlString) else {
-            throw StoreError.failureType("Invalid response", "")
-        }
-        return url
+        return plist
     }
 
     // MARK: - Signed transport

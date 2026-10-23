@@ -17,10 +17,20 @@ private struct Row: View {
 }
 
 struct SettingsScreen: View {
+    /// Set once the Diagnostics tab has been unlocked. Shared with RootTabView.
+    static let showDiagnosticsKey = "com.a23bc.dliparebuild.showDiagnostics"
+
+    /// Taps needed on the About row before the Diagnostics tab appears.
+    private static let unlockTaps = 5
+
+    @AppStorage(showDiagnosticsKey) private var showDiagnostics = false
+
     /// Read on appear and again after a regeneration: the value lives in
     /// UserDefaults, not in observable state.
     @State private var guid = HardwareIdentity.current().guid
     @State private var confirmingReset = false
+    @State private var unlockTapsSoFar = 0
+    @State private var lastTap = Date.distantPast
 
     var body: some View {
         NavigationView {
@@ -40,8 +50,19 @@ struct SettingsScreen: View {
                 }
 
                 Section("About") {
-                    Row(title: "App", value: "DLiPA Rebuild")
+                    Button {
+                        registerUnlockTap()
+                    } label: {
+                        Row(title: "App", value: "DLiPA Rebuild")
+                    }
+                    .buttonStyle(.plain)
                     Row(title: "Bundle", value: "com.a23bc.dliparebuild")
+                }
+
+                if showDiagnostics {
+                    Section {
+                        Toggle("Show Diagnostics tab", isOn: $showDiagnostics)
+                    }
                 }
             }
             .navigationTitle("Settings")
@@ -58,6 +79,23 @@ struct SettingsScreen: View {
             }
         }
         .navigationViewStyle(.stack)
+    }
+
+    /// Counts taps on the About row. A gap longer than a second starts over, so
+    /// stray taps over a session never add up to an unlock.
+    private func registerUnlockTap() {
+        guard !showDiagnostics else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastTap) > 1.0 {
+            unlockTapsSoFar = 0
+        }
+        lastTap = now
+        unlockTapsSoFar += 1
+        if unlockTapsSoFar >= Self.unlockTaps {
+            unlockTapsSoFar = 0
+            showDiagnostics = true
+            AppLog.info("diagnostics tab unlocked", .app)
+        }
     }
 
     private func regenerate() {
