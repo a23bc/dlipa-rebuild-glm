@@ -1224,6 +1224,18 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						exchange_final = exchange_status;
 						exchange_reported = 1;
 
+						if (xerr != UC_ERR_OK) {
+							uint64_t stop_rip = 0;
+							uc_reg_read(uc, UC_X86_REG_RIP, &stop_rip);
+							append(out, cap, &used,
+							       "[X64] exchange stopped: err=%u rip=%#llx (image+%#llx)\n",
+							       xerr, (unsigned long long)stop_rip,
+							       (unsigned long long)(stop_rip >= g_base ? stop_rip - g_base : 0));
+							append(out, cap, &used,
+							       "[X64]   last fault: kind=%d addr=%#llx\n",
+							       ctx.fault_kind, (unsigned long long)ctx.fault_addr);
+						}
+
 						append(out, cap, &used,
 						       "[X64] exchange: version=%llu in=%u err=%u status=%lld state=%u outlen=%llu\n",
 						       (unsigned long long)candidate_versions[v],
