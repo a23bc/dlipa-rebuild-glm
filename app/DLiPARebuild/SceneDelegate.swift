@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 
 // The class must be exposed to the ObjC runtime under the bare name
