@@ -70,12 +70,26 @@ def payload_start():
     toc = zlib.decompress(ranged(header_size, header_size + toc_compressed - 1))
     text = toc.decode("utf-8", "replace")
 
-    match = re.search(r"<name>Payload</name>.*?<offset>(\d+)</offset>", text, re.S)
-    if not match:
+    # The offset has to come from the <file> element that *contains*
+    # <name>Payload</name>, not from the first <offset> after that name.
+    # Inside an element the <data> block precedes <name>, so searching forward
+    # from the name finds the next file's offset - which is off by exactly that
+    # file's length and produces an unreadable bzip2 stream.
+    offset = None
+    for element in re.finditer(r"<file[^>]*>(.*?)</file>", text, re.S):
+        body = element.group(1)
+        if "<name>Payload</name>" not in body:
+            continue
+        found = re.search(r"<offset>(\d+)</offset>", body)
+        if found:
+            offset = int(found.group(1))
+        break
+
+    if offset is None:
         raise SystemExit("payload entry not found in the table of contents")
 
     heap = header_size + toc_compressed
-    return heap + int(match.group(1)) + PAYLOAD_BZ_OFFSET
+    return heap + offset + PAYLOAD_BZ_OFFSET
 
 
 def extract(out_dir):
