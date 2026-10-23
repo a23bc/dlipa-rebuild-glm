@@ -1592,7 +1592,23 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									uint64_t zero = 0;
 									uint32_t zero4 = 0;
 									uint64_t reply_addr = guest_alloc(reply_len);
-									uc_mem_write(uc, reply_addr, reply, reply_len);
+									uc_err werr = uc_mem_write(uc, reply_addr, reply, reply_len);
+
+									/* What the guest will actually read, read back
+									 * from its own memory. The app reports what it
+									 * decoded; this reports what landed. They can
+									 * differ, and the library answers the first
+									 * byte being wrong with a code that appears
+									 * nowhere in the binary as a constant. */
+									uint8_t back[16];
+									uc_err rerr = uc_mem_read(uc, reply_addr, back, 16);
+									append(out, cap, &used,
+									       "[X64] sap: guest reply w=%u r=%u addr=%#llx head=",
+									       werr, rerr, (unsigned long long)reply_addr);
+									for (int i = 0; i < 16; i++) {
+										append(out, cap, &used, "%02x", back[i]);
+									}
+									append(out, cap, &used, "\n");
 									uint64_t out2 = guest_alloc(8);
 									uint64_t len2 = guest_alloc(8);
 									uint64_t res2 = guest_alloc(4);
