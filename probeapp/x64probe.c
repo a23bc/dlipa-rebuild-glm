@@ -371,11 +371,30 @@ static int g_state_n;
 static uint64_t g_pc2[512];
 static int g_pc2_n;
 
+/* The two slots the deciding compare reads. They live at fixed offsets from
+ * the frame pointer, so sampling them at the compare instruction itself is
+ * exact: rbp is valid there and nothing has moved yet. */
+static int g_cmp_seen;
+static uint64_t g_cmp_rbp, g_cmp_mark, g_cmp_ptr;
+
 static void tail_pc_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user)
 {
 	(void)size; (void)user;
 	if (g_pc2_n < 512) {
 		g_pc2[g_pc2_n++] = addr >= g_base ? addr - g_base : addr;
+	}
+	if (addr == g_base + 0x90f7c && !g_cmp_seen) {
+		uint64_t rbp = 0;
+		if (uc_reg_read(uc, UC_X86_REG_RBP, &rbp) == UC_ERR_OK) {
+			uint32_t mark = 0;
+			uint64_t ptr = 0;
+			uc_mem_read(uc, rbp - 0x1404, &mark, 4);
+			uc_mem_read(uc, rbp - 0xce8, &ptr, 8);
+			g_cmp_rbp = rbp;
+			g_cmp_mark = mark;
+			g_cmp_ptr = ptr;
+			g_cmp_seen = 1;
+		}
 	}
 	if (addr == g_base + 0x89031 && g_state_n < 1024) {
 		uint64_t rax = 0;
@@ -1683,6 +1702,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									g_tail_n = 0;
 									g_state_n = 0;
 									g_pc2_n = 0;
+									g_cmp_seen = 0;
 									uc_hook th = 0;
 									uc_hook_add(uc, &th, UC_HOOK_CODE,
 									            (void *)tail_pc_hook, NULL, 1, 0);
@@ -1691,6 +1711,16 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									                        trampoline, args2, 8, &st2);
 									if (th != 0) {
 										uc_hook_del(uc, th);
+									}
+									if (g_cmp_seen) {
+										append(out, cap, &used,
+										       "[X64] sap: cmp rbp=%#llx mark=%#x (want %#x) ptr=%#llx\n",
+										       (unsigned long long)g_cmp_rbp,
+										       (unsigned)g_cmp_mark, 0x71fe2ef2u,
+										       (unsigned long long)g_cmp_ptr);
+									} else {
+										append(out, cap, &used,
+										       "[X64] sap: cmp never reached\n");
 									}
 									append(out, cap, &used, "[X64] sap: pc2 (%d):", g_pc2_n);
 									for (int pi = 0; pi < g_pc2_n; pi++) {
