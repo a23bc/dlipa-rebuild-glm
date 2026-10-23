@@ -302,9 +302,10 @@ final class AppStoreClient {
 
     /// The external version identifiers Apple knows for an app.
     struct VersionList {
-        /// The version the store would hand out today.
-        let latest: String
-        /// Every version it still lists, newest first.
+        /// The version the store would hand out today, when Apple says which
+        /// one it is. The dictionary-shaped response does not.
+        let latest: String?
+        /// Every version it still lists.
         let identifiers: [String]
     }
 
@@ -355,32 +356,63 @@ final class AppStoreClient {
             from: data, options: [], format: nil)) as? [String: Any] ?? [:]
 
         let failure = plist["failureType"] as? String ?? ""
-        if !failure.isEmpty {
+        // 5002 is "licence already exists". Alongside a songList it is not an
+        // error at all: the list follows. ipatool-rs makes the same exception.
+        let benign = (failure == "5002" && plist["songList"] != nil)
+        if !failure.isEmpty && !benign {
             let message = plist["customerMessage"] as? String ?? ""
             AppLog.error("version list failed: " + failure + " " + message, .download)
             throw StoreError.failureType(failure, message)
         }
 
-        guard let items = plist["songList"] as? [Any],
-              let first = items.first as? [String: Any] else {
-            // "no items" says nothing about why; the body does. It is logged at
-            // error level so it is kept even with recording off.
+        // songList comes in two shapes and both are valid: an array whose first
+        // item carries metadata, or a dictionary keyed by external version id.
+        // Only accepting the array is what reported "no items".
+        guard let songList = plist["songList"] else {
             let preview = String(data: data.prefix(1500), encoding: .utf8)
                 ?? "<\(data.count) binary bytes>"
             AppLog.error("version list had no songList; body follows", .download)
             AppLog.error(preview, .download)
             AppLog.error("top-level keys: " + plist.keys.sorted().joined(separator: ", "),
                          .download)
-            throw StoreError.failureType("versions", "apple returned no items")
+            throw StoreError.failureType("versions", "apple returned no songList")
         }
-        let metadata = first["metadata"] as? [String: Any] ?? [:]
-        let raw = metadata["softwareVersionExternalIdentifiers"] as? [Any] ?? []
-        let identifiers = raw.map { String(describing: $0) }
-        guard let latestRaw = metadata["softwareVersionExternalIdentifier"] else {
-            throw StoreError.failureType("versions", "apple returned no latest version")
+
+        var identifiers: [String] = []
+        var latest: String?
+
+        if let map = songList as? [String: Any] {
+            // Dictionary shape: the keys are the version ids and there is no
+            // separate "latest" field.
+            identifiers = map.keys.sorted { lhs, rhs in
+                (Int64(lhs) ?? 0) > (Int64(rhs) ?? 0)
+            }
+        } else if let array = songList as? [Any],
+                  let first = array.first as? [String: Any] {
+            // Array shape: metadata sits in a nested dictionary, or directly on
+            // the item under the externalVersionIdentifiers names.
+            let source = (first["metadata"] as? [String: Any]) ?? first
+            let raw = (source["softwareVersionExternalIdentifiers"] as? [Any])
+                ?? (source["externalVersionIdentifiers"] as? [Any])
+                ?? []
+            identifiers = raw.map { String(describing: $0) }
+            if let value = source["softwareVersionExternalIdentifier"]
+                ?? source["externalVersionIdentifier"] {
+                latest = String(describing: value)
+            }
         }
-        AppLog.info("versions for " + appId + ": " + String(identifiers.count), .download)
-        return VersionList(latest: String(describing: latestRaw), identifiers: identifiers)
+
+        guard !identifiers.isEmpty else {
+            let preview = String(data: data.prefix(1500), encoding: .utf8)
+                ?? "<\(data.count) binary bytes>"
+            AppLog.error("version list had no identifiers; body follows", .download)
+            AppLog.error(preview, .download)
+            throw StoreError.failureType("versions", "apple returned no versions")
+        }
+
+        AppLog.info("versions for " + appId + ": " + String(identifiers.count)
+                    + ", latest " + (latest ?? "unknown"), .download)
+        return VersionList(latest: latest, identifiers: identifiers)
     }
 
     /// Requests a download and returns its URL.
