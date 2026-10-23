@@ -14,4 +14,6 @@ void jitprobe_report(char *out, size_t cap);
 /* Measures interpreter throughput and the memory a CoreFP-sized guest needs. */
 void benchprobe_report(char *out, size_t cap);
 
+#include "x64probe.h"
+
 #endif

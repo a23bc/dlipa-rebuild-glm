@@ -90,6 +90,13 @@ jobs:
             -I"$TCI_INC" \
             -c probeapp/tciprobe.c -o /tmp/tciprobe.o
 
+          xcrun --sdk iphoneos clang \
+            -target arm64-apple-ios15.0 \
+            -isysroot "$SDK" \
+            -O2 \
+            -I"$TCI_INC" \
+            -c probeapp/x64probe.c -o /tmp/x64probe.o
+
           xcrun --sdk iphoneos swiftc \
             -parse-as-library \
             -target arm64-apple-ios15.0 \
@@ -99,6 +106,7 @@ jobs:
             -o probeapp/ProbeApp \
             probeapp/ProbeApp.swift \
             /tmp/tciprobe.o \
+            /tmp/x64probe.o \
             "$TCI_LIB"
           ls -la probeapp/ProbeApp
           file probeapp/ProbeApp
@@ -119,6 +127,9 @@ jobs:
           git -C /tmp/upstream lfs pull
           mkdir -p "$GITHUB_WORKSPACE/VendorAssets"
           cp /tmp/upstream/VendorAssets/commerce "$GITHUB_WORKSPACE/VendorAssets/"
+          # CoreFP is the one that actually implements the SAP state machine.
+          # macOS 10.9's copy is x86-64, which is what the interpreter targets.
+          cp /tmp/upstream/VendorAssets/CoreFP "$GITHUB_WORKSPACE/VendorAssets/"
           rm -rf /tmp/upstream
           ls -la "$GITHUB_WORKSPACE/VendorAssets"
 
@@ -132,6 +143,19 @@ jobs:
             -in "$GITHUB_WORKSPACE/VendorAssets/commerce" \
             -out "$GITHUB_WORKSPACE/converted/commerce.dylib" \
             -name "@rpath/commerce.dylib"
+
+      - name: Build the CoreFP guest image
+        working-directory: sapbridge
+        run: |
+          # All Mach-O reading happens here, offline: the container carries
+          # segment contents, every rebase site, every bind site and the export
+          # addresses, so the device only has to place bytes and patch
+          # addresses. Writing a Mach-O parser in C and debugging it by
+          # reinstalling an app would be far slower.
+          go run ./cmd/x86image \
+            -in "$GITHUB_WORKSPACE/VendorAssets/CoreFP" \
+            -out "$GITHUB_WORKSPACE/converted/corefp.x64i"
+          ls -la "$GITHUB_WORKSPACE/converted"
 
       - name: Build the dyld acceptance fixtures
         run: |
@@ -207,6 +231,10 @@ jobs:
           mkdir -p "$APP/fixtures"
           cp "$GITHUB_WORKSPACE/fixture-build"/*.dylib "$APP/fixtures/"
           cp "$GITHUB_WORKSPACE/converted"/*.dylib "$APP/fixtures/"
+          # The guest image is data, not a Mach-O, so it lives in its own
+          # subdirectory rather than next to the fixtures that get sealed.
+          mkdir -p "$APP/assets"
+          cp "$GITHUB_WORKSPACE/converted/corefp.x64i" "$APP/assets/"
           # Identifies which build is actually on the device. Without it an
           # over-install that kept the old bundle is indistinguishable from a
           # fresh one.

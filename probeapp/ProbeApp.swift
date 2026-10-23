@@ -278,7 +278,14 @@ final class ProbeViewController: UIViewController {
         jitButton.setTitle("Test JIT", for: .normal)
         jitButton.addTarget(self, action: #selector(testJIT), for: .touchUpInside)
 
-        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton])
+        // Loading 15 MB of guest image and running it can take seconds, and a
+        // wrong address in the loader could fault. Kept off the main report
+        // for the same reason as the JIT probe.
+        let coreFPButton = UIButton(type: .system)
+        coreFPButton.setTitle("Test CoreFP", for: .normal)
+        coreFPButton.addTarget(self, action: #selector(testCoreFP), for: .touchUpInside)
+
+        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton, coreFPButton])
         buttons.axis = .horizontal
         buttons.distribution = .fillEqually
 
@@ -316,6 +323,22 @@ final class ProbeViewController: UIViewController {
         jitprobe_report(&buffer, buffer.count)
         let text = String(cString: buffer)
         report += "\n" + text
+        textView.text = report
+        UIPasteboard.general.string = report
+    }
+
+    // Runs Apple's own x86-64 CoreFP under the interpreter and stops at the
+    // first import it calls, which names the next shim to write.
+    @objc private func testCoreFP() {
+        guard let path = Bundle.main.path(forResource: "corefp", ofType: "x64i",
+                                          inDirectory: "assets") else {
+            report += "\n[X64] corefp.x64i missing from the bundle"
+            textView.text = report
+            return
+        }
+        var buffer = [CChar](repeating: 0, count: 8192)
+        x64probe_report(path, &buffer, buffer.count)
+        report += "\n" + String(cString: buffer)
         textView.text = report
         UIPasteboard.general.string = report
     }
