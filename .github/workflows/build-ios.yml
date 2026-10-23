@@ -39,6 +39,40 @@ jobs:
         with:
           go-version: "1.24"
 
+      # The X64I container the app interprets. It needs Go and the pinned OS X
+      # 10.9 CommerceKit, nothing from the Unicorn build, so it runs here and
+      # overlaps with that build instead of blocking the app job later.
+      #
+      # CommerceKit is the SAP driver: it exports _cp2g1b9ro, _Mib5yocT,
+      # _Fc3vhtJDvr and the other two entries, and it imports no CoreFP symbol
+      # at all. CoreFP belongs to the macOS 27 stack; the 10.9 driver has no
+      # use for it.
+      # The 10.9 binaries are a pinned, checksum-verified download from Apple
+      # (~31 MB of a 1.27 GB package). Nothing about them changes between
+      # builds, so the cache key is the fetch script itself: edit it and the
+      # cache misses.
+      - name: Cache the OS X 10.9 SAP binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/osx109
+          key: osx109-${{ hashFiles('scripts/fetch-osx109-assets.py') }}
+
+      - name: Build the SAP guest image
+        run: |
+          # Only fetches on a cache miss; the script re-verifies every file
+          # against its pinned SHA-256 either way.
+          if [ ! -s "$GITHUB_WORKSPACE/osx109/CommerceKit" ]; then
+            python3 scripts/fetch-osx109-assets.py --out "$GITHUB_WORKSPACE/osx109"
+          else
+            echo "==> osx109 restored from cache"
+          fi
+          ls -la "$GITHUB_WORKSPACE/osx109"
+          go run ./cmd/x86image \
+            -in "$GITHUB_WORKSPACE/osx109/CommerceKit" \
+            -out "$GITHUB_WORKSPACE/commerce.x64i"
+          ls -la "$GITHUB_WORKSPACE/commerce.x64i"
+        working-directory: sapbridge
+
       - name: Install build tools
         run: |
           # unicorn is for the host, not the target: the live SAP tests run the
@@ -48,114 +82,19 @@ jobs:
           brew install ldid cmake pkg-config unicorn
           ls -la /opt/homebrew/lib/libunicorn* 2>/dev/null || echo "no libunicorn under /opt/homebrew/lib"
 
-      - name: Stage the Apple SAP assets
-        run: |
-          # These assets feed the Go-side diagnostics and the live tests only.
-          # They are NOT what the app ships: the signing path is the probeapp
-          # chain, which runs OS X 10.9 CommerceKit (see the app job).
-          #
-          # VendorAssets/ is excluded from this fork (git-lfs objects not
-          # available). Fetch the four pinned Apple binaries from the upstream
-          # repository, which has them stored in git-lfs.
-          git lfs install
-          if [ ! -s VendorAssets/CoreFP ]; then
-            echo "==> VendorAssets missing, cloning from upstream"
-            git clone --depth 1 https://github.com/a23bc/dlipa-rebuild.git /tmp/upstream
-            git -C /tmp/upstream lfs pull
-            mkdir -p VendorAssets
-            cp /tmp/upstream/VendorAssets/* VendorAssets/
-            rm -rf /tmp/upstream
-          else
-            git lfs pull
-          fi
-          ls -la VendorAssets
-          sh scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/build/sap-assets"
-
-      # Diagnostic for the dlopen path. Emulation hides the import surface,
-      # because package machine answers external calls with its own shims;
-      # a dlopen load has no shims, so dyld must bind every import itself.
-      # This reports what iOS dyld would actually have to satisfy.
-      - name: Dump the Apple SAP import surface
-        working-directory: sapbridge
-        run: |
-          go run ./cmd/dumpimports \
-            -assets "$GITHUB_WORKSPACE/build/sap-assets" \
-            -machine-dir internal/sap/machine \
-            -out "$GITHUB_WORKSPACE/build/imports.json"
-
-      - name: Upload the import report
-        uses: actions/upload-artifact@v4
-        with:
-          name: sap-imports
-          path: build/imports.json
-          if-no-files-found: error
-
-      # The device settled the constraints: CPU subtype must be arm64, not
-      # arm64e, and platform must be iOS - both hard rejections from dyld.
-      # Chained fixups in either form are accepted, so the format is not the
-      # problem; the problem is that changing the subtype forces the fixup
-      # data, encoded as arm64e chains, to be rewritten too. Count what that
-      # means before writing the rewriter.
-      - name: Count the fixups a rewrite would touch
-        working-directory: sapbridge
-        env:
-          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
-        run: |
-          go run ./cmd/fixupinventory
-
-      - name: Run Go unit tests
-        working-directory: sapbridge
-        env:
-          # Lets the live handshake/kbsync tests run instead of skipping.
-          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
-        run: |
-          go test -count=1 ./...
-
-      # The unit tests above skip the live tests when the SAP runtime will not
-      # start, which is honest for a checkout without assets but useless here:
-      # the assets are staged, so a skip would hide whether the pinned macOS
-      # binaries still run at all. These two steps set DSH_SAP_REQUIRE_LIVE to
-      # turn that skip into a failure.
+      # Everything that used to sit between here and the Unicorn build was
+      # diagnostic work for the Go SAP path: staging the 119 MB of macOS 27
+      # binaries out of git-lfs, dumping the dlopen import surface, counting
+      # fixups for a rewriter that was never written, the Go unit tests, and
+      # three live tests that start the macOS 27 stack and reach Apple.
       #
-      # KBSync needs no network: it only loads the images and calls the
-      # StoreAgent entry point, so if it fails the emulation is genuinely
-      # broken and the build must stop.
-      - name: Require the SAP runtime to run locally
-        working-directory: sapbridge
-        env:
-          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
-          DSH_SAP_REQUIRE_LIVE: "1"
-        run: |
-          go test -count=1 -run TestLiveKBSync -v .
-
-      # The handshake also needs to reach Apple, so a runner-side network
-      # problem is not evidence about our code. Report it without blocking
-      # the IPA: a failure here needs triage, not a red build.
-      - name: Require the live SAP handshake
-        working-directory: sapbridge
-        # always(): the kbsync step above fails the job, and its failure would
-        # otherwise hide this one. Both signals are wanted before triage.
-        if: always()
-        continue-on-error: true
-        env:
-          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
-          DSH_SAP_REQUIRE_LIVE: "1"
-        run: |
-          go test -count=1 -run TestLiveSAPHandshake -v .
-
-      # Sizes the dlopen path. The binaries declare 196 / 976 / 289 external
-      # symbols; what matters is how many the SAP paths actually enter. Non
-      # blocking because it has to reach Apple, but these are the numbers every
-      # later decision rests on.
-      - name: Report the external calls the SAP paths make
-        working-directory: sapbridge
-        if: always()
-        continue-on-error: true
-        env:
-          DSH_SAP_ASSET_DIR: ${{ github.workspace }}/build/sap-assets
-          DSH_SAP_REQUIRE_LIVE: "1"
-        run: |
-          go test -count=1 -run TestReportExternalCalls -v .
+      # The signing path now runs OS X 10.9 CommerceKit under the interpreter
+      # (see the app job), so none of that describes the code that ships. It
+      # cost about two minutes per build and could only fail for reasons that
+      # had nothing to do with the IPA.
+      #
+      # What still needs the Go side is KBSync, which is a separate FairPlay
+      # path, so SapBridge.a is still built and linked.
 
       # TCI (interpreter) build of the 1rhino2 fork, guest arch x86-64. The
       # upstream 2.1.4 release is a JIT build and cannot run on a non-jailed
@@ -255,7 +194,10 @@ jobs:
           fi
           cp -R build/ios/include stage/ios/include
           cp app/DLiPARebuild/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/SapBridge stage/SapBridge.a
-          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a
+          cp "$GITHUB_WORKSPACE/commerce.x64i" stage/commerce.x64i
+          # commerce.x64i has to be in the archive list, not just copied into
+          # the staging directory.
+          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a commerce.x64i
           echo "artifact=sapbridge-ios.tar.gz" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
@@ -298,59 +240,22 @@ jobs:
           fi
           ls -la app/build/ios/
           ls app/build/ios/include
-      - name: Fetch the OS X 10.9 SAP binaries
-        run: |
-          # Same source as build-probe.yml, deliberately. The SAP entry points
-          # live in CommerceKit, and the macOS 27 copy of that framework is a
-          # chained-fixup binary the classic dyld-info reader cannot take
-          # apart. The 10.9 copy is plain LC_DYLD_INFO_ONLY, is x86-64, and is
-          # the build the probe app runs on the device.
-          #
-          # Roughly 31 MB of the 1.27 GB package is transferred; the script
-          # verifies each file against a pinned SHA-256 before writing it.
-          python3 scripts/fetch-osx109-assets.py --out "$GITHUB_WORKSPACE/osx109"
-          ls -la "$GITHUB_WORKSPACE/osx109"
 
+          # The X64I container travels with the archives: it is built in the
+          # go-bridge job, which already has Go and the pinned OS X 10.9
+          # assets, so the app job does not spend a minute downloading them.
+          mv bridge/commerce.x64i app/DLiPARebuild/Resources/commerce.x64i
+          ls -la app/DLiPARebuild/Resources/commerce.x64i
       - name: Install build tools
         run: |
-          # xcodegen turns project.yml into a real .xcodeproj, so there is no
-          # fragile hand-edited pbxproj. ldid attaches the adhoc signature
-          # Xcode refuses to produce.
-          brew install xcodegen ldid
-          xcodegen --version
-          ldid --help 2>&1 | head -n 3
-
-      - name: Show build environment
-        run: |
-          xcodebuild -version
-          swift --version
-
-      - name: Install Go for the image builder
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-
-      - name: Build the SAP guest image
-        run: |
-          # The X64I container is what sap_guest.c loads and interprets. All the
-          # Mach-O reading happens here, offline: the container carries segment
-          # contents, every rebase site, every bind site and the export
-          # addresses, so the device only has to place bytes and patch
-          # addresses.
+          # Only xcodegen. It turns project.yml into a real .xcodeproj, so
+          # there is no hand-edited pbxproj to go stale.
           #
-          # CommerceKit is the SAP driver: it exports _cp2g1b9ro, _Mib5yocT,
-          # _Fc3vhtJDvr and the other two entries, and it imports no CoreFP
-          # symbol at all. CoreFP is a separate service the macOS 27 stack
-          # needs; the 10.9 driver does not.
-          # Absolute paths on both sides: this step runs with
-          # working-directory sapbridge, so a relative -out would land inside
-          # the Go module instead of the app.
-          mkdir -p "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources"
-          go run ./cmd/x86image \
-            -in "$GITHUB_WORKSPACE/osx109/CommerceKit" \
-            -out "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/commerce.x64i"
-          ls -la "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/commerce.x64i"
-        working-directory: sapbridge
+          # ldid is deliberately not installed from brew: the seal step builds
+          # the procursus fork from source, because homebrew 2.1.5 dropped -S.
+          # Installing both was a brew run for a binary that was never called.
+          brew install xcodegen
+          xcodegen --version
 
       - name: Build the app (unsigned)
         working-directory: app
