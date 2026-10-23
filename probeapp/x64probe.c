@@ -356,9 +356,23 @@ void x64probe_set_post_note(const char *text)
 static uint64_t g_tail[64];
 static int g_tail_n;
 
+/* The state value arriving at the dispatcher. The function is a flattened
+ * state machine: every block ends by putting a new state in eax and jumping to
+ * 0x89031, which picks the next block through a table. Recording the states in
+ * order compares two runs at the level the machine actually works at, instead
+ * of trying to read several hundred blocks of obfuscated code. */
+static uint32_t g_state[1024];
+static int g_state_n;
+
 static void tail_pc_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user)
 {
-	(void)uc; (void)size; (void)user;
+	(void)size; (void)user;
+	if (addr == g_base + 0x89031 && g_state_n < 1024) {
+		uint64_t rax = 0;
+		if (uc_reg_read(uc, UC_X86_REG_EAX, &rax) == UC_ERR_OK) {
+			g_state[g_state_n++] = (uint32_t)rax;
+		}
+	}
 	if (g_tail_n < 64) {
 		g_tail[g_tail_n++] = addr;
 	} else {
@@ -1639,6 +1653,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									                     out2, len2, res2 };
 									uint64_t st2 = 0;
 									g_tail_n = 0;
+									g_state_n = 0;
 									uc_hook th = 0;
 									uc_hook_add(uc, &th, UC_HOOK_CODE,
 									            (void *)tail_pc_hook, NULL, 1, 0);
@@ -1648,6 +1663,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									if (th != 0) {
 										uc_hook_del(uc, th);
 									}
+									append(out, cap, &used, "[X64] sap: states (%d):", g_state_n);
+									for (int si = 0; si < g_state_n; si++) {
+										append(out, cap, &used, " %x", g_state[si]);
+									}
+									append(out, cap, &used, "\n");
 									append(out, cap, &used, "[X64] sap: exchange2 tail:");
 									for (int ti = 0; ti < g_tail_n; ti++) {
 										append(out, cap, &used, " %llx",
