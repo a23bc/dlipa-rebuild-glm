@@ -377,11 +377,34 @@ static int g_pc2_n;
 static int g_cmp_seen;
 static uint64_t g_cmp_rbp, g_cmp_mark, g_cmp_ptr;
 
+/* The block that leads into the error return tests ecx and picks one of two
+ * values from it. Sampling ecx there, plus the two pointers it writes through,
+ * says whether the outcome turns on a zero that should not be zero. */
+static int g_c2_seen;
+static uint64_t g_c2_ecx, g_c2_eax, g_c2_p1, g_c2_p2, g_c2_v1, g_c2_v2;
+
 static void tail_pc_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user)
 {
 	(void)size; (void)user;
 	if (g_pc2_n < 512) {
 		g_pc2[g_pc2_n++] = addr >= g_base ? addr - g_base : addr;
+	}
+	if (addr == g_base + 0x8a6b3 && !g_c2_seen) {
+		uint64_t rbp = 0, ecx = 0, eax = 0, p1 = 0, p2 = 0;
+		if (uc_reg_read(uc, UC_X86_REG_RBP, &rbp) == UC_ERR_OK &&
+		    uc_reg_read(uc, UC_X86_REG_RCX, &ecx) == UC_ERR_OK &&
+		    uc_reg_read(uc, UC_X86_REG_RAX, &eax) == UC_ERR_OK) {
+			uint32_t v1 = 0, v2 = 0;
+			uc_mem_read(uc, rbp - 0x1888, &p1, 8);
+			uc_mem_read(uc, rbp - 0x1890, &p2, 8);
+			if (p1 != 0) uc_mem_read(uc, p1, &v1, 4);
+			if (p2 != 0) uc_mem_read(uc, p2, &v2, 4);
+			g_c2_ecx = ecx & 0xffffffffull;
+			g_c2_eax = eax & 0xffffffffull;
+			g_c2_p1 = p1; g_c2_p2 = p2;
+			g_c2_v1 = v1; g_c2_v2 = v2;
+			g_c2_seen = 1;
+		}
 	}
 	if (addr == g_base + 0x90f7c && !g_cmp_seen) {
 		uint64_t rbp = 0;
@@ -1703,6 +1726,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									g_state_n = 0;
 									g_pc2_n = 0;
 									g_cmp_seen = 0;
+									g_c2_seen = 0;
 									uc_hook th = 0;
 									uc_hook_add(uc, &th, UC_HOOK_CODE,
 									            (void *)tail_pc_hook, NULL, 1, 0);
@@ -1711,6 +1735,17 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									                        trampoline, args2, 8, &st2);
 									if (th != 0) {
 										uc_hook_del(uc, th);
+									}
+									if (g_c2_seen) {
+										append(out, cap, &used,
+										       "[X64] sap: ecx=%#llx eax=%#llx p1=%#llx(*%#x) p2=%#llx(*%#x)\n",
+										       (unsigned long long)g_c2_ecx,
+										       (unsigned long long)g_c2_eax,
+										       (unsigned long long)g_c2_p1, (unsigned)g_c2_v1,
+										       (unsigned long long)g_c2_p2, (unsigned)g_c2_v2);
+									} else {
+										append(out, cap, &used,
+										       "[X64] sap: ecx sample never reached\n");
 									}
 									if (g_cmp_seen) {
 										append(out, cap, &used,
