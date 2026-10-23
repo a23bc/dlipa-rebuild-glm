@@ -195,13 +195,27 @@ final class SAPSigner {
 
     /// The value for the X-Apple-ActionSignature header.
     func signatureHeaderValue(for body: Data) throws -> String {
+        AppLog.debug("sign: entering with " + String(body.count) + " bytes", .sap)
         var errorBuffer = [CChar](repeating: 0, count: 512)
         var header: UnsafeMutablePointer<CChar>?
-        let status = body.withUnsafeBytes { bodyBytes in
-            sap_guest_sign(guest,
-                           bodyBytes.bindMemory(to: UInt8.self).baseAddress,
-                           body.count, &header, &errorBuffer, errorBuffer.count)
+        // Data() has no storage, so withUnsafeBytes hands back a nil base
+        // pointer. Passing NULL with a zero length is fine, but passing it with
+        // a non-zero one is not, and an empty body is a real case (a GET has
+        // nothing to sign). The branch makes the intent explicit.
+        let status: Int32
+        if body.isEmpty {
+            var placeholder: UInt8 = 0
+            status = sap_guest_sign(guest, &placeholder, 0, &header,
+                                    &errorBuffer, errorBuffer.count)
+        } else {
+            status = body.withUnsafeBytes { bodyBytes in
+                sap_guest_sign(guest,
+                               bodyBytes.bindMemory(to: UInt8.self).baseAddress,
+                               body.count, &header, &errorBuffer,
+                               errorBuffer.count)
+            }
         }
+        AppLog.debug("sign: returned " + String(status), .sap)
         guard status == 0, let header else {
             throw NSError(domain: "SAPSigner", code: 4, userInfo: [
                 NSLocalizedDescriptionKey: String(cString: errorBuffer),

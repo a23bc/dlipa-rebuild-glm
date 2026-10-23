@@ -920,7 +920,11 @@ static uc_err call_guest(struct sap_guest *g, uint64_t fn, uint64_t *out_rax)
 static uc_err call_guest_n(struct sap_guest *g, uint64_t fn, const uint64_t *args,
                            int nargs, uint64_t *out_rax)
 {
-    uint64_t rsp = (g->stack_top - 0x800) & ~0xfULL;
+    /* A nested call gets a frame below the one the outer call is using. The
+     * outer frame lives just under stack_top, so this leaves 64 KB of clear
+     * space between them: the two must not overlap, because the outer call is
+     * suspended mid-function with its locals on the stack. */
+    uint64_t rsp = (g->stack_top - 0x10000) & ~0xfULL;
     rsp -= 8;
 
     uint64_t return_address = k_trampoline;
@@ -1050,9 +1054,19 @@ static int run_guest(struct sap_guest *g, uint64_t fn, const uint64_t *args,
             uc_reg_read(g->uc, UC_X86_REG_R8, &method_args[4]);
             uc_reg_read(g->uc, UC_X86_REG_R9, &method_args[5]);
 
+            /* The nested call builds its frame at the top of the same guest
+             * stack the outer call is using, which would overwrite the outer
+             * frame and leave the resumed code walking over its own locals.
+             * The stack pointer is saved here and restored after the method
+             * returns, so the outer frame is untouched. */
+            uint64_t outer_rsp = 0;
+            uc_reg_read(g->uc, UC_X86_REG_RSP, &outer_rsp);
+
             uint64_t result = 0;
             uc_err merr = call_guest_n(g, k_base + imp, method_args, 6, &result);
             g->stats.objc_sends++;
+
+            uc_reg_write(g->uc, UC_X86_REG_RSP, &outer_rsp);
 
             if (merr != UC_ERR_OK) {
                 set_error(error, cap, "objc method 0x%llx faulted err=%u",

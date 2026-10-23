@@ -121,7 +121,6 @@ final class AccountsModel: ObservableObject {
                                    version: fetched.signSapVersion,
                                    hardware: hardware)
             AppLog.info("SAP handshake complete", .sap)
-            _ = authenticate
         }
 
         guard let bag, let signer,
@@ -130,6 +129,10 @@ final class AccountsModel: ObservableObject {
         }
 
         status = "Signing in..."
+        AppLog.info("authenticate: posting to " + endpoint, .auth)
+        // The signature is computed inside this call and it is the first time
+        // the guest runs since the handshake. Log around it so a crash here
+        // says which half of the request it died in.
         let result = try await client.authenticate(
             email: email, password: password, authCode: authCode,
             guid: hardware.guid, endpoint: endpoint, signer: signer)
