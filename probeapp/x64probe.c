@@ -237,9 +237,12 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 		if (a.rsi != 0 && ctx->once_count < 8) {
 			ctx->once_inits[ctx->once_count++] = a.rsi;
 		}
+		/* pthread_once_t is 8 bytes on x86-64. Writing four left the upper
+		 * half alone, the sentinel never matched, and the guest asked for the
+		 * same initialiser on every round. */
 		if (a.rdi != 0) {
-			uint32_t done = 0xff;
-			uc_mem_write(uc, a.rdi, &done, 4);
+			uint64_t done = ~0ULL;
+			uc_mem_write(uc, a.rdi, &done, 8);
 		}
 		set_rax(uc, 0);
 		return 1;
@@ -765,16 +768,26 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						0, out_field, len_field, res_field,
 					};
 
-					/* The exchange registers initialisers of its own. Calling it
-					 * once therefore is not enough: the first attempt returns a
-					 * status and no output, and only then reveals what it wanted
-					 * run. Each round replays whatever appeared and tries again. */
+					/* Replaying the late initialisers did not change the status at
+					 * all, so that theory is dead. What has not been varied yet is
+					 * the protocol version: this is a 2013 binary and 200 is what
+					 * the 2026 bag advertises, which it may simply not speak. The
+					 * sweep below reports the status for each candidate. */
 					uint64_t exchange_status = 0;
 					uc_err xerr = UC_ERR_OK;
 					uint64_t out_ptr = 0, out_len = 0;
 					uint32_t result_code = 0;
 
-					for (int round = 0; round < 4; round++) {
+					static const uint64_t candidate_versions[] = {200, 3, 2, 1, 0};
+
+					for (size_t v = 0;
+					     v < sizeof(candidate_versions) / sizeof(candidate_versions[0]);
+					     v++) {
+						args[0] = candidate_versions[v];
+
+						/* Captured before the call: anything registered during it
+						 * is what the replay loop below has to run. Taking the
+						 * count afterwards made the loop a no-op. */
 						int before_count = ctx.once_count;
 
 						xerr = call_guest_n(uc, exchange_addr,
@@ -788,22 +801,18 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						uc_mem_read(uc, res_field, &result_code, 4);
 
 						append(out, cap, &used,
-						       "[X64] exchange round %d: err=%u status=%lld result=%u len=%llu\n",
-						       round, xerr, (long long)(int32_t)exchange_status,
-						       result_code, (unsigned long long)out_len);
+						       "[X64] version %-3llu: err=%u status=%lld result=%u len=%llu\n",
+						       (unsigned long long)candidate_versions[v], xerr,
+						       (long long)(int32_t)exchange_status, result_code,
+						       (unsigned long long)out_len);
 
-						if (ctx.once_count == before_count) {
-							break;
-						}
-
+						/* Any initialiser the call registered is replayed before
+						 * the next attempt, so the sweep does not just repeat the
+						 * same incomplete state five times. */
 						for (int k = before_count; k < ctx.once_count && k < 8; k++) {
 							uint64_t once_rax = 0;
-							uc_err once_err = call_guest(uc, ctx.once_inits[k],
-							                             g_stack_base + 0x100000,
-							                             trampoline, &once_rax);
-							append(out, cap, &used,
-							       "[X64]   ran late once-init %#llx err=%u\n",
-							       (unsigned long long)ctx.once_inits[k], once_err);
+							call_guest(uc, ctx.once_inits[k], g_stack_base + 0x100000,
+							           trampoline, &once_rax);
 						}
 					}
 
