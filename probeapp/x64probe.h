@@ -21,5 +21,6 @@ void x64probe_report(const char *image_path, int mode, char *out, size_t cap);
 typedef int (*sap_post_fn)(const uint8_t *request, size_t request_len,
                            uint8_t *reply, size_t reply_cap, size_t *reply_len);
 void x64probe_set_post(sap_post_fn fn);
+void x64probe_set_post_note(const char *text);
 
 #endif

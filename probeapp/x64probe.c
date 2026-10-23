@@ -329,9 +329,24 @@ static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
  * exchange. Returning 0 means the reply is valid. */
 static sap_post_fn g_sap_post;
 
+/* One line of context from the app about what the round trip actually did:
+ * status code, body length, first bytes. Without it a failed callback is just
+ * a number, and the difference between "wrong endpoint", "error page" and
+ * "binary plist we could not read" is several rounds of guessing. */
+static char g_sap_note[256];
+
 void x64probe_set_post(sap_post_fn fn)
 {
 	g_sap_post = fn;
+}
+
+void x64probe_set_post_note(const char *text)
+{
+	if (text == 0) {
+		g_sap_note[0] = 0;
+		return;
+	}
+	snprintf(g_sap_note, sizeof(g_sap_note), "%s", text);
 }
 
 static void tok(char *dst, size_t cap, uint64_t v)
@@ -1569,6 +1584,10 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 								                    reply, sizeof(reply), &reply_len);
 								append(out, cap, &used,
 								       "[X64] sap: post rc=%d reply=%zu\n", rc, reply_len);
+								if (g_sap_note[0] != 0) {
+									append(out, cap, &used,
+									       "[X64] sap: note=%s\n", g_sap_note);
+								}
 								if (rc == 0 && reply_len > 0) {
 									uint64_t zero = 0;
 									uint32_t zero4 = 0;

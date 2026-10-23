@@ -111,42 +111,52 @@ private func sapPostCallback(_ request: UnsafePointer<UInt8>?,
                              _ replyLen: UnsafeMutablePointer<Int>?) -> Int32 {
     guard let request, let reply, let replyLen else { return -1 }
     let payload = Data(bytes: request, count: requestLen)
-    let xml = """
-    <?xml version="1.0" encoding="UTF-8"?>
-    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0"><dict><key>sign-sap-setup-buffer</key><data>\
-    (payload.base64EncodedString())</data></dict></plist>
-    """
+
+    // Built and read with the serialiser rather than by hand. Hand-written XML
+    // lost the backslash of the base64 interpolation to the string literal, so
+    // the body carried the expression instead of the value and every reply from
+    // Apple looked like a parse failure.
+    let envelope: [String: Any] = ["sign-sap-setup-buffer": payload]
+    guard let body = try? PropertyListSerialization.data(fromPropertyList: envelope,
+                                                         format: .xml,
+                                                         options: 0) else { return -2 }
     guard let url = URL(string: "https://fpinit.itunes.apple.com/v1/signSapSetup/legacy") else {
-        return -2
+        return -3
     }
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("application/x-plist", forHTTPHeaderField: "Content-Type")
-    req.httpBody = xml.data(using: .utf8)
+    req.httpBody = body
     req.timeoutInterval = 40
 
-    var body: Data?
+    var responseData: Data?
+    var statusCode = -1
     let sem = DispatchSemaphore(value: 0)
-    URLSession.shared.dataTask(with: req) { data, _, _ in
-        body = data
+    URLSession.shared.dataTask(with: req) { data, response, _ in
+        responseData = data
+        if let http = response as? HTTPURLResponse { statusCode = http.statusCode }
         sem.signal()
     }.resume()
-    if sem.wait(timeout: .now() + 45) == .timedOut { return -3 }
+    if sem.wait(timeout: .now() + 45) == .timedOut { return -4 }
 
-    guard let body,
-          let text = String(data: body, encoding: .utf8),
-          let keyRange = text.range(of: "<key>sign-sap-setup-buffer</key>"),
-          let openTag = text.range(of: "<data>", range: keyRange.upperBound..<text.endIndex),
-          let closeTag = text.range(of: "</data>", range: openTag.upperBound..<text.endIndex) else {
-        return -4
+    // Apple answers in XML or in a binary plist depending on the endpoint; the
+    // serialiser reads both, so the format is not something to guess at.
+    let head = responseData.map { String(data: $0.prefix(48), encoding: .utf8) ?? "<binary>" } ?? "<none>"
+    let note = "http=\(statusCode) len=\(responseData?.count ?? -1) head=\(head)"
+        .replacingOccurrences(of: "\n", with: " ")
+    note.withCString { x64probe_set_post_note($0) }
+
+    guard let responseData else { return -5 }
+    guard statusCode == 200 else { return -6 }
+    guard let plist = try? PropertyListSerialization.propertyList(from: responseData,
+                                                                  options: [], format: nil),
+          let dict = plist as? [String: Any],
+          let value = dict["sign-sap-setup-buffer"] as? Data, !value.isEmpty else {
+        return -7
     }
-    let base64 = text[openTag.upperBound..<closeTag.lowerBound]
-        .filter { !$0.isWhitespace }
-    guard let decoded = Data(base64Encoded: base64), !decoded.isEmpty else { return -5 }
-    guard decoded.count <= replyCap else { return -6 }
-    decoded.copyBytes(to: reply, count: decoded.count)
-    replyLen.pointee = decoded.count
+    guard value.count <= replyCap else { return -8 }
+    value.copyBytes(to: reply, count: value.count)
+    replyLen.pointee = value.count
     return 0
 }
 
