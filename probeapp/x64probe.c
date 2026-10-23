@@ -380,6 +380,8 @@ static uint64_t g_cmp_rbp, g_cmp_mark, g_cmp_ptr;
 /* The block that leads into the error return tests ecx and picks one of two
  * values from it. Sampling ecx there, plus the two pointers it writes through,
  * says whether the outcome turns on a zero that should not be zero. */
+static int g_c3_seen;
+static uint32_t g_c3_val;
 static int g_c2_seen;
 static uint64_t g_c2_ecx, g_c2_eax, g_c2_p1, g_c2_p2, g_c2_v1, g_c2_v2;
 
@@ -388,6 +390,14 @@ static void tail_pc_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user
 	(void)size; (void)user;
 	if (g_pc2_n < 512) {
 		g_pc2[g_pc2_n++] = addr >= g_base ? addr - g_base : addr;
+	}
+	if (addr == g_base + 0x8a56d && !g_c3_seen) {
+		uint64_t rbp = 0, v = 0;
+		if (uc_reg_read(uc, UC_X86_REG_RBP, &rbp) == UC_ERR_OK) {
+			uc_mem_read(uc, rbp - 0x1898, &v, 4);
+			g_c3_val = (uint32_t)v;
+			g_c3_seen = 1;
+		}
 	}
 	if (addr == g_base + 0x8a6b3 && !g_c2_seen) {
 		uint64_t rbp = 0, ecx = 0, eax = 0, p1 = 0, p2 = 0;
@@ -1727,6 +1737,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									g_pc2_n = 0;
 									g_cmp_seen = 0;
 									g_c2_seen = 0;
+									g_c3_seen = 0;
 									uc_hook th = 0;
 									uc_hook_add(uc, &th, UC_HOOK_CODE,
 									            (void *)tail_pc_hook, NULL, 1, 0);
@@ -1735,6 +1746,46 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									                        trampoline, args2, 8, &st2);
 									if (th != 0) {
 										uc_hook_del(uc, th);
+									}
+									append(out, cap, &used,
+									       "[X64] sap: ver=%#x (need >= 0xd2) %s\n",
+									       (unsigned)g_c3_val,
+									       g_c3_seen ? "" : "(sample not reached)");
+
+									/* The block that rejects the reply compares a
+									 * value against 210 and jumps away when it is
+									 * smaller. If that value is the protocol
+									 * version, 200 is simply too low for this leg.
+									 * Retry with higher versions on the same reply:
+									 * the second call consumed nothing the first
+									 * time, so a fresh attempt costs nothing. */
+									if ((int32_t)st2 != 0) {
+										static const uint32_t alt[4] = {210, 211, 212, 214};
+										for (int vi = 0; vi < 4; vi++) {
+											uint64_t zz = 0;
+											uint32_t zz4 = 0;
+											uint64_t o3 = guest_alloc(8);
+											uint64_t l3 = guest_alloc(8);
+											uint64_t r3 = guest_alloc(4);
+											uc_mem_write(uc, o3, &zz, 8);
+											uc_mem_write(uc, l3, &zz, 8);
+											uc_mem_write(uc, r3, &zz4, 4);
+											uint64_t a3[8] = { alt[vi], hardware_addr, context_value,
+											                   reply_addr, reply_len,
+											                   o3, l3, r3 };
+											uint64_t s3 = 0;
+											uc_err e3 = call_guest_n(uc, exchange_addr,
+											                         g_stack_base + 0x100000,
+											                         trampoline, a3, 8, &s3);
+											uint64_t ol3 = 0;
+											uint32_t sv3 = 0;
+											uc_mem_read(uc, l3, &ol3, 8);
+											uc_mem_read(uc, r3, &sv3, 4);
+											append(out, cap, &used,
+											       "[X64] sap: retry ver=%u err=%u status=%lld state=%u outlen=%llu\n",
+											       alt[vi], e3, (long long)(int32_t)s3, sv3,
+											       (unsigned long long)ol3);
+										}
 									}
 									if (g_c2_seen) {
 										append(out, cap, &used,
