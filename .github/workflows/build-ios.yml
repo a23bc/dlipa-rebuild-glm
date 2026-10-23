@@ -342,11 +342,14 @@ jobs:
           # _Fc3vhtJDvr and the other two entries, and it imports no CoreFP
           # symbol at all. CoreFP is a separate service the macOS 27 stack
           # needs; the 10.9 driver does not.
-          mkdir -p app/DLiPARebuild/Resources
+          # Absolute paths on both sides: this step runs with
+          # working-directory sapbridge, so a relative -out would land inside
+          # the Go module instead of the app.
+          mkdir -p "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources"
           go run ./cmd/x86image \
             -in "$GITHUB_WORKSPACE/osx109/CommerceKit" \
-            -out app/DLiPARebuild/Resources/commerce.x64i
-          ls -la app/DLiPARebuild/Resources/commerce.x64i
+            -out "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/commerce.x64i"
+          ls -la "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/commerce.x64i"
         working-directory: sapbridge
 
       - name: Build the app (unsigned)
