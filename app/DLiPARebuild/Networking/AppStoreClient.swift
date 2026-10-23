@@ -12,6 +12,14 @@ final class AppStoreClient {
     private let session: URLSession
     private let decoder = PropertyListDecoder()
 
+    /// The address Apple redirected the authenticate endpoint to.
+    ///
+    /// The 2FA retry is a second call to `authenticate`, not a loop inside one
+    /// call, so this has to outlive the first one. ipatool keeps the redirected
+    /// URL in its retry loop and posts there again; going back to the generic
+    /// endpoint on the code attempt is what produced a 404.
+    private var authenticationPod: String?
+
     /// The UA the original DLiPA shipped. Apple gates the private bag on the
     /// Configurator UA: with a generic UA the response contains none of the
     /// sign-sap-* keys at all. The 2.17 UA was found to return a generic
@@ -104,21 +112,21 @@ final class AppStoreClient {
         AppLog.info("authenticating against " + url + " attempt " + String(attempt)
                     + (authCode == nil ? " (no 2FA)" : " (with 2FA)"), .auth)
 
-        var request = URLRequest(url: URL(string: url)!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
-
         let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
 
-        // Apple sometimes rejects a correct password on the first request with
-        // -5000. ipatool retries that once (its "second credential attempt"),
-        // so the counter reaching 2 is not only for 2FA.
+        // Where this request starts. A code-carrying attempt goes straight to
+        // the pod the password attempt was redirected to; a fresh attempt
+        // starts from the generic endpoint and forgets any earlier pod, because
+        // the account may have changed.
+        if authCode == nil || authCode!.isEmpty {
+            authenticationPod = nil
+        }
+        var endpointNow = authenticationPod ?? url
         var sentAttempt = attempt
         var data = Data()
         var http: HTTPURLResponse?
+
         for pass in 0..<2 {
-            var attemptRequest = request
             let payload: [String: Any] = [
                 "appleId": email,
                 "attempt": String(sentAttempt),
@@ -129,13 +137,44 @@ final class AppStoreClient {
             ]
             // The header says urlencoded but the body really is a plist; this
             // is what Apple accepts and what the signature must cover.
-            attemptRequest.httpBody = try PropertyListSerialization.data(
+            let body = try PropertyListSerialization.data(
                 fromPropertyList: payload, format: .xml, options: 0)
 
-            let result = try await signedRequest(
-                attemptRequest, signer: signer, redirects: 4)
-            data = result.0
-            http = result.1
+            var outcome: (Data, HTTPURLResponse)?
+            for networkTry in 0..<Self.authenticationRequestAttempts {
+                var attemptRequest = URLRequest(url: URL(string: endpointNow)!)
+                attemptRequest.httpMethod = "POST"
+                attemptRequest.setValue("application/x-www-form-urlencoded",
+                                        forHTTPHeaderField: "Content-Type")
+                attemptRequest.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
+                attemptRequest.httpBody = body
+
+                let result = try await signedRequest(
+                    attemptRequest, signer: signer, redirects: 4)
+                outcome = result
+                if let settled = result.1.url?.absoluteString {
+                    endpointNow = settled
+                    authenticationPod = settled
+                }
+
+                // A Store pod answers 204, 403, 404, 429 or 5xx transiently.
+                // ipatool retries those three times with a 10s / 20s backoff
+                // instead of failing the sign-in.
+                guard Self.isTransientAuthenticationStatus(result.1.statusCode),
+                      networkTry < Self.authenticationRequestAttempts - 1 else { break }
+
+                let delay = Self.authenticationRetryDelays[
+                    min(networkTry, Self.authenticationRetryDelays.count - 1)]
+                AppLog.warn("authenticate got HTTP " + String(result.1.statusCode)
+                            + ", retrying in " + String(delay) + "s", .auth)
+                try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+            }
+
+            guard let finished = outcome else {
+                throw StoreError.httpError(-1, "no response")
+            }
+            data = finished.0
+            http = finished.1
 
             // Only the first pass, only without a code, and only for the
             // invalid-credentials code. Anything else ends the loop.
@@ -197,6 +236,9 @@ final class AppStoreClient {
             throw StoreError.failureType("no-session",
                                          "apple returned no usable authentication response")
         }
+
+        // The sign-in is finished; the pod address belongs to it alone.
+        authenticationPod = nil
 
         return Account(
             email: accountInfo["appleId"] as? String ?? email,
@@ -355,6 +397,24 @@ final class AppStoreClient {
         }
 
         throw StoreError.httpError(310, "too many redirects")
+    }
+
+    /// How many times a single authentication request is sent. ipatool uses
+    /// three, with the delays below between them.
+    private static let authenticationRequestAttempts = 3
+
+    /// 10s then 20s, capped at 30s the way ipatool caps it.
+    private static let authenticationRetryDelays: [UInt64] = [10, 20]
+
+    /// Statuses a Store pod returns when it is not ready to answer. Treating
+    /// these as final is what surfaced a 404 to the user on the 2FA attempt.
+    private static func isTransientAuthenticationStatus(_ statusCode: Int) -> Bool {
+        switch statusCode {
+        case 204, 403, 404, 429:
+            return true
+        default:
+            return statusCode / 100 == 5
+        }
     }
 
     /// Redirect codes whose body must be replayed at the destination.

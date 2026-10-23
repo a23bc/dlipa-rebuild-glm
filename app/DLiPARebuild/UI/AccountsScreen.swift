@@ -7,6 +7,9 @@ import SwiftUI
 struct AccountsScreen: View {
     @StateObject private var model = AccountsModel()
     @State private var showingSignIn = false
+    /// Non-nil once Apple has asked for a verification code. It drives the
+    /// second modal; the password sheet is already gone by then.
+    @State private var twoFactor: TwoFactorChallenge?
 
     var body: some View {
         NavigationView {
@@ -50,7 +53,18 @@ struct AccountsScreen: View {
                 }
             }
             .sheet(isPresented: $showingSignIn) {
-                SignInView(model: model)
+                SignInView(model: model) { email, password in
+                    // SwiftUI will not stack two sheets from the same
+                    // presenter, so the code modal opens once the password
+                    // sheet has finished going away.
+                    showingSignIn = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        twoFactor = TwoFactorChallenge(email: email, password: password)
+                    }
+                }
+            }
+            .sheet(item: $twoFactor, onDismiss: { twoFactor = nil }) { challenge in
+                TwoFactorView(model: model, challenge: challenge)
             }
             .overlay {
                 if model.busy {
@@ -161,14 +175,22 @@ final class AccountsModel: ObservableObject {
 
 // MARK: - Sign in sheet
 
+/// Collects the Apple ID and password only. When Apple answers with a 2FA
+/// challenge the sheet closes and a separate modal takes over: a code field
+/// that appears underneath the password fields is easy to miss, and it leaves
+/// the password visible on screen while the user goes to fetch the code.
 struct SignInView: View {
     @ObservedObject var model: AccountsModel
+
+    /// Called instead of dismissing when Apple wants a verification code. The
+    /// credentials are carried up so the second modal does not make the user
+    /// type them again.
+    let onTwoFactorRequired: (String, String) -> Void
+
     @Environment(\.dismiss) private var dismiss
 
     @State private var email = ""
     @State private var password = ""
-    @State private var code = ""
-    @State private var needsCode = false
     @State private var errorText = ""
 
     var body: some View {
@@ -181,19 +203,13 @@ struct SignInView: View {
                         .disableAutocorrection(true)
                     SecureField("Password", text: $password)
                 }
-                if needsCode {
-                    Section("Two-factor code") {
-                        TextField("Code", text: $code)
-                            .keyboardType(.numberPad)
-                    }
-                }
                 if !errorText.isEmpty {
                     Section {
                         Text(errorText).foregroundColor(.red)
                     }
                 }
                 Section {
-                    Button(needsCode ? "Submit code" : "Sign in") { submit() }
+                    Button("Sign in") { submit() }
                         .disabled(model.busy || email.isEmpty || password.isEmpty)
                 }
             }
@@ -210,15 +226,85 @@ struct SignInView: View {
         errorText = ""
         Task {
             do {
-                try await model.signIn(email: email, password: password,
-                                       authCode: needsCode ? code : nil)
+                try await model.signIn(email: email, password: password, authCode: nil)
                 dismiss()
             } catch StoreError.twoFactorRequired {
-                needsCode = true
-                errorText = ""
+                onTwoFactorRequired(email, password)
+                dismiss()
             } catch {
                 errorText = error.localizedDescription
                 AppLog.error("sign-in failed: " + error.localizedDescription, .auth)
+            }
+        }
+    }
+}
+
+// MARK: - Two-factor modal
+
+/// What the second modal needs: the credentials already accepted, so only the
+/// code is missing.
+struct TwoFactorChallenge: Identifiable {
+    let id = UUID()
+    let email: String
+    let password: String
+}
+
+/// The verification-code modal. It reuses the model's existing SAP signer, so
+/// the guest session started for the password step is not thrown away.
+struct TwoFactorView: View {
+    @ObservedObject var model: AccountsModel
+    let challenge: TwoFactorChallenge
+
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var code = ""
+    @State private var errorText = ""
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Text("Enter the verification code Apple sent to your other devices.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    TextField("Verification code", text: $code)
+                        .keyboardType(.numberPad)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                }
+                if !errorText.isEmpty {
+                    Section {
+                        Text(errorText).foregroundColor(.red)
+                    }
+                }
+                Section {
+                    Button("Verify") { submit() }
+                        .disabled(model.busy || code.isEmpty)
+                }
+            }
+            .navigationTitle("Two-Factor")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func submit() {
+        errorText = ""
+        Task {
+            do {
+                try await model.signIn(email: challenge.email,
+                                       password: challenge.password,
+                                       authCode: code)
+                dismiss()
+            } catch StoreError.twoFactorRequired {
+                // Apple asked again: the code was wrong or had expired.
+                errorText = "Apple did not accept that code. Try the newest one."
+            } catch {
+                errorText = error.localizedDescription
+                AppLog.error("2FA failed: " + error.localizedDescription, .auth)
             }
         }
     }
