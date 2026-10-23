@@ -22,7 +22,9 @@
 #include <unicorn/unicorn.h>
 #include <unicorn/x86.h>
 
-#define MAX_IMPORTS 320
+/* CommerceKit carries 392 imports, so the old ceiling of 320 rejected it
+ * outright with "counts out of range". */
+#define MAX_IMPORTS 512
 #define MAX_SEGMENTS 16
 #define MAX_ENTRIES 16
 #define STUB_SLOT 16
@@ -330,9 +332,15 @@ static void on_bad_write(uc_engine *uc, uc_mem_type type, uint64_t address,
 	ctx->fault_addr = address; ctx->fault_kind = 2;
 }
 
-static void on_bad_fetch(uc_engine *uc, uint64_t address, int size, void *user)
+/* An unmapped fetch reports through the same six-argument shape as an
+ * unmapped read, not the four-argument shape a code hook uses. Declaring it
+ * the short way leaves user_data pointing at whatever was in the register
+ * that the fourth argument travelled in, and the first store through it is a
+ * SIGSEGV inside the hook - which is exactly what the crash log showed. */
+static void on_bad_fetch(uc_engine *uc, uc_mem_type type, uint64_t address,
+                         int size, int64_t value, void *user)
 {
-	(void)uc; (void)size;
+	(void)uc; (void)type; (void)size; (void)value;
 	hook_ctx_t *ctx = (hook_ctx_t *)user;
 	ctx->fault_addr = address; ctx->fault_kind = 3;
 }
