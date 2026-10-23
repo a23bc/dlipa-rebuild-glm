@@ -154,6 +154,11 @@ typedef struct {
 	 * is the same information read from the other end. */
 	uint32_t pc_last[256];
 	uint64_t pc_total;
+	/* Both runs start and finish the same way, so the difference is in the
+	 * middle. A checksum per 65536 instructions lines the two runs up without
+	 * shipping three million addresses: the first block that differs is the
+	 * region to look at, and it is small enough to disassemble. */
+	uint32_t pc_block[64];
 } hook_ctx_t;
 
 typedef struct {
@@ -777,6 +782,13 @@ static void on_exchange_pc(uc_engine *uc, uint64_t address, uint32_t size, void 
 		ctx->pc_trace[ctx->pc_count++] = (uint32_t)(address - g_base);
 	}
 	ctx->pc_last[ctx->pc_total % 256] = (uint32_t)(address - g_base);
+	{
+		uint32_t block = (uint32_t)(ctx->pc_total >> 16);
+		if (block < 64) {
+			ctx->pc_block[block] = ctx->pc_block[block] * 16777619u
+			                     + (uint32_t)(address - g_base) + 1u;
+		}
+	}
 	ctx->pc_total++;
 }
 
@@ -1697,6 +1709,12 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	append(out, cap, &used, "[X64] exchange pc trace (%d):", ctx.pc_count);
 	for (int i = 0; i < ctx.pc_count && i < 160; i++) {
 		append(out, cap, &used, " %x", ctx.pc_trace[i]);
+	}
+	append(out, cap, &used, "\n");
+	append(out, cap, &used, "[X64] pc block sigs (%llu blocks):",
+	       (unsigned long long)((ctx.pc_total + 65535) >> 16));
+	for (uint32_t b = 0; b < 64 && b < (ctx.pc_total + 65535) >> 16; b++) {
+		append(out, cap, &used, " %x", ctx.pc_block[b]);
 	}
 	append(out, cap, &used, "\n");
 	{
