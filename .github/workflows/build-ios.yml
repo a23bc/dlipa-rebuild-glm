@@ -192,14 +192,14 @@ jobs:
           # Only the device slice. Simulator targets cannot link an arm64 iOS
           # archive, and gomobile builds every variant of the target.
           gomobile bind -target=ios/arm64 \
-            -o ../app/DLiPA/Frameworks/SapBridge.xcframework .
+            -o ../app/DLiPARebuild/Frameworks/SapBridge.xcframework .
           echo "==> framework contents"
-          ls -laR ../app/DLiPA/Frameworks/ | head -40
+          ls -laR ../app/DLiPARebuild/Frameworks/ | head -40
       - name: Inspect the framework
         run: |
           # An xcframework nests the real binary under ios-arm64/.
-          find app/DLiPA/Frameworks/SapBridge.xcframework -type f | head -20
-          FRAMEWORK=$(find app/DLiPA/Frameworks/SapBridge.xcframework -name SapBridge -type f | head -n 1)
+          find app/DLiPARebuild/Frameworks/SapBridge.xcframework -type f | head -20
+          FRAMEWORK=$(find app/DLiPARebuild/Frameworks/SapBridge.xcframework -name SapBridge -type f | head -n 1)
           echo "==> binary: $FRAMEWORK"
           ls -la "$FRAMEWORK"
           file "$FRAMEWORK"
@@ -212,7 +212,7 @@ jobs:
         run: |
           # A missing Unicorn backend only shows up as uc_open failing at
           # runtime, which is invisible until the app runs. Check here.
-          FRAMEWORK=$(find app/DLiPA/Frameworks/SapBridge.xcframework -name SapBridge -type f | head -n 1)
+          FRAMEWORK=$(find app/DLiPARebuild/Frameworks/SapBridge.xcframework -name SapBridge -type f | head -n 1)
           if [ -z "$FRAMEWORK" ]; then echo "::error::SapBridge binary not found in the xcframework"; exit 1; fi
           if nm -A "$FRAMEWORK" 2>/dev/null | grep -q uc_open; then
             echo "==> Unicorn symbols present"
@@ -234,7 +234,7 @@ jobs:
           # One tar root: bsdtar cannot mix -C roots.
           mkdir -p stage/ios
           cp build/ios/libunicorn.a stage/ios/
-          cp app/DLiPA/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/SapBridge stage/SapBridge.a
+          cp app/DLiPARebuild/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/SapBridge stage/SapBridge.a
           tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a
           echo "artifact=sapbridge-ios.tar.gz" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
@@ -244,7 +244,7 @@ jobs:
           retention-days: 5
 
   app:
-    name: Build unsigned DLiPA app
+    name: Build unsigned DLiPA Rebuild app
     runs-on: macos-15
     needs: go-bridge
     steps:
@@ -287,7 +287,7 @@ jobs:
             git lfs pull
           fi
           ls -la VendorAssets
-          ./scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/app/DLiPA/Resources/SapAssets"
+          ./scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/SapAssets"
 
       - name: Install build tools
         run: |
@@ -311,9 +311,9 @@ jobs:
           # mmap(PROT_EXEC), no dlopen, no Unicorn needed.
           python3 scripts/prepare-commerce.py \
             VendorAssets/commerce \
-            app/DLiPA/Resources/commerce_native
-          ls -la app/DLiPA/Resources/commerce_native
-          file app/DLiPA/Resources/commerce_native
+            app/DLiPARebuild/Resources/commerce_native
+          ls -la app/DLiPARebuild/Resources/commerce_native
+          file app/DLiPARebuild/Resources/commerce_native
 
       - name: Build the app (unsigned)
         working-directory: app
@@ -321,7 +321,7 @@ jobs:
           # Generate the project from project.yml; there is no checked-in
           # pbxproj to go stale.
           xcodegen generate
-          ls -la DLiPA.xcodeproj
+          ls -la DLiPARebuild.xcodeproj
 
           # No -sdk iphoneos: the macos-15 image ships the iOS 18 SDK without
           # the installed platform, and naming the SDK makes the asset and
@@ -337,8 +337,8 @@ jobs:
           # no developer account.
           set -o pipefail
           xcodebuild \
-            -project DLiPA.xcodeproj \
-            -scheme DLiPA \
+            -project DLiPARebuild.xcodeproj \
+            -scheme DLiPARebuild \
             -configuration ${{ github.event.inputs.configuration || 'Release' }} \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
@@ -349,17 +349,17 @@ jobs:
       - name: Locate the built app
         id: app
         run: |
-          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
-          if [ -z "$APP" ]; then echo "::error::DLiPA.app not found"; exit 1; fi
+          APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
 
       - name: Copy commerce_native into bundle
         run: |
-          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
+          APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           # Use .bin extension so MobileInstallation doesn't treat it
           # as a nested executable (which would cause install failure).
-          cp app/DLiPA/Resources/commerce_native "$APP/commerce_native.bin"
+          cp app/DLiPARebuild/Resources/commerce_native "$APP/commerce_native.bin"
           ls -la "$APP/commerce_native.bin"
 
       - name: Write BuildID
@@ -374,8 +374,8 @@ jobs:
           # The file is read by AppLog on startup and printed verbatim, so
           # any field added here shows up in the device log without code
           # changes.
-          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
-          if [ -z "$APP" ]; then echo "::error::DLiPA.app not found"; exit 1; fi
+          APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
 
           # Pin the expected SapAssets digests in the BuildID file too, so
           # the device log shows what the bytes *should* be alongside what
@@ -412,8 +412,8 @@ jobs:
           # codesign cannot produce them here: it validates the whole bundle and
           # rejects resource after resource. Homebrew ldid no longer supports -S.
           # The procursus build of ldid kept -S; upstream 2.1.5 dropped it.
-          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
-          if [ -z "$APP" ]; then echo "::error::DLiPA.app not found"; exit 1; fi
+          APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
 
           python3 scripts/make-coderesources.py "$APP"
           echo "==> CodeResources"
@@ -482,7 +482,7 @@ jobs:
           # BundleDir names, which the app sets to Resources/SapAssets. A
           # 7 MB unrecognised file at the bundle root is exactly the kind of
           # thing MobileInstallation rejects.
-          APP=$(find app/build -name "DLiPA.app" -maxdepth 4 -type d | head -n 1)
+          APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           echo "==> bundle root before cleanup"
           ls -la "$APP"
           find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" ! -name "BuildID.txt" ! -name "commerce_native.bin" -print -delete

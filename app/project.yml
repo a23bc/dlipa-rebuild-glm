@@ -1,4 +1,4 @@
-name: DLiPA
+name: DLiPARebuild
 options:
   bundleIdPrefix: com.a23bc
   # Localizations carried over from the original DLiPA 1.4.
@@ -8,13 +8,13 @@ options:
   createIntermediateGroups: true
 
 targets:
-  DLiPA:
+  DLiPARebuild:
     type: application
     platform: iOS
     deploymentTarget: "15.0"
     supportedDestinations: [iOS]
     sources:
-      - path: DLiPA
+      - path: DLiPARebuild
         excludes:
           # ibtool on the macos-15 image demands an installed iOS platform,
           # which is not present. The launch screen comes from Info.plist.
@@ -31,12 +31,12 @@ targets:
       # The four Apple binaries are staged here by scripts/stage-assets.sh
       # and copied into the app bundle. type: folder preserves the SapAssets/
       # subdirectory in the bundle root.
-      # Note: the previous version used `path: DLiPA/Resources` with
+      # Note: the previous version used `path: DLiPARebuild/Resources` with
       # type: folder, which created a non-standard Resources/ subdirectory in
       # the iOS bundle. iOS app bundles are flat; a Resources/ subdirectory
       # makes MobileInstallation type the bundle as System and reject
       # registration with error 181.
-      - path: DLiPA/Resources/SapAssets
+      - path: DLiPARebuild/Resources/SapAssets
         type: folder
     # No dependencies. The gomobile archive is force-loaded into the app
     # binary by OTHER_LDFLAGS below, so the symbols resolve at link time and
