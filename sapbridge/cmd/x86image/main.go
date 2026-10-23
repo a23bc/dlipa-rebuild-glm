@@ -135,8 +135,13 @@ type image struct {
 	entries  []entry
 }
 
-// openX86 picks the x86-64 slice. These assets are universal binaries whose
-// first slice is i386, so the first slice is the wrong one.
+// openX86 picks the x86-64 slice and refuses anything else.
+//
+// The refusal matters. A first version fell back to whichever slice the thin
+// parser found, which silently produced an image from an arm64 binary: the
+// counts came out as 4 segments and 9792 rebases instead of 3 and 1004, and
+// nothing failed. A wrong-architecture image would have been installed on a
+// device and debugged as if it were a loader problem.
 func openX86(raw []byte) (*macho.File, error) {
 	if fat, err := macho.NewFatFile(bytes.NewReader(raw)); err == nil {
 		for _, arch := range fat.Arches {
@@ -144,10 +149,29 @@ func openX86(raw []byte) (*macho.File, error) {
 				return arch.File, nil
 			}
 		}
-		return nil, fmt.Errorf("universal binary has no x86-64 slice")
+
+		names := make([]string, 0, len(fat.Arches))
+		for _, arch := range fat.Arches {
+			names = append(names, arch.File.FileHeader.CPU.String())
+		}
+
+		return nil, fmt.Errorf(
+			"universal binary has no x86-64 slice (has %v); the TCI build only interprets x86",
+			names)
 	}
 
-	return macho.NewFile(bytes.NewReader(raw))
+	file, err := macho.NewFile(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+
+	if file.FileHeader.CPU != types.CPUAmd64 {
+		return nil, fmt.Errorf(
+			"binary is %v, not x86-64; the TCI build only interprets x86",
+			file.FileHeader.CPU)
+	}
+
+	return file, nil
 }
 
 func build(file *macho.File, raw []byte) (*image, error) {

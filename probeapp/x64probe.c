@@ -228,10 +228,16 @@ void x64probe_report(const char *path, char *out, size_t cap)
 	}
 	append(out, cap, &used, "[X64] segments mapped at %#llx\n", (unsigned long long)base);
 
-	/* Stub region: one slot per import, each a bare ret (0xC3 on x86-64). */
+	/* Stub region: one slot per import, each a bare ret (0xC3 on x86-64).
+	 *
+	 * Unicorn rejects a mapping whose size is not a multiple of the host page,
+	 * and 193 slots of 16 bytes is 3088 - so round up. The first version passed
+	 * the raw size and the map failed with UC_ERR_ARG. */
 	uint32_t stub_count = import_count;
-	if (uc_mem_map(uc, stub_base, (size_t)stub_count * STUB_SLOT, UC_PROT_ALL) != UC_ERR_OK) {
-		append(out, cap, &used, "[X64] stub map failed\n");
+	uint64_t stub_size = ((uint64_t)stub_count * STUB_SLOT + 0xfff) & ~0xfffULL;
+	if (uc_mem_map(uc, stub_base, (size_t)stub_size, UC_PROT_ALL) != UC_ERR_OK) {
+		append(out, cap, &used, "[X64] stub map failed (%llu bytes)\n",
+		       (unsigned long long)stub_size);
 		uc_close(uc);
 		free(blob);
 		return;
@@ -249,9 +255,11 @@ void x64probe_report(const char *path, char *out, size_t cap)
 			data_count++;
 		}
 	}
+	uint64_t data_size = ((uint64_t)data_count * DATA_SLOT + 0xfff) & ~0xfffULL;
 	if (data_count > 0 &&
-	    uc_mem_map(uc, data_base, (size_t)data_count * DATA_SLOT, UC_PROT_ALL) != UC_ERR_OK) {
-		append(out, cap, &used, "[X64] data map failed\n");
+	    uc_mem_map(uc, data_base, (size_t)data_size, UC_PROT_ALL) != UC_ERR_OK) {
+		append(out, cap, &used, "[X64] data map failed (%llu bytes)\n",
+		       (unsigned long long)data_size);
 		uc_close(uc);
 		free(blob);
 		return;
