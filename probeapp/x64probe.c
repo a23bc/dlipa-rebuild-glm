@@ -1200,10 +1200,27 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 				uc_reg_write(uc, UC_X86_REG_RDI, &context_slot);
 				uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
 
-				err = uc_emu_start(uc, where, 0, 3000000, 0);
+				/* The retry must be checked the same way as any other call.
+				 * It used to run with no return address and a three-million
+				 * instruction budget, which reports success when the budget
+				 * runs out - so "err=0" here never meant the initialiser had
+				 * finished. */
+				uint64_t retry_args[2] = { context_slot, hardware_addr };
+				uint64_t retry_rax = 0;
+				err = call_guest_n(uc, where, g_stack_base + 0x100000,
+				                   trampoline, retry_args, 2, &retry_rax);
 				append(out, cap, &used,
-				       "[X64] retry after once-inits: err=%u (%u calls)\n",
-				       err, ctx.served_total);
+				       "[X64] retry after once-inits: err=%u rax=%#llx (%u calls)\n",
+				       err, (unsigned long long)retry_rax, ctx.served_total);
+				if (err != UC_ERR_OK) {
+					uint64_t stop = 0;
+					uc_reg_read(uc, UC_X86_REG_RIP, &stop);
+					append(out, cap, &used,
+					       "[X64]   initialiser stopped at %#llx (image+%#llx), fault kind=%d addr=%#llx\n",
+					       (unsigned long long)stop,
+					       (unsigned long long)(stop >= g_base ? stop - g_base : 0),
+					       ctx.fault_kind, (unsigned long long)ctx.fault_addr);
+				}
 			}
 
 			/* mode 2 continues into the exchange step. Eight arguments, so the
