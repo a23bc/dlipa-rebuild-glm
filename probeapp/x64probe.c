@@ -130,6 +130,14 @@ typedef struct {
 	/* The guest walks the IO registry looking for machine identity. The walk
 	 * must terminate, so the iterator yields one entry and then zero. */
 	int io_iterator;
+	/* The exchange's error path runs through a flattened state machine: a jump
+	 * table indexed by a state number, with the error constant selected when
+	 * that number takes a particular value. Recording every state the machine
+	 * visits turns "it returned -42023" into "it went through these states and
+	 * diverged here". */
+	uint32_t vm_states[256];
+	int vm_state_count;
+	uint64_t vm_site;
 } hook_ctx_t;
 
 typedef struct {
@@ -700,6 +708,21 @@ static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
 
 /* Records the page a guest instruction came from. One bit per 4 KB, so the
  * whole image costs a few kilobytes of host memory. */
+/* Records the state number the dispatcher is about to test. EAX holds it at
+ * the comparison, before the jump table uses it. */
+static void on_vm_state(uc_engine *uc, uint64_t address, uint32_t size, void *user)
+{
+	(void)address; (void)size;
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	uint64_t rax = 0;
+	if (uc_reg_read(uc, UC_X86_REG_RAX, &rax) != UC_ERR_OK) {
+		return;
+	}
+	if (ctx->vm_state_count < 256) {
+		ctx->vm_states[ctx->vm_state_count++] = (uint32_t)rax;
+	}
+}
+
 static void on_guest_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 {
 	(void)uc; (void)size;
@@ -958,13 +981,19 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	}
 	ctx.code_pages = (uint8_t *)calloc((size_t)((ctx.code_pages_count + 7) / 8) + 1, 1);
 
-	uc_hook hook, h1, h2, h3, h4, h5;
+	uc_hook hook, h1, h2, h3, h4, h5, h6;
 	uc_hook_add(uc, &hook, UC_HOOK_CODE, on_code, &ctx,
 	            g_stub_base, g_stub_base + (uint64_t)stub_count * STUB_SLOT - 1);
 	if (ctx.code_pages != NULL) {
 		uc_hook_add(uc, &h5, UC_HOOK_CODE, on_guest_code, &ctx,
 		            g_base, g_base + code_span);
 	}
+
+	/* One instruction window: the state-number comparison that precedes the
+	 * jump table. Watching it costs nothing when the machine is not running. */
+	ctx.vm_site = g_base + 0x1b889d;
+	uc_hook_add(uc, &h6, UC_HOOK_CODE, on_vm_state, &ctx,
+	            ctx.vm_site, ctx.vm_site + 8);
 	uc_hook_add(uc, &h1, UC_HOOK_MEM_READ_UNMAPPED, on_bad_read, &ctx, 1, 0);
 	uc_hook_add(uc, &h2, UC_HOOK_MEM_WRITE_UNMAPPED, on_bad_write, &ctx, 1, 0);
 	uc_hook_add(uc, &h3, UC_HOOK_MEM_FETCH_UNMAPPED, on_bad_fetch, &ctx, 1, 0);
@@ -1541,6 +1570,16 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						       (unsigned long long)word[1]);
 					}
 				}
+			}
+
+			if (ctx.vm_state_count > 0) {
+				append(out, cap, &used, "[X64] vm states seen (%d):",
+				       ctx.vm_state_count);
+				for (int i = 0; i < ctx.vm_state_count && i < 64; i++) {
+					append(out, cap, &used, " %u", ctx.vm_states[i]);
+				}
+				append(out, cap, &used, "
+");
 			}
 
 			if (ctx.objc_sends > 0 || ctx.objc_misses > 0) {
