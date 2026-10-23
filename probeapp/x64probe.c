@@ -113,6 +113,13 @@ typedef struct {
 	 * be distinguished from a call that was served silently. */
 	uint16_t visited[32];
 	int visited_count;
+	/* Coverage of the guest's own code: one bit per 4 KB page of the loaded
+	 * image. Sampling the program counter only shows where it is between
+	 * slices; this records every page it ever executed, which is what tells
+	 * the analysed path apart from the one actually taken. */
+	uint8_t *code_pages;
+	uint64_t code_base;
+	uint64_t code_pages_count;
 } hook_ctx_t;
 
 typedef struct {
@@ -474,6 +481,21 @@ static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
 	return call_guest_n(uc, fn, stack_top, trampoline, NULL, 0, out_rax);
 }
 
+/* Records the page a guest instruction came from. One bit per 4 KB, so the
+ * whole image costs a few kilobytes of host memory. */
+static void on_guest_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
+{
+	(void)uc; (void)size;
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	if (address < ctx->code_base) {
+		return;
+	}
+	uint64_t index = (address - ctx->code_base) >> 12;
+	if (index < ctx->code_pages_count) {
+		ctx->code_pages[index >> 3] |= (uint8_t)(1u << (index & 7));
+	}
+}
+
 static void on_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 {
 	(void)size;
@@ -689,9 +711,26 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	ctx.served = served;
 	ctx.hit_slot = -1;
 
-	uc_hook hook, h1, h2, h3, h4;
+	/* Coverage of the guest image's own code, one bit per 4 KB page. The
+	 * image is under 3 MB, so this is under a kilobyte of bitmap. */
+	uint64_t code_span = 0;
+	for (uint32_t i = 0; i < seg_count; i++) {
+		uint64_t end = segs[i].vmaddr + segs[i].vmsize;
+		if (end > code_span) {
+			code_span = end;
+		}
+	}
+	ctx.code_base = g_base;
+	ctx.code_pages_count = (code_span >> 12) + 1;
+	ctx.code_pages = (uint8_t *)calloc((size_t)((ctx.code_pages_count + 7) / 8) + 1, 1);
+
+	uc_hook hook, h1, h2, h3, h4, h5;
 	uc_hook_add(uc, &hook, UC_HOOK_CODE, on_code, &ctx,
 	            g_stub_base, g_stub_base + (uint64_t)stub_count * STUB_SLOT - 1);
+	if (ctx.code_pages != NULL) {
+		uc_hook_add(uc, &h5, UC_HOOK_CODE, on_guest_code, &ctx,
+		            g_base, g_base + code_span);
+	}
 	uc_hook_add(uc, &h1, UC_HOOK_MEM_READ_UNMAPPED, on_bad_read, &ctx, 1, 0);
 	uc_hook_add(uc, &h2, UC_HOOK_MEM_WRITE_UNMAPPED, on_bad_write, &ctx, 1, 0);
 	uc_hook_add(uc, &h3, UC_HOOK_MEM_FETCH_UNMAPPED, on_bad_fetch, &ctx, 1, 0);
@@ -1102,6 +1141,43 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			/* Which imports actually ran, in the order they were first hit.
 			 * Without this a missing objc_msgSend looks the same whether the
 			 * code path was never taken or the call was answered silently. */
+			/* Which pages of the image were executed. Printed as ranges so
+			 * the shape of the taken path is visible at a glance. */
+			if (ctx.code_pages != NULL) {
+				uint64_t executed = 0;
+				for (uint64_t i = 0; i < ctx.code_pages_count; i++) {
+					if (ctx.code_pages[i >> 3] & (1u << (i & 7))) {
+						executed++;
+					}
+				}
+				append(out, cap, &used,
+				       "[X64] code coverage: %llu of %llu pages (%llu bytes)\n",
+				       (unsigned long long)executed,
+				       (unsigned long long)ctx.code_pages_count,
+				       (unsigned long long)(executed * 4096));
+
+				int shown = 0;
+				uint64_t run_start = 0;
+				int in_run = 0;
+				for (uint64_t i = 0; i <= ctx.code_pages_count; i++) {
+					int hit = (i < ctx.code_pages_count) &&
+					          (ctx.code_pages[i >> 3] & (1u << (i & 7)));
+					if (hit && !in_run) {
+						run_start = i;
+						in_run = 1;
+					} else if (!hit && in_run) {
+						if (shown < 12) {
+							append(out, cap, &used,
+							       "[X64]   executed %#llx..%#llx\n",
+							       (unsigned long long)(run_start << 12),
+							       (unsigned long long)(i << 12));
+							shown++;
+						}
+						in_run = 0;
+					}
+				}
+			}
+
 			append(out, cap, &used, "[X64] stubs hit (%d distinct):", ctx.visited_count);
 			for (int i = 0; i < ctx.visited_count; i++) {
 				append(out, cap, &used, " %s", import_names[ctx.visited[i]]);
