@@ -309,21 +309,38 @@ final class AppStoreClient {
         let identifiers: [String]
     }
 
-    /// Lists the versions available for an app.
-    ///
-    /// There is no version endpoint: the list rides along in the download
-    /// product response as `softwareVersionExternalIdentifiers` in the item
-    /// metadata.
-    ///
-    /// This is deliberately NOT the download request. ipatool-rs sends a
-    /// trimmed body here -- salableAdamId, guid, creditDisplay, and nothing
-    /// else, with no serialNumber and no X-Token -- so Apple treats it as a
-    /// metadata query rather than a download and does not demand a licence.
-    /// Sending the download shape is what kept answering 9610.
+    /// Lists the versions available for an app, acquiring a licence if Apple
+    /// asks for one.
     func listVersions(appId: String,
                       guid: String,
                       account: Account,
                       bag: StoreBag) async throws -> VersionList {
+        do {
+            return try await listVersionsOnce(appId: appId, guid: guid,
+                                              account: account, bag: bag)
+        } catch {
+            guard let store = error as? StoreError,
+                  case .failureType(let type, _) = store,
+                  type == "9610" else { throw error }
+            AppLog.info("version list asked for a licence; acquiring one", .download)
+            try await acquireLicense(appId: appId, guid: guid, account: account)
+            return try await listVersionsOnce(appId: appId, guid: guid,
+                                              account: account, bag: bag)
+        }
+    }
+
+    /// One attempt at the version list.
+    ///
+    /// The body is the trimmed metadata shape -- salableAdamId, guid,
+    /// creditDisplay, no serialNumber -- rather than the download shape. The
+    /// headers are not trimmed: without X-Token Apple answers 401 with an empty
+    /// body, which is what the first version of this did. ipatool-rs gets away
+    /// with DSID only because its client carries a cookie jar; this one has no
+    /// session cookies for the store, so the token has to be explicit.
+    private func listVersionsOnce(appId: String,
+                                  guid: String,
+                                  account: Account,
+                                  bag: StoreBag) async throws -> VersionList {
         guard let endpoint = bag.volumeStoreDownloadProduct else {
             AppLog.error("bag has no download endpoint", .download)
             throw StoreError.noBagEndpoint
@@ -336,6 +353,8 @@ final class AppStoreClient {
         request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
         request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
         request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+        request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
 
         let payload: [String: Any] = [
             // A string here; the download body uses an integer.
@@ -494,6 +513,13 @@ final class AppStoreClient {
                 from: data, options: [], format: nil)) as? [String: Any] ?? [:]
             let failure = plist["failureType"] as? String ?? ""
             let message = plist["customerMessage"] as? String ?? ""
+
+            // What Apple actually answered, kept at error level so it survives
+            // with recording off. A silent success that grants nothing is the
+            // failure mode to watch for here.
+            let preview = String(data: data.prefix(800), encoding: .utf8)
+                ?? "<\(data.count) binary bytes>"
+            AppLog.info("buyProduct " + pricing + " body: " + preview, .download)
 
             if failure.isEmpty { return }
             // Already owned is the outcome we want.
