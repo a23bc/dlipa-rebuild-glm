@@ -1213,25 +1213,33 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			}
 			append(out, cap, &used, "\n");
 
-			/* The context object carries a sentinel at +0x2b8. The disassembly
-			 * compares that field against 0x12db3c8a and writes the same value
-			 * on the path that ends in the early return, so its value after the
-			 * call says which path ran. */
-			if (context_slot != 0) {
+			/* Dump the context object whole. Guessing which offset holds the
+			 * status produced two wrong answers in a row; one hexdump shows
+			 * every field it actually populated. The struct is a few hundred
+			 * bytes and the object is heap-allocated, so reading 0x400 from its
+			 * base stays inside the allocation we handed out. */
+			if (mode >= 2 && context_slot != 0) {
 				uint64_t context_value = 0;
 				if (uc_mem_read(uc, context_slot, &context_value, 8) == UC_ERR_OK &&
 				    context_value != 0) {
-					uint32_t sentinel = 0;
-					if (uc_mem_read(uc, context_value + 0x2b8, &sentinel, 4) == UC_ERR_OK) {
-						append(out, cap, &used,
-						       "[X64] context+0x2b8 = %#x %s\n",
-						       sentinel,
-						       sentinel == 0x12db3c8au ? "(matches sentinel)" : "(does not match)");
-					}
-					uint64_t field_2b0 = 0;
-					if (uc_mem_read(uc, context_value + 0x2b0, &field_2b0, 8) == UC_ERR_OK) {
-						append(out, cap, &used, "[X64] context+0x2b0 = %#llx\n",
-						       (unsigned long long)field_2b0);
+					append(out, cap, &used,
+					       "[X64] context dump at %#llx:\n",
+					       (unsigned long long)context_value);
+					for (int row = 0; row < 0x40; row++) {
+						uint64_t base_row = context_value + (uint64_t)row * 16;
+						uint64_t word[2] = { 0, 0 };
+						if (uc_mem_read(uc, base_row, word, 16) != UC_ERR_OK) {
+							break;
+						}
+						/* Only rows that hold something are worth printing;
+						 * an empty context is mostly zeros. */
+						if (word[0] == 0 && word[1] == 0) {
+							continue;
+						}
+						append(out, cap, &used, "[X64]   +%03x: %016llx %016llx\n",
+						       row * 16,
+						       (unsigned long long)word[0],
+						       (unsigned long long)word[1]);
 					}
 				}
 			}
