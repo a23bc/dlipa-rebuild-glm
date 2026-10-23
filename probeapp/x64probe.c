@@ -606,8 +606,26 @@ static uc_err call_guest_n(uc_engine *uc, uint64_t fn, uint64_t stack_top,
 
 	uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
 
-	uc_err err = uc_emu_start(uc, fn, trampoline, 3000000, 0);
-	if (err == UC_ERR_OK && out_rax != NULL) {
+	/* No instruction budget: a crypto routine's length depends on its input,
+	 * and stopping a call half way still reports success from uc_emu_start.
+	 * The real check is where it stopped.
+	 *
+	 * If the program counter is not back at the trampoline, the guest did not
+	 * return - it ran out of budget or wandered off - and whatever is in rax is
+	 * a leftover, not a result. Treating that as a return value is how a
+	 * mid-function code address came to be reported as a status code. */
+	uc_err err = uc_emu_start(uc, fn, trampoline, 0, 0);
+	if (err != UC_ERR_OK) {
+		return err;
+	}
+
+	uint64_t landed = 0;
+	uc_reg_read(uc, UC_X86_REG_RIP, &landed);
+	if (landed != trampoline) {
+		return UC_ERR_EXCEPTION;
+	}
+
+	if (out_rax != NULL) {
 		uc_reg_read(uc, UC_X86_REG_RAX, out_rax);
 	}
 	return err;
