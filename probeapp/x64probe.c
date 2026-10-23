@@ -274,6 +274,42 @@ static int name_in(const char *name, const char *const *table, size_t count)
 	return 0;
 }
 
+/* pthread_once has to run its routine before it returns. A caller that reads
+ * the global the routine was supposed to set otherwise sees zero, and deferring
+ * it was the largest remaining difference between this build and a local run of
+ * the same image - the local one runs it and reaches state 1.
+ *
+ * The routine is guest code, so calling it from inside the stub hook means a
+ * re-entrant emulation. Every general register is saved and restored, and the
+ * call gets a stack area of its own, so the interrupted context resumes exactly
+ * where it was. */
+#define ONCE_TRAMPOLINE 0x500000000ULL
+static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
+                         uint64_t trampoline, uint64_t *out_rax);
+
+static uc_err once_call(uc_engine *uc, uint64_t fn)
+{
+	static const int ids[] = {
+		UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
+		UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RBP, UC_X86_REG_RSP,
+		UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_R10, UC_X86_REG_R11,
+		UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15,
+		UC_X86_REG_RFLAGS, UC_X86_REG_RIP,
+	};
+	enum { N = (int)(sizeof(ids) / sizeof(ids[0])) };
+	uint64_t saved[N];
+	for (int i = 0; i < N; i++) {
+		uc_reg_read(uc, ids[i], &saved[i]);
+	}
+	uint64_t ignored = 0;
+	uc_err err = call_guest(uc, fn, g_stack_base + 0x180000, ONCE_TRAMPOLINE,
+	                        &ignored);
+	for (int i = 0; i < N; i++) {
+		uc_reg_write(uc, ids[i], &saved[i]);
+	}
+	return err;
+}
+
 static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 {
 	uc_engine *uc = ctx->uc;
@@ -456,12 +492,18 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 	 * "_pthread_mutex_" is 15, the other two are 16. Counting the NUL makes
 	 * the comparison fail against every real symbol. */
 	if (strcmp(name, "_pthread_once") == 0) {
-		/* The initialiser is recorded, not called: invoking guest code from
-		 * inside a hook means a re-entrant uc_emu_start, which is not worth
-		 * the risk yet. The once word is marked done so the caller does not
-		 * spin, and the report names what was skipped. */
-		if (a.rsi != 0 && ctx->once_count < 8) {
-			ctx->once_inits[ctx->once_count++] = a.rsi;
+		/* Run the initialiser now, once, if the once word says it has not run
+		 * yet. Deferring it left the globals it sets at zero, which is what
+		 * the exchange's early exit was reacting to. */
+		if (a.rdi != 0) {
+			uint64_t word = 0;
+			uc_mem_read(uc, a.rdi, &word, 8);
+			if (word == 0 && a.rsi != 0) {
+				if (ctx->once_count < 8) {
+					ctx->once_inits[ctx->once_count++] = a.rsi;
+				}
+				once_call(uc, a.rsi);
+			}
 		}
 		/* pthread_once_t is 8 bytes on x86-64. Writing four left the upper
 		 * half alone, the sentinel never matched, and the guest asked for the
@@ -1627,7 +1669,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			}
 
 			for (int k = 0; k < ctx.once_count; k++) {
-				append(out, cap, &used, "[X64] once-init not run: %#llx\n",
+				append(out, cap, &used, "[X64] once-init ran in place: %#llx\n",
 				       (unsigned long long)ctx.once_inits[k]);
 			}
 		}
