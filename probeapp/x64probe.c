@@ -120,6 +120,12 @@ typedef struct {
 	uint8_t *code_pages;
 	uint64_t code_base;
 	uint64_t code_pages_count;
+	/* Exact entry hits. A page being covered only says the region ran; it does
+	 * not say the function's first instruction did, and a 40 KB span can hold
+	 * dozens of functions. These are recorded per address. */
+	uint64_t entry_addrs[8];
+	uint32_t entry_hits[8];
+	int entry_count;
 } hook_ctx_t;
 
 typedef struct {
@@ -487,6 +493,14 @@ static void on_guest_code(uc_engine *uc, uint64_t address, uint32_t size, void *
 {
 	(void)uc; (void)size;
 	hook_ctx_t *ctx = (hook_ctx_t *)user;
+
+	for (int i = 0; i < ctx->entry_count; i++) {
+		if (ctx->entry_addrs[i] == address) {
+			ctx->entry_hits[i]++;
+			break;
+		}
+	}
+
 	if (address < ctx->code_base) {
 		return;
 	}
@@ -722,6 +736,15 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	}
 	ctx.code_base = g_base;
 	ctx.code_pages_count = (code_span >> 12) + 1;
+
+	/* Watch the first instruction of every export. Page coverage cannot tell
+	 * "this function ran" from "something in its page ran". */
+	ctx.entry_count = 0;
+	for (uint32_t i = 0; i < entry_count && ctx.entry_count < 8; i++) {
+		ctx.entry_addrs[ctx.entry_count] = g_base + entries[i].addr;
+		ctx.entry_hits[ctx.entry_count] = 0;
+		ctx.entry_count++;
+	}
 	ctx.code_pages = (uint8_t *)calloc((size_t)((ctx.code_pages_count + 7) / 8) + 1, 1);
 
 	uc_hook hook, h1, h2, h3, h4, h5;
@@ -1177,6 +1200,12 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 					}
 				}
 			}
+
+			append(out, cap, &used, "[X64] export entry hits:");
+			for (int i = 0; i < ctx.entry_count; i++) {
+				append(out, cap, &used, " %s=%u", entries[i].name, ctx.entry_hits[i]);
+			}
+			append(out, cap, &used, "\n");
 
 			append(out, cap, &used, "[X64] stubs hit (%d distinct):", ctx.visited_count);
 			for (int i = 0; i < ctx.visited_count; i++) {
