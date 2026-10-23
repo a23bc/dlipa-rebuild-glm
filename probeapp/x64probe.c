@@ -143,6 +143,13 @@ typedef struct {
 	 * tell apart from a status code alone. */
 	char call_trace[1536];
 	size_t call_trace_len;
+	/* Every shim call with its arguments and result, encoded so that two
+	 * machines with different address spaces can be compared: zero, all-ones
+	 * and pointers become z, u and p, and only genuinely small integers keep
+	 * their value. Addresses differ between runs; what a shim was asked and
+	 * what it answered does not. */
+	char shim_trace[6144];
+	size_t shim_trace_len;
 	/* Program counters inside the exchange, as image offsets. A call that
 	 * returns a fixed error without calling a single import cannot be told
 	 * apart from a correct call by its result; the first few hundred addresses
@@ -312,6 +319,37 @@ static int name_in(const char *name, const char *const *table, size_t count)
 #define ONCE_TRAMPOLINE 0x500000000ULL
 static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
                          uint64_t trampoline, uint64_t *out_rax);
+
+static void tok(char *dst, size_t cap, uint64_t v)
+{
+	if (v == 0) {
+		snprintf(dst, cap, "z");
+	} else if (v == ~0ULL) {
+		snprintf(dst, cap, "u");
+	} else if (v == 0xffffffffULL) {
+		snprintf(dst, cap, "w");
+	} else if (v >= 0x100000000ULL) {
+		snprintf(dst, cap, "p");
+	} else {
+		snprintf(dst, cap, "%llx", (unsigned long long)v);
+	}
+}
+
+static void trace_shim(hook_ctx_t *ctx, const char *name,
+                       const uint64_t *args, uint64_t ret)
+{
+	char a0[24], a1[24], a2[24], r[24];
+	tok(a0, sizeof(a0), args[0]);
+	tok(a1, sizeof(a1), args[1]);
+	tok(a2, sizeof(a2), args[2]);
+	tok(r, sizeof(r), ret);
+	int n = snprintf(ctx->shim_trace + ctx->shim_trace_len,
+	                 sizeof(ctx->shim_trace) - ctx->shim_trace_len,
+	                 "%s(%s,%s,%s)=%s ", name + 1, a0, a1, a2, r);
+	if (n > 0 && ctx->shim_trace_len + (size_t)n < sizeof(ctx->shim_trace)) {
+		ctx->shim_trace_len += (size_t)n;
+	}
+}
 
 static void trace_call(hook_ctx_t *ctx, const char *name)
 {
@@ -851,7 +889,15 @@ static void on_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 		}
 	}
 
+	uint64_t shim_args[3] = { 0, 0, 0 };
+	uc_reg_read(uc, UC_X86_REG_RDI, &shim_args[0]);
+	uc_reg_read(uc, UC_X86_REG_RSI, &shim_args[1]);
+	uc_reg_read(uc, UC_X86_REG_RDX, &shim_args[2]);
+
 	if (dispatch(ctx, slot)) {
+		uint64_t ret = 0;
+		uc_reg_read(uc, UC_X86_REG_RAX, &ret);
+		trace_shim(ctx, ctx->names[slot], shim_args, ret);
 		ctx->served[slot]++;
 		ctx->served_total++;
 		return;
@@ -1750,6 +1796,8 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 		}
 		append(out, cap, &used, "\n");
 	}
+	append(out, cap, &used, "[X64] shim trace: %s\n",
+	       ctx.shim_trace_len ? ctx.shim_trace : "(none)");
 	append(out, cap, &used, "[X64] call order: %s\n",
 	       ctx.call_trace_len ? ctx.call_trace : "(none)");
 	append(out, cap, &used, "[X64] imports served: %u calls across", ctx.served_total);
