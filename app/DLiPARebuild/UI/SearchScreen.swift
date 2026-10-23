@@ -23,13 +23,19 @@ struct SearchScreen: View {
                         systemImage: "magnifyingglass",
                         detail: model.errorText ?? (model.hasSearched ? nil : "Look up an app by name, bundle identifier or App Store link."))
                 } else {
-                    List(model.results) { app in
-                        Button { actionTarget = app } label: {
-                            SearchResultRow(app: app)
+                    List {
+                        Section {
+                            ForEach(model.results) { app in
+                                Button { actionTarget = app } label: {
+                                    SearchResultRow(app: app)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } header: {
+                            Text("Results (\(model.results.count))")
                         }
-                        .buttonStyle(.plain)
                     }
-                    .listStyle(.plain)
+                    .listStyle(.insetGrouped)
                 }
             }
             .navigationTitle("Search")
@@ -97,43 +103,36 @@ struct ShareItem: Identifiable {
 
 // MARK: - Row
 
+/// Proportions follow the original app's search row: a 48 point icon, a 17
+/// point semibold title that wraps to two lines, and one grey meta line under
+/// it holding version, minimum iOS and download size.
 private struct SearchResultRow: View {
     let app: StoreApp
 
     var body: some View {
-        HStack(spacing: 12) {
-            ArtworkView(url: app.artworkUrl60)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: 14) {
+            ArtworkView(url: app.artworkUrl100 ?? app.artworkUrl60, size: 48)
+
+            VStack(alignment: .leading, spacing: 4) {
                 Text(app.trackName)
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(.primary)
-                    .lineLimit(1)
-                Text(app.bundleId)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                if let seller = app.sellerName, !seller.isEmpty {
-                    Text(seller)
-                        .font(.caption2)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !app.metaText.isEmpty {
+                    Text(app.metaText)
+                        .font(.system(size: 13))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 4)
-            VStack(alignment: .trailing, spacing: 2) {
-                if !app.versionText.isEmpty {
-                    Text(app.versionText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                if let price = app.price, price > 0 {
-                    Text(String(format: "%.2f", price))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
+
+            Spacer(minLength: 0)
         }
+        // The original's rows are about 75 points tall around a 48 point icon.
+        .padding(.vertical, 12)
         .contentShape(Rectangle())
-        .padding(.vertical, 2)
     }
 }
 
@@ -141,6 +140,7 @@ private struct SearchResultRow: View {
 /// which is enough for a list that recycles rows.
 private struct ArtworkView: View {
     let url: String?
+    let size: CGFloat
 
     var body: some View {
         Group {
@@ -148,17 +148,17 @@ private struct ArtworkView: View {
                 AsyncImage(url: parsed) { phase in
                     switch phase {
                     case .success(let image):
-                        image.resizable().aspectRatio(contentMode: .fit)
+                        image.resizable().aspectRatio(contentMode: .fill)
                     default:
-                        RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+                        Rectangle().fill(Color.secondary.opacity(0.15))
                     }
                 }
             } else {
-                RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+                Rectangle().fill(Color.secondary.opacity(0.15))
             }
         }
-        .frame(width: 44, height: 44)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
     }
 }
 

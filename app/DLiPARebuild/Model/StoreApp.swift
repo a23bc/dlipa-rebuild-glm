@@ -15,6 +15,10 @@ struct StoreApp: Decodable, Identifiable, Equatable {
     let artworkUrl100: String?
     let sellerName: String?
     let primaryGenreName: String?
+    /// The oldest iOS the app runs on, e.g. "15.0".
+    let minimumOsVersion: String?
+    /// Download size in bytes, as a decimal string in the catalogue.
+    let fileSizeBytes: String?
 
     var id: Int64 { trackId }
 
@@ -24,6 +28,7 @@ struct StoreApp: Decodable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case trackId, bundleId, trackName, version, price
         case artworkUrl60, artworkUrl100, sellerName, primaryGenreName
+        case minimumOsVersion, fileSizeBytes
     }
 
     init(from decoder: Decoder) throws {
@@ -47,6 +52,44 @@ struct StoreApp: Decodable, Identifiable, Equatable {
         artworkUrl100 = try? container.decode(String.self, forKey: .artworkUrl100)
         sellerName = try? container.decode(String.self, forKey: .sellerName)
         primaryGenreName = try? container.decode(String.self, forKey: .primaryGenreName)
+        minimumOsVersion = try? container.decode(String.self, forKey: .minimumOsVersion)
+        // The catalogue sends this as a string in some stores and a number in
+        // others, so both are accepted.
+        if let text = try? container.decode(String.self, forKey: .fileSizeBytes) {
+            fileSizeBytes = text
+        } else if let number = try? container.decode(Int64.self, forKey: .fileSizeBytes) {
+            fileSizeBytes = String(number)
+        } else {
+            fileSizeBytes = nil
+        }
+    }
+
+    /// "v15.4.0 · iOS15.0 · 950.8 MB", the line under every row of the original
+    /// app. Parts Apple did not return are dropped rather than left as gaps.
+    var metaText: String {
+        var parts: [String] = []
+        if let version, !version.isEmpty {
+            parts.append("v" + version)
+        }
+        if let minimumOsVersion, !minimumOsVersion.isEmpty {
+            parts.append("iOS" + minimumOsVersion)
+        }
+        if let size = StoreApp.sizeText(fileSizeBytes) {
+            parts.append(size)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Bytes to MB or GB. Apple's figure is binary: 997245952 bytes is the
+    /// 950.8 MB the App Store shows, so this divides by 1024 twice, not by
+    /// 1000 twice.
+    static func sizeText(_ raw: String?) -> String? {
+        guard let raw, let bytes = Int64(raw), bytes > 0 else { return nil }
+        let megabytes = Double(bytes) / (1024 * 1024)
+        if megabytes >= 1024 {
+            return String(format: "%.1f GB", megabytes / 1024)
+        }
+        return String(format: "%.1f MB", megabytes)
     }
 }
 
