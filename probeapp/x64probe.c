@@ -1122,8 +1122,19 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			int hot_distinct = 0;
 			uint32_t slices = 0;
 			uint64_t at = where;
+			(void)at;
 
-			for (int s = 0; s < 40; s++) {
+			/* The survey used to run the entry forty times to find the loop it
+			 * was stuck in. That was a diagnostic for a call that never
+			 * returned; now that the entry does return, running it with no
+			 * stack, no arguments and no return address builds a context and
+			 * then throws it away, forty times over.
+			 *
+			 * A local run of the same image initialises once and exchanges
+			 * successfully. Anything more than one call is the difference
+			 * between here and there, so the survey is off. */
+			err = UC_ERR_OK;
+			for (int s = 0; s < 0; s++) {
 				ctx.msg_pending = 0;
 
 				err = uc_emu_start(uc, at, 0, 50000, 2000000);
@@ -1252,7 +1263,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 				       (unsigned long long)once_rax);
 			}
 
-			if (ctx.once_count > 0) {
+			{
 				uint64_t zero = 0;
 				uc_reg_write(uc, UC_X86_REG_RAX, &zero);
 				uc_reg_write(uc, UC_X86_REG_RDX, &zero);
