@@ -91,6 +91,8 @@ typedef struct {
 	int hit_slot;
 	uint64_t fault_addr;
 	int fault_kind;
+	uint64_t once_inits[8];
+	int once_count;
 } hook_ctx_t;
 
 typedef struct {
@@ -225,12 +227,26 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 	/* The lengths are the prefix lengths without the terminating NUL:
 	 * "_pthread_mutex_" is 15, the other two are 16. Counting the NUL makes
 	 * the comparison fail against every real symbol. */
+	if (strcmp(name, "_pthread_once") == 0) {
+		/* The initialiser is recorded, not called: invoking guest code from
+		 * inside a hook means a re-entrant uc_emu_start, which is not worth
+		 * the risk yet. The once word is marked done so the caller does not
+		 * spin, and the report names what was skipped. */
+		if (a.rsi != 0 && ctx->once_count < 8) {
+			ctx->once_inits[ctx->once_count++] = a.rsi;
+		}
+		if (a.rdi != 0) {
+			uint32_t done = 0xff;
+			uc_mem_write(uc, a.rdi, &done, 4);
+		}
+		set_rax(uc, 0);
+		return 1;
+	}
+
 	if (strncmp(name, "_pthread_mutex_", 15) == 0 ||
 	    strncmp(name, "_pthread_rwlock_", 16) == 0 ||
-	    strncmp(name, "_os_unfair_lock_", 16) == 0 ||
-	    strcmp(name, "_pthread_once") == 0) {
-		/* Single-threaded guest: locks are always uncontended. pthread_once
-		 * would normally call its init function; skipped for now. */
+	    strncmp(name, "_os_unfair_lock_", 16) == 0) {
+		/* Single-threaded guest: locks are always uncontended. */
 		set_rax(uc, 0);
 		return 1;
 	}
@@ -556,15 +572,63 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			}
 		}
 
-		err = uc_emu_start(uc, where, 0, 1500000, 5000000);
-		uint32_t calls = ctx.served_total - before;
+		uint32_t calls = 0;
 
-		if (ctx.hit_slot >= 0) {
+		if (mode == 1) {
+			/* A single long run only says "timed out". Slicing it does better:
+			 * each slice ends on a small budget, the program counter is read
+			 * between slices, and the addresses that recur identify the loop
+			 * the guest is stuck in. Without that, a timeout is a dead end. */
+			uint64_t hot_addr[6] = {0};
+			int hot_count[6] = {0};
+			int hot_distinct = 0;
+			uint32_t slices = 0;
+			uint64_t at = where;
+
+			for (int s = 0; s < 40; s++) {
+				err = uc_emu_start(uc, at, 0, 50000, 2000000);
+				uint64_t rip = 0;
+				uc_reg_read(uc, UC_X86_REG_RIP, &rip);
+				slices++;
+
+				int found = -1;
+				for (int k = 0; k < hot_distinct; k++) {
+					if (hot_addr[k] == rip) { found = k; break; }
+				}
+				if (found >= 0) {
+					hot_count[found]++;
+				} else if (hot_distinct < 6) {
+					hot_addr[hot_distinct] = rip;
+					hot_count[hot_distinct] = 1;
+					hot_distinct++;
+				}
+
+				if (err != UC_ERR_TIMEOUT) {
+					break;
+				}
+				at = rip;
+			}
+
+			calls = ctx.served_total - before;
+			append(out, cap, &used, "[X64] %-22s slices=%u last_err=%u (%u calls)\n",
+			       entries[e].name, slices, err, calls);
+			for (int k = 0; k < hot_distinct; k++) {
+				append(out, cap, &used, "[X64]   hot rip=%#llx seen=%d\n",
+				       (unsigned long long)hot_addr[k], hot_count[k]);
+			}
+		} else {
+			err = uc_emu_start(uc, where, 0, 1500000, 5000000);
+			calls = ctx.served_total - before;
+		}
+
+		/* mode 1 already reported per slice; the generic branches below would
+		 * describe a timeout as "completed", so they are skipped for it. */
+		if (mode != 1 && ctx.hit_slot >= 0) {
 			append(out, cap, &used, "[X64] %-22s UNIMPLEMENTED %s (%u calls)\n",
 			       entries[e].name, import_names[ctx.hit_slot], calls);
-		} else if (err == UC_ERR_OK) {
+		} else if (mode != 1 && err == UC_ERR_OK) {
 			append(out, cap, &used, "[X64] %-22s completed (%u calls)\n", entries[e].name, calls);
-		} else {
+		} else if (mode != 1) {
 			uint64_t rip = 0; uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 			append(out, cap, &used, "[X64] %-22s err=%u rip=%#llx fault=%#llx (%u calls)\n",
 			       entries[e].name, err, (unsigned long long)rip,
@@ -580,6 +644,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			append(out, cap, &used, "[X64] status=%lld context=%#llx %s\n",
 			       (long long)(int32_t)status, (unsigned long long)context_value,
 			       (int32_t)status == 0 && context_value != 0 ? "OK" : "NOT READY");
+
+			for (int k = 0; k < ctx.once_count; k++) {
+				append(out, cap, &used, "[X64] once-init not run: %#llx\n",
+				       (unsigned long long)ctx.once_inits[k]);
+			}
 		}
 	}
 
