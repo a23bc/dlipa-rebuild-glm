@@ -336,7 +336,9 @@ final class ProbeViewController: UIViewController {
             textView.text = report
             return
         }
-        var buffer = [CChar](repeating: 0, count: 8192)
+        // Larger than the other probes: this report also lists which imports
+        // were served and how often.
+        var buffer = [CChar](repeating: 0, count: 16384)
         x64probe_report(path, &buffer, buffer.count)
         report += "\n" + String(cString: buffer)
         textView.text = report
