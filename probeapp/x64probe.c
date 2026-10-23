@@ -327,6 +327,32 @@ static void on_syscall(uc_engine *uc, void *user)
 	uc_emu_stop(uc);
 }
 
+/* Calls a guest function that takes no arguments.
+ *
+ * The return address is a page containing a single ret, so the call comes back
+ * through the guest's own stack discipline. Execution stops when the program
+ * counter reaches that page. This is what makes it possible to run the
+ * pthread_once initialisers that the shim records: skipping them left a global
+ * at zero, and the first 32-bit divide in CommerceKit then raised #DE. */
+static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
+                         uint64_t trampoline, uint64_t *out_rax)
+{
+	uint64_t rsp = (stack_top - 0x400) & ~0xfULL;
+	rsp -= 8;
+
+	uint64_t return_address = trampoline;
+	if (uc_mem_write(uc, rsp, &return_address, 8) != UC_ERR_OK) {
+		return UC_ERR_WRITE_UNMAPPED;
+	}
+	uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
+
+	uc_err err = uc_emu_start(uc, fn, trampoline, 3000000, 0);
+	if (err == UC_ERR_OK && out_rax != NULL) {
+		uc_reg_read(uc, UC_X86_REG_RAX, out_rax);
+	}
+	return err;
+}
+
 static void on_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 {
 	(void)size;
@@ -497,6 +523,15 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	}
 	append(out, cap, &used, "[X64] applied %u binds\n", bind_count);
 
+	/* One page holding a bare ret: the place guest calls return to. */
+	uint64_t trampoline = 0x500000000ULL;
+	if (uc_mem_map(uc, trampoline, 0x1000, UC_PROT_ALL) != UC_ERR_OK) {
+		append(out, cap, &used, "[X64] trampoline map failed\n");
+		uc_close(uc); free(blob); return;
+	}
+	uint8_t ret_opcode = 0xc3;
+	uc_mem_write(uc, trampoline, &ret_opcode, 1);
+
 	if (uc_mem_map(uc, g_stack_base, 0x100000, UC_PROT_ALL) != UC_ERR_OK) {
 		append(out, cap, &used, "[X64] stack map failed\n"); uc_close(uc); free(blob); return;
 	}
@@ -563,22 +598,23 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 		uint64_t where = g_base + entries[e].addr;
 
 		uint64_t context_slot = 0;
+		uint64_t hardware_addr = 0;
 		if (mode == 1) {
 			/* Layout copied from the working arm64 driver: an eight-byte slot
 			 * the callee fills with a context handle, and a 24-byte hardware
 			 * block holding a uint32 length followed by up to twenty ID bytes. */
 			context_slot = guest_alloc(8);
-			uint64_t hardware = guest_alloc(24);
+			hardware_addr = guest_alloc(24);
 			uint32_t length = 20;
 			uint8_t id[20];
 			memset(id, 'A', sizeof(id));
-			uc_mem_write(uc, hardware, &length, 4);
-			uc_mem_write(uc, hardware + 4, id, sizeof(id));
+			uc_mem_write(uc, hardware_addr, &length, 4);
+			uc_mem_write(uc, hardware_addr + 4, id, sizeof(id));
 			uc_reg_write(uc, UC_X86_REG_RDI, &context_slot);
-			uc_reg_write(uc, UC_X86_REG_RSI, &hardware);
+			uc_reg_write(uc, UC_X86_REG_RSI, &hardware_addr);
 			append(out, cap, &used, "[X64] calling %s(ctx=%#llx, hw=%#llx)\n",
 			       entries[e].name, (unsigned long long)context_slot,
-			       (unsigned long long)hardware);
+			       (unsigned long long)hardware_addr);
 		}
 
 		if (e == 0) {
@@ -636,6 +672,34 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			for (int k = 0; k < hot_distinct; k++) {
 				append(out, cap, &used, "[X64]   hot rip=%#llx seen=%d\n",
 				       (unsigned long long)hot_addr[k], hot_count[k]);
+			}
+
+			/* The initialisers pthread_once asked for, run for real. Skipping
+			 * them left a global at zero and the first 32-bit divide raised
+			 * #DE, which is what ended the previous run. */
+			for (int k = 0; k < ctx.once_count; k++) {
+				uint64_t once_rax = 0;
+				uc_err once_err = call_guest(uc, ctx.once_inits[k],
+				                             g_stack_base + 0x100000,
+				                             trampoline, &once_rax);
+				append(out, cap, &used,
+				       "[X64] ran once-init %#llx err=%u rax=%#llx\n",
+				       (unsigned long long)ctx.once_inits[k], once_err,
+				       (unsigned long long)once_rax);
+			}
+
+			if (ctx.once_count > 0) {
+				uint64_t zero = 0;
+				uc_reg_write(uc, UC_X86_REG_RAX, &zero);
+				uc_reg_write(uc, UC_X86_REG_RDX, &zero);
+				uc_reg_write(uc, UC_X86_REG_RSI, &hardware_addr);
+				uc_reg_write(uc, UC_X86_REG_RDI, &context_slot);
+				uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
+
+				err = uc_emu_start(uc, where, 0, 3000000, 0);
+				append(out, cap, &used,
+				       "[X64] retry after once-inits: err=%u (%u calls)\n",
+				       err, ctx.served_total);
 			}
 		} else {
 			err = uc_emu_start(uc, where, 0, 1500000, 5000000);
