@@ -1,0 +1,54 @@
+name: Fetch SAP assets
+
+# Downloads the four OS X 10.9 SAP binaries straight from Apple's update
+# package and publishes them as an artifact. This is the replacement for
+# pulling VendorAssets/ out of the upstream repository with git lfs, which
+# will disappear.
+#
+# Only about 31 MB of the 1.27 GB package is transferred: the payload is one
+# long bzip2 stream, so the script resumes at a block boundary instead of
+# downloading the whole thing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Also attach the assets to a release tag (name it below)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch and extract
+        run: |
+          python3 scripts/fetch-osx109-assets.py --out VendorAssets
+          ls -la VendorAssets
+
+      - name: Record digests
+        run: |
+          cd VendorAssets
+          sha256sum ./* | tee ../asset-digests.txt
+          cd ..
+          cat asset-digests.txt
+
+      - name: Upload assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: sap-assets
+          path: |
+            VendorAssets
+            asset-digests.txt
+          if-no-files-found: error
+
