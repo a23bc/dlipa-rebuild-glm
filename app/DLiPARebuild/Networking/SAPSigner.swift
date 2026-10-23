@@ -195,7 +195,7 @@ final class SAPSigner {
 
     /// The value for the X-Apple-ActionSignature header.
     func signatureHeaderValue(for body: Data) throws -> String {
-        AppLog.debug("sign: entering with " + String(body.count) + " bytes", .sap)
+        AppLog.info("sign: entering with " + String(body.count) + " bytes", .sap)
         var errorBuffer = [CChar](repeating: 0, count: 512)
         var header: UnsafeMutablePointer<CChar>?
         // Data() has no storage, so withUnsafeBytes hands back a nil base
@@ -215,7 +215,9 @@ final class SAPSigner {
                                errorBuffer.count)
             }
         }
-        AppLog.debug("sign: returned " + String(status), .sap)
+        AppLog.info("sign: returned " + String(status)
+                    + " header=" + String(header.map { String(cString: $0).count } ?? -1)
+                    + " err=" + String(cString: errorBuffer), .sap)
         guard status == 0, let header else {
             throw NSError(domain: "SAPSigner", code: 4, userInfo: [
                 NSLocalizedDescriptionKey: String(cString: errorBuffer),

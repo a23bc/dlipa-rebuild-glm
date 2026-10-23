@@ -246,12 +246,22 @@ final class AppStoreClient {
             // pair that explains most failures: 403 with a signature present
             // means Apple rejected it, 403 with no signature means it was never
             // sent.
-            AppLog.debug("signed request to " + (signed.url?.absoluteString ?? "?")
-                         + " returned " + String(http.statusCode), .network)
+            AppLog.info("signed request to " + (signed.url?.absoluteString ?? "?")
+                        + " returned " + String(http.statusCode)
+                        + ", body " + String(body.count) + " bytes", .network)
             if http.statusCode == 403 {
-                let hadSignature = signed.value(forHTTPHeaderField: "X-Apple-ActionSignature") != nil
+                let hadSignature = signed.value(forHTTPHeaderField: "X-Apple-ActionSignature")
                 AppLog.error("403 from " + (signed.url?.host ?? "?")
-                             + ", signature attached: " + String(hadSignature), .network)
+                             + ", signature attached: " + String(hadSignature != nil)
+                             + ", signature length: " + String(hadSignature?.count ?? 0)
+                             + ", body length: " + String(body.count), .network)
+                // Apple puts the reason in the body. Without it a 403 is just
+                // a number, and the difference between "bad signature",
+                // "wrong endpoint" and "account locked" is the whole answer.
+                AppLog.error("403 body: " + (String(data: data, encoding: .utf8)
+                             ?? "<(data.count) binary bytes>"), .network)
+                AppLog.error("403 headers: "
+                             + String(describing: http.allHeaderFields), .network)
             }
 
             // A 3xx that should be replayed as-is carries a Location and keeps

@@ -1589,19 +1589,31 @@ int sap_guest_sign(sap_guest *g, const uint8_t *body, size_t body_len,
         return -1;
     }
 
-    /* The header value is the signature in lowercase hex. */
-    char *text = (char *)malloc(signature_len * 2 + 1);
+    /* The header value is the signature in standard base64, not hex. The Go
+     * bridge this replaces used base64.StdEncoding.EncodeToString, and Apple
+     * rejects a hex string with 403: the value has to decode to the raw
+     * signature bytes. */
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t groups = (signature_len + 2) / 3;
+    char *text = (char *)malloc(groups * 4 + 1);
     if (text == NULL) {
         free(signature);
         set_error(error, cap, "out of memory for the signature header");
         return -1;
     }
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < signature_len; i++) {
-        text[i * 2] = digits[signature[i] >> 4];
-        text[i * 2 + 1] = digits[signature[i] & 0xF];
+    size_t out = 0;
+    for (size_t i = 0; i < signature_len; i += 3) {
+        size_t remaining = signature_len - i;
+        uint32_t chunk = (uint32_t)signature[i] << 16;
+        if (remaining > 1) chunk |= (uint32_t)signature[i + 1] << 8;
+        if (remaining > 2) chunk |= (uint32_t)signature[i + 2];
+        text[out++] = alphabet[(chunk >> 18) & 0x3F];
+        text[out++] = alphabet[(chunk >> 12) & 0x3F];
+        text[out++] = remaining > 1 ? alphabet[(chunk >> 6) & 0x3F] : '=';
+        text[out++] = remaining > 2 ? alphabet[chunk & 0x3F] : '=';
     }
-    text[signature_len * 2] = 0;
+    text[out] = 0;
     free(signature);
 
     g->stats.signature_len = signature_len;
