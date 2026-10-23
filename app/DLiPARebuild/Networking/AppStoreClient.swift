@@ -363,6 +363,14 @@ final class AppStoreClient {
 
         guard let items = plist["songList"] as? [Any],
               let first = items.first as? [String: Any] else {
+            // "no items" says nothing about why; the body does. It is logged at
+            // error level so it is kept even with recording off.
+            let preview = String(data: data.prefix(1500), encoding: .utf8)
+                ?? "<\(data.count) binary bytes>"
+            AppLog.error("version list had no songList; body follows", .download)
+            AppLog.error(preview, .download)
+            AppLog.error("top-level keys: " + plist.keys.sorted().joined(separator: ", "),
+                         .download)
             throw StoreError.failureType("versions", "apple returned no items")
         }
         let metadata = first["metadata"] as? [String: Any] ?? [:]

@@ -47,13 +47,36 @@ enum AppLog {
         }
     }
 
-    static var minimumLevel: Level = {
+    /// Where the switch in Diagnostics stores its state.
+    static let recordingKey = "com.a23bc.dliparebuild.recordLog"
+
+    /// The level a build starts at, before the recording switch is considered.
+    private static var releaseLevel: Level {
         #if DEBUG
         return .debug
         #else
         return .info
         #endif
-    }()
+    }
+
+    /// What reaches the buffer and the system log.
+    static var minimumLevel: Level = UserDefaults.standard.bool(forKey: recordingKey)
+        ? .debug
+        : AppLog.releaseLevel
+
+    /// When on, every level is kept, including the debug lines that describe a
+    /// request and its response.
+    ///
+    /// Release builds start at .info, so the useful detail is dropped before
+    /// anyone can read it. This is the switch that makes a device log worth
+    /// sending: turn it on, reproduce the failure, share the log.
+    static var isRecording: Bool {
+        get { minimumLevel == .debug }
+        set {
+            UserDefaults.standard.set(newValue, forKey: recordingKey)
+            minimumLevel = newValue ? .debug : AppLog.releaseLevel
+        }
+    }
 
     static func debug(_ message: @autoclosure @escaping () -> String,
                      _ category: Category = .app,

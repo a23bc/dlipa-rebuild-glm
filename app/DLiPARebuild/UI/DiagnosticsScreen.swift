@@ -1,53 +1,77 @@
 import SwiftUI
+import UIKit
 
-/// Runs the probes that ship with the app and shows what they printed. This
-/// is the tab to open when something stops working, because it says which
-/// layer failed instead of leaving a spinner on screen.
+/// The tab that answers "what actually happened".
+///
+/// The probes report into the same log as everything else, and the log is shown
+/// here rather than only in Console.app, because attaching a device to a
+/// debugger is not something anyone wants to do to report a bug.
 struct DiagnosticsScreen: View {
-    @State private var output = ""
     @State private var running = false
+    @State private var recording = AppLog.isRecording
+    @State private var logText = ""
 
     var body: some View {
         NavigationView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    Button("Run SAP self test") { runSAP() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(running)
-                    if running { ProgressView() }
-                }
-                .padding(.horizontal)
+            VStack(spacing: 0) {
+                Form {
+                    Section {
+                        Toggle("Record log", isOn: $recording)
+                            .onChange(of: recording) { value in
+                                // Release builds drop .debug before anyone can
+                                // read it; this is the switch that keeps it.
+                                AppLog.isRecording = value
+                                refresh()
+                            }
+                    }
 
-                HStack(spacing: 12) {
-                    Button("Run framework probe") { runFrameworkProbe() }
-                        .disabled(running)
-                    Button("Share log") { shareLog() }
-                        .disabled(running)
+                    Section {
+                        Button("Run SAP self test") { runSAP() }
+                            .disabled(running)
+                        Button("Run framework probe") { runFrameworkProbe() }
+                            .disabled(running)
+                    }
+
+                    Section {
+                        Button("Share log") { shareLog() }
+                        Button("Clear log", role: .destructive) {
+                            AppLog.clear()
+                            refresh()
+                        }
+                    }
                 }
-                .padding(.horizontal)
+                .frame(height: 300)
+
+                Divider()
 
                 ScrollView {
-                    Text(output.isEmpty ? "No output yet." : output)
-                        .font(.system(.caption, design: .monospaced))
+                    Text(logText.isEmpty ? "No log entries yet." : logText)
+                        .font(.system(.caption2, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                         .textSelection(.enabled)
                 }
             }
             .navigationTitle("Diagnostics")
+            .onAppear {
+                AppLog.onUpdate { _ in refresh() }
+                refresh()
+            }
         }
         .navigationViewStyle(.stack)
     }
 
+    private func refresh() {
+        logText = AppLog.exportText()
+    }
+
     /// The question this answers: does the probeapp chain run on this device.
-    /// Nothing here touches the account UI, so it works before sign-in is
-    /// wired up - which is the point, since a sign-in failure would otherwise
-    /// be indistinguishable from a broken emulator.
+    /// Nothing here touches the account UI, so it works before sign-in.
     private func runSAP() {
         running = true
-        output = ""
         SAPSelfTest.run { line in
-            output += line + "\n"
+            AppLog.info(line, .sap)
             if line.hasPrefix("SELF TEST PASSED") || line.hasPrefix("FAILED") {
                 running = false
             }
@@ -61,10 +85,9 @@ struct DiagnosticsScreen: View {
 
     private func runFrameworkProbe() {
         running = true
-        output = ""
         DispatchQueue.main.async {
             FrameworkProbe.run()
-            output = "Framework probe finished. Full report is in the app log.\n"
+            AppLog.info("framework probe finished", .app)
             running = false
         }
     }
@@ -72,7 +95,7 @@ struct DiagnosticsScreen: View {
     private func shareLog() {
         let text = AppLog.exportText()
         guard !text.isEmpty else {
-            output = "The log is empty."
+            AppLog.warn("share log pressed with an empty log", .app)
             return
         }
         let controller = UIActivityViewController(activityItems: [text],
