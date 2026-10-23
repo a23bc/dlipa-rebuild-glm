@@ -20,8 +20,10 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <mach/mach.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 
 #include <unicorn/unicorn.h>
 #include <unicorn/x86.h>
@@ -263,4 +265,122 @@ void jitprobe_report(char *out, size_t cap)
 	       value, value == 42 ? "OK" : "MISMATCH");
 
 	munmap(p, page);
+}
+
+/* Stage 2a: is the interpreter fast enough to be worth building on?
+ *
+ * TCI interprets every guest instruction, so the question is not whether it
+ * works - it does - but whether it works at a rate that makes a 15 MB library
+ * practical. The loop below is timed from the host side and reports
+ * instructions per second.
+ *
+ * The run is bounded by Unicorn's own timeout argument rather than by a
+ * fixed iteration count: if the interpreter turns out to be pathologically
+ * slow, a fixed count would hang the app, and the number wanted is a rate,
+ * which a partial run gives just as well. Afterwards the loop counter says
+ * how far it got.
+ *
+ * The second half maps the amount of guest memory CoreFP would need and
+ * writes through it. This device has 2 GB and the emulator holds the guest
+ * image in host memory, so that is worth knowing before committing. */
+void benchprobe_report(char *out, size_t cap)
+{
+	if (cap == 0) {
+		return;
+	}
+	out[0] = 0;
+	size_t used = 0;
+
+	/* mov rcx, 0x7fffffff ; dec rcx ; jne -5 */
+	static const uint8_t loop_code[] = {
+		0x48, 0xc7, 0xc1, 0xff, 0xff, 0xff, 0x7f,
+		0x48, 0xff, 0xc9,
+		0x75, 0xfb,
+	};
+
+	uc_engine *uc = NULL;
+	uc_err err = uc_open(UC_ARCH_X86, UC_MODE_64, &uc);
+	if (err != UC_ERR_OK) {
+		append(out, cap, &used, "[BENCH] uc_open failed: %u\n", err);
+		return;
+	}
+
+	if (uc_mem_map(uc, 0x100000, 0x4000, UC_PROT_ALL) != UC_ERR_OK ||
+	    uc_mem_write(uc, 0x100000, loop_code, sizeof(loop_code)) != UC_ERR_OK) {
+		append(out, cap, &used, "[BENCH] setup failed\n");
+		uc_close(uc);
+		return;
+	}
+
+	struct timespec started, finished;
+	clock_gettime(CLOCK_MONOTONIC, &started);
+
+	/* At most 1.5 s. The return code is not interesting; the counter is: a
+	 * timeout still leaves a valid rate, computed from how many iterations
+	 * completed. */
+	err = uc_emu_start(uc, 0x100000, 0x100000 + sizeof(loop_code), 1500000, 0);
+
+	clock_gettime(CLOCK_MONOTONIC, &finished);
+
+	double seconds = (double)(finished.tv_sec - started.tv_sec) +
+	                 (double)(finished.tv_nsec - started.tv_nsec) / 1e9;
+
+	uint64_t remaining = 0;
+	uc_reg_read(uc, UC_X86_REG_RCX, &remaining);
+	uc_close(uc);
+
+	uint64_t iterations = 0x7fffffffULL - remaining;
+	double instructions = 1.0 + 2.0 * (double)iterations;
+	double rate = seconds > 0.0 ? instructions / seconds : 0.0;
+
+	append(out, cap, &used, "[BENCH] loop err=%u elapsed=%.3fs iterations=%llu\n",
+	       err, seconds, (unsigned long long)iterations);
+	append(out, cap, &used, "[BENCH] throughput=%.0f instr/s (%.2f M/s)\n",
+	       rate, rate / 1e6);
+
+	if (rate > 0.0) {
+		append(out, cap, &used, "[BENCH] 100M instructions would take %.1f s\n",
+		       1e8 / rate);
+	}
+
+	/* Memory: map what CoreFP's segments would need and write through it. */
+	uc_engine *big = NULL;
+	err = uc_open(UC_ARCH_X86, UC_MODE_64, &big);
+	if (err == UC_ERR_OK) {
+		uint64_t base = 0x100000000ULL;
+		size_t size = (size_t)64 << 20;
+		clock_gettime(CLOCK_MONOTONIC, &started);
+		err = uc_mem_map(big, base, size, UC_PROT_ALL);
+		clock_gettime(CLOCK_MONOTONIC, &finished);
+		double map_seconds = (double)(finished.tv_sec - started.tv_sec) +
+		                     (double)(finished.tv_nsec - started.tv_nsec) / 1e9;
+
+		if (err == UC_ERR_OK) {
+			static uint8_t page[0x4000];
+			memset(page, 0xa5, sizeof(page));
+			clock_gettime(CLOCK_MONOTONIC, &started);
+			for (size_t at = 0; at < ((size_t)16 << 20); at += sizeof(page)) {
+				if (uc_mem_write(big, base + at, page, sizeof(page)) != UC_ERR_OK) {
+					break;
+				}
+			}
+			clock_gettime(CLOCK_MONOTONIC, &finished);
+			double write_seconds = (double)(finished.tv_sec - started.tv_sec) +
+			                        (double)(finished.tv_nsec - started.tv_nsec) / 1e9;
+			append(out, cap, &used,
+			       "[BENCH] mapped 64 MB in %.3fs, wrote 16 MB in %.3fs\n",
+			       map_seconds, write_seconds);
+		} else {
+			append(out, cap, &used, "[BENCH] 64 MB map FAILED err=%u\n", err);
+		}
+		uc_close(big);
+	}
+
+	struct mach_task_basic_info info;
+	mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+	if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+	              (task_info_t)&info, &count) == KERN_SUCCESS) {
+		append(out, cap, &used, "[BENCH] app resident=%.1f MB\n",
+		       (double)info.resident_size / (1024.0 * 1024.0));
+	}
 }

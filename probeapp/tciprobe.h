@@ -11,4 +11,7 @@ void tciprobe_report(char *out, size_t cap);
  * process, so this is kept on its own button. */
 void jitprobe_report(char *out, size_t cap);
 
+/* Measures interpreter throughput and the memory a CoreFP-sized guest needs. */
+void benchprobe_report(char *out, size_t cap);
+
 #endif

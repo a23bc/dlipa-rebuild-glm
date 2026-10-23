@@ -221,6 +221,14 @@ private func runProbe(_ sink: (String) -> Void) {
 
     probeTCI(sink)
 
+    // Bounded by Unicorn's own timeout, so this cannot hang the app even if
+    // the interpreter turns out to be pathologically slow.
+    var bench = [CChar](repeating: 0, count: 4096)
+    benchprobe_report(&bench, bench.count)
+    for line in String(cString: bench).split(separator: "\n") {
+        sink(String(line))
+    }
+
     sink("===== END FRAMEWORK PROBE =====")
 }
 
