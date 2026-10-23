@@ -16,148 +16,145 @@ struct SearchScreen: View {
 
     var body: some View {
         NavigationView {
-            Group {
-                if model.results.isEmpty {
-                    if model.hasSearched {
-                        EmptyStateView(title: "No Results",
-                                       systemImage: "magnifyingglass",
-                                       detail: model.errorText)
-                    } else if model.history.isEmpty {
-                        EmptyStateView(
-                            title: "Search",
-                            systemImage: "magnifyingglass",
-                            detail: "Look up an app by name, bundle identifier or App Store link.")
-                    } else {
-                        List {
-                            Section {
-                                ForEach(model.history, id: \.self) { entry in
-                                    Button { model.useHistory(entry) } label: {
-                                        HStack(spacing: 12) {
-                                            Image(systemName: "clock.arrow.circlepath")
-                                                .foregroundColor(.secondary)
-                                            Text(entry)
-                                                .foregroundColor(.primary)
-                                            Spacer(minLength: 0)
-                                        }
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(RowPressStyle())
-                                }
-                                .onDelete { model.removeHistory(at: $0) }
-                            } header: {
-                                Text("Recent")
-                                    .textCase(nil)
-                            }
-                            Section {
-                                Button("Clear history") { model.clearHistory() }
-                            }
-                        }
-                        .listStyle(.insetGrouped)
+            // The body is its own view so it can read the search state through
+            // the environment; a view cannot see the isSearching value of the
+            // .searchable modifier it applies itself.
+            SearchBody(model: model) { app in actionTarget = app }
+                .navigationTitle("Search")
+                .searchable(text: $model.term, prompt: "App, Bundle ID, Link")
+                .onSubmit(of: .search) { Task { await model.run() } }
+                .onChange(of: model.term) { value in
+                    // A cleared field goes back to the empty state instead of
+                    // leaving the last results on screen.
+                    if value.isEmpty { model.clear() }
+                }
+                .overlay {
+                    if model.busy {
+                        ProgressView(model.status.isEmpty ? "Working..." : model.status)
+                            .padding()
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
-                } else {
-                    List {
-                        Section {
-                            ForEach(model.results) { app in
-                                Button { actionTarget = app } label: {
-                                    SearchResultRow(app: app)
-                                }
-                                .buttonStyle(RowPressStyle())
-                            }
-                            .onDelete { model.removeResult(at: $0) }
-                        } header: {
-                            // A grouped list upper-cases its headers by
-                            // default; the original shows "Results (38)".
-                            Text("Results (\(model.results.count))")
-                                .textCase(nil)
-                        }
+                }
+                .actionSheet(item: $actionTarget) { app in
+                    // Both lines go in the title. ActionSheet draws its message
+                    // after a blank line, which is the extra empty row that was
+                    // appearing above the buttons.
+                    ActionSheet(title: Text(app.trackName + "\n" + app.bundleId),
+                                buttons: [
+                                    .default(Text("Download")) {
+                                        Task { await model.download(app, versionID: nil) }
+                                    },
+                                    .default(Text("Download a specific version")) {
+                                        versionPickEnabled = true
+                                        versionTarget = app
+                                    },
+                                    .default(Text("Version history")) {
+                                        versionPickEnabled = false
+                                        versionTarget = app
+                                    },
+                                    .default(Text("Copy bundle ID")) {
+                                        UIPasteboard.general.string = app.bundleId
+                                    },
+                                    .default(Text("Copy app ID")) {
+                                        UIPasteboard.general.string = String(app.trackId)
+                                    },
+                                    .default(Text("Share")) {
+                                        shareURL = URL(string: "https://apps.apple.com/app/id" + String(app.trackId))
+                                    },
+                                    .cancel()
+                                ])
+                }
+                .sheet(item: $versionTarget, onDismiss: { versionTarget = nil }) { app in
+                    VersionListView(app: app, allowsDownload: versionPickEnabled) { versionID in
+                        versionTarget = nil
+                        Task { await model.download(app, versionID: versionID) }
                     }
-                    .listStyle(.insetGrouped)
                 }
-            }
-            .navigationTitle("Search")
-            .searchable(text: $model.term, prompt: "App, Bundle ID, Link")
-            .onSubmit(of: .search) { Task { await model.run() } }
-            .onChange(of: model.term) { value in
-                // A cleared field goes back to the empty state instead of
-                // leaving the last results on screen.
-                if value.isEmpty { model.clear() }
-            }
-            .overlay {
-                if model.busy {
-                    ProgressView(model.status.isEmpty ? "Working..." : model.status)
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
+                                     set: { if $0 == nil { shareURL = nil } })) { item in
+                    ActivityView(activityItems: [item.url])
                 }
-            }
-            .actionSheet(item: $actionTarget) { app in
-                // Both lines go in the title. ActionSheet draws its message
-                // after a blank line, which is the extra empty row appearing
-                // above the buttons.
-                ActionSheet(title: Text(app.trackName + "\n" + app.bundleId),
-                            buttons: [
-                                .default(Text("Download")) {
-                                    Task { await model.download(app, versionID: nil) }
-                                },
-                                .default(Text("Download a specific version")) {
-                                    versionPickEnabled = true
-                                    versionTarget = app
-                                },
-                                .default(Text("Version history")) {
-                                    versionPickEnabled = false
-                                    versionTarget = app
-                                },
-                                .default(Text("Copy bundle ID")) {
-                                    UIPasteboard.general.string = app.bundleId
-                                },
-                                .default(Text("Copy app ID")) {
-                                    UIPasteboard.general.string = String(app.trackId)
-                                },
-                                .default(Text("Share")) {
-                                    shareURL = URL(string: "https://apps.apple.com/app/id" + String(app.trackId))
-                                },
-                                .cancel()
-                            ])
-            }
-            .sheet(item: $versionTarget, onDismiss: { versionTarget = nil }) { app in
-                VersionListView(app: app, allowsDownload: versionPickEnabled) { versionID in
-                    versionTarget = nil
-                    Task { await model.download(app, versionID: versionID) }
-                }
-            }
-            .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
-                                 set: { if $0 == nil { shareURL = nil } })) { item in
-                ActivityView(activityItems: [item.url])
-            }
         }
         .navigationViewStyle(.stack)
     }
 }
 
-/// Pressed state for a list row.
+/// What sits under the search bar.
 ///
-/// `.plain` gave no feedback of its own, and what did show came out white in
-/// both appearances, which is invisible on a light background. `.primary` is
-/// black in light mode and white in dark mode, so at low opacity the highlight
-/// darkens the row in light mode and lightens it in dark mode.
-struct RowPressStyle: ButtonStyle {
-    /// How far the tint reaches past the label.
-    ///
-    /// A List row insets its content, so a background applied to the label only
-    /// covers the text and leaves a margin unstyled -- which is what made the
-    /// press look like it belonged to the text rather than the row. The
-    /// rectangle is grown by the row insets so it fills the row edge to edge.
-    var horizontalBleed: CGFloat = 20
-    var verticalBleed: CGFloat = 11
+/// Kept separate from SearchScreen because \`isSearching\` is only populated
+/// inside the view the searchable modifier is attached to.
+private struct SearchBody: View {
+    @ObservedObject var model: SearchModel
+    let onSelect: (StoreApp) -> Void
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(
-                Rectangle()
-                    .fill(Color.primary.opacity(configuration.isPressed ? 0.12 : 0))
-                    .padding(.horizontal, -horizontalBleed)
-                    .padding(.vertical, -verticalBleed)
-            )
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    @Environment(\.isSearching) private var isSearching
+
+    var body: some View {
+        Group {
+            if !model.results.isEmpty {
+                resultsList
+            } else if model.hasSearched {
+                EmptyStateView(title: "No Results",
+                               systemImage: "magnifyingglass",
+                               detail: model.errorText)
+            } else if model.history.isEmpty || !isSearching {
+                // History only shows once the search field is active. Beside
+                // keeping the launch screen empty, a long list here pushed the
+                // search bar out of view on launch.
+                EmptyStateView(
+                    title: "Search",
+                    systemImage: "magnifyingglass",
+                    detail: "Look up an app by name, bundle identifier or App Store link.")
+            } else {
+                historyList
+            }
+        }
+    }
+
+    private var resultsList: some View {
+        List {
+            Section {
+                ForEach(model.results) { app in
+                    Button { onSelect(app) } label: {
+                        SearchResultRow(app: app)
+                    }
+                }
+                .onDelete { model.removeResult(at: $0) }
+            } header: {
+                // A grouped list upper-cases its headers by default; the
+                // original shows "Results (38)".
+                Text("Results (\(model.results.count))")
+                    .textCase(nil)
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var historyList: some View {
+        List {
+            Section {
+                ForEach(model.history, id: \.self) { entry in
+                    Button { model.useHistory(entry) } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundColor(.secondary)
+                            Text(entry)
+                                .foregroundColor(.primary)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                }
+                .onDelete { model.removeHistory(at: $0) }
+            } header: {
+                Text("Recent")
+                    .textCase(nil)
+            }
+            Section {
+                Button("Clear history") { model.clearHistory() }
+            }
+        }
+        .listStyle(.insetGrouped)
     }
 }
 

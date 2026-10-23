@@ -41,10 +41,6 @@ struct AccountsScreen: View {
                 }
             }
             .navigationTitle("Accounts")
-            // Settings uses a large title; asking for it explicitly here keeps
-            // the gap under the title identical instead of depending on what
-            // the Group wrapper decides.
-            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     // A real button, not a bare Image: the previous version
@@ -97,7 +93,6 @@ struct AccountsScreen: View {
             // goes away rather than waiting for deallocation.
             model.shutdown()
         }
-        .navigationViewStyle(.stack)
     }
 }
 

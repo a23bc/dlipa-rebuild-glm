@@ -357,13 +357,119 @@ final class AppStoreClient {
         return url
     }
 
-    /// The `ent/download` round trip, returning the decoded response.
+    // MARK: - Licence
+
+    /// Attaches a free licence for an app to the account.
+    ///
+    /// `ent/download` answers 9610 while the account does not own the app, and
+    /// even listing versions has to go through it, so nothing download-shaped
+    /// works before this. It is a `buyProduct` at price 0 -- what ipatool-rs
+    /// does before every download attempt.
+    ///
+    /// Not signed: ipatool-rs posts this one plain, with the token and DSID in
+    /// headers instead.
+    func acquireLicense(appId: String, guid: String, account: Account) async throws {
+        let host = account.pod.isEmpty
+            ? "buy.itunes.apple.com"
+            : "p" + account.pod + "-buy.itunes.apple.com"
+        guard let url = URL(string: "https://" + host
+                             + "/WebObjects/MZFinance.woa/wa/buyProduct") else {
+            throw StoreError.noBagEndpoint
+        }
+
+        // STDQ is the normal pricing parameter; GAME is the fallback Apple uses
+        // for app purchases when STDQ is temporarily unavailable.
+        for pricing in ["STDQ", "GAME"] {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+            request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+            request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+            request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+            request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+
+            let payload: [String: Any] = [
+                "appExtVrsId": "0",
+                "hasAskedToFulfillPreorder": "true",
+                "hasDoneAgeCheck": "true",
+                "buyWithoutAuthorization": "true",
+                "hasBeenAuthedForBuy": "true",
+                "guid": guid,
+                "needDiv": "0",
+                "origPage": "Software-" + appId,
+                "origPageLocation": "Buy",
+                "price": "0",
+                "pricingParameters": pricing,
+                "productType": "C",
+                // A string here, unlike the integer in the download body.
+                "salableAdamId": appId,
+            ]
+            request.httpBody = try PropertyListSerialization.data(
+                fromPropertyList: payload, format: .xml, options: 0)
+
+            let (data, response) = try await session.data(for: request)
+            let http = response as? HTTPURLResponse
+            AppLog.info("buyProduct " + pricing + " returned "
+                        + String(http?.statusCode ?? -1), .download)
+
+            let plist = (try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+            let failure = plist["failureType"] as? String ?? ""
+            let message = plist["customerMessage"] as? String ?? ""
+
+            if failure.isEmpty { return }
+            // Already owned is the outcome we want.
+            if failure == "5002"
+                || message.lowercased().contains("license already exists") {
+                AppLog.info("licence already present", .download)
+                return
+            }
+            if failure == "2059" {
+                AppLog.warn("buyProduct temporarily unavailable, backing off", .download)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                continue
+            }
+            AppLog.error("buyProduct failed: " + failure + " " + message, .download)
+            throw StoreError.failureType(failure, message)
+        }
+
+        throw StoreError.failureType("2059",
+                                     "apple kept reporting the item as temporarily unavailable")
+    }
+
+    /// The `ent/download` round trip, acquring a licence first if Apple says
+    /// one is missing.
     private func downloadProduct(appId: String,
                                  externalVersionId: String?,
                                  guid: String,
                                  account: Account,
                                  bag: StoreBag,
                                  signer: SAPSigner) async throws -> [String: Any] {
+        do {
+            return try await downloadProductOnce(
+                appId: appId, externalVersionId: externalVersionId,
+                guid: guid, account: account, bag: bag, signer: signer)
+        } catch {
+            // 9610 is "no licence". Acquire one and try once more.
+            guard let store = error as? StoreError,
+                  case .failureType(let type, _) = store,
+                  type == "9610" else {
+                throw error
+            }
+            AppLog.info("download asked for a licence; acquiring one", .download)
+            try await acquireLicense(appId: appId, guid: guid, account: account)
+            return try await downloadProductOnce(
+                appId: appId, externalVersionId: externalVersionId,
+                guid: guid, account: account, bag: bag, signer: signer)
+        }
+    }
+
+    private func downloadProductOnce(appId: String,
+                                     externalVersionId: String?,
+                                     guid: String,
+                                     account: Account,
+                                     bag: StoreBag,
+                                     signer: SAPSigner) async throws -> [String: Any] {
         guard let endpoint = bag.volumeStoreDownloadProduct else {
             AppLog.error("no download endpoint in the bag", .download)
             throw StoreError.noBagEndpoint
