@@ -49,11 +49,10 @@ The controlled experiment behind the first two rows is in
       *_test.go                9 unit tests, all passing
       VERIFICATION.md          build/test matrix
     scripts/
-      build-unicorn-ios.sh     cross-compiles Unicorn (arch=aarch64)
+      build-unicorn-ios.sh     cross-compiles Unicorn TCI (guest x86-64)
       stage-assets.sh          copies + SHA-256 verifies the Apple binaries
       package-ipa.sh           sealed .app -> .ipa
       make-coderesources.py    writes _CodeSignature/CodeResources
-    patches/unicorn-ios.patch  iOS W^X fix for Unicorn
     VendorAssets/              the four Apple binaries, git-lfs
     .github/workflows/
       build-ios.yml            macOS runner: bridge -> app -> IPA -> release

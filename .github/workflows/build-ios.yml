@@ -50,6 +50,10 @@ jobs:
 
       - name: Stage the Apple SAP assets
         run: |
+          # These assets feed the Go-side diagnostics and the live tests only.
+          # They are NOT what the app ships: the signing path is the probeapp
+          # chain, which runs OS X 10.9 CommerceKit (see the app job).
+          #
           # VendorAssets/ is excluded from this fork (git-lfs objects not
           # available). Fetch the four pinned Apple binaries from the upstream
           # repository, which has them stored in git-lfs.
@@ -153,9 +157,17 @@ jobs:
         run: |
           go test -count=1 -run TestReportExternalCalls -v .
 
-      - name: Build Unicorn for iOS arm64
+      # TCI (interpreter) build of the 1rhino2 fork, guest arch x86-64. The
+      # upstream 2.1.4 release is a JIT build and cannot run on a non-jailed
+      # device, and its aarch64-only arch would not match the x86-64 SAP guest
+      # either. Both are decided in the script; see its header for why.
+      - name: Build Unicorn for iOS arm64 (TCI, guest x86)
         run: |
           sh scripts/build-unicorn-ios.sh
+          echo "==> staged headers"
+          ls build/ios/include/unicorn/
+          echo "==> interpreter marker"
+          nm -g build/ios/libunicorn.a 2>/dev/null | grep -ci tci || echo "no tci symbol"
 
       # gomobile is a host (macOS) tool. It must NOT see the iOS CGO_LDFLAGS,
       # or the linker rejects the Unicorn archive as the wrong platform.
@@ -234,6 +246,14 @@ jobs:
           # One tar root: bsdtar cannot mix -C roots.
           mkdir -p stage/ios
           cp build/ios/libunicorn.a stage/ios/
+          # sap_guest.c is compiled by the app job, which runs on its own
+          # runner and therefore has no Unicorn source tree. Ship the headers
+          # with the archive or HEADER_SEARCH_PATHS points at nothing.
+          if [ ! -f build/ios/include/unicorn/unicorn.h ]; then
+            echo "::error::build/ios/include/unicorn/unicorn.h missing; build-unicorn-ios.sh did not stage the headers"
+            exit 1
+          fi
+          cp -R build/ios/include stage/ios/include
           cp app/DLiPARebuild/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/SapBridge stage/SapBridge.a
           tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a
           echo "artifact=sapbridge-ios.tar.gz" >> "$GITHUB_OUTPUT"
@@ -268,26 +288,28 @@ jobs:
           mkdir -p app/build/ios
           tar -xzf bridge/sapbridge-ios.tar.gz -C bridge
           mv bridge/ios/libunicorn.a app/build/ios/
+          # $(SRCROOT)/build/ios/include is the HEADER_SEARCH_PATHS entry in
+          # project.yml; sap_guest.c does not compile without it.
+          mv bridge/ios/include app/build/ios/include
           mv bridge/SapBridge.a app/build/ios/
-          ls -la app/build/ios/
-      - name: Bundle the Apple SAP assets
-        run: |
-          # VendorAssets/ is excluded from this fork (git-lfs objects not
-          # available). Fetch the four pinned Apple binaries from the upstream
-          # repository, which has them stored in git-lfs.
-          git lfs install
-          if [ ! -s VendorAssets/CoreFP ]; then
-            echo "==> VendorAssets missing, cloning from upstream"
-            git clone --depth 1 https://github.com/a23bc/dlipa-rebuild.git /tmp/upstream
-            git -C /tmp/upstream lfs pull
-            mkdir -p VendorAssets
-            cp /tmp/upstream/VendorAssets/* VendorAssets/
-            rm -rf /tmp/upstream
-          else
-            git lfs pull
+          if [ ! -f app/build/ios/include/unicorn/unicorn.h ]; then
+            echo "::error::app/build/ios/include/unicorn/unicorn.h missing after unpacking the bridge"
+            exit 1
           fi
-          ls -la VendorAssets
-          ./scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/SapAssets"
+          ls -la app/build/ios/
+          ls app/build/ios/include
+      - name: Fetch the OS X 10.9 SAP binaries
+        run: |
+          # Same source as build-probe.yml, deliberately. The SAP entry points
+          # live in CommerceKit, and the macOS 27 copy of that framework is a
+          # chained-fixup binary the classic dyld-info reader cannot take
+          # apart. The 10.9 copy is plain LC_DYLD_INFO_ONLY, is x86-64, and is
+          # the build the probe app runs on the device.
+          #
+          # Roughly 31 MB of the 1.27 GB package is transferred; the script
+          # verifies each file against a pinned SHA-256 before writing it.
+          python3 scripts/fetch-osx109-assets.py --out "$GITHUB_WORKSPACE/osx109"
+          ls -la "$GITHUB_WORKSPACE/osx109"
 
       - name: Install build tools
         run: |
@@ -303,17 +325,29 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Prepare commerce binary for native execution
+      - name: Install Go for the image builder
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build the SAP guest image
         run: |
-          # Strip PAC instructions from the commerce binary.
-          # The output is linked directly into the app executable,
-          # so its code runs in the app's own __TEXT segment — no
-          # mmap(PROT_EXEC), no dlopen, no Unicorn needed.
-          python3 scripts/prepare-commerce.py \
-            VendorAssets/commerce \
-            app/DLiPARebuild/Resources/commerce_native
-          ls -la app/DLiPARebuild/Resources/commerce_native
-          file app/DLiPARebuild/Resources/commerce_native
+          # The X64I container is what sap_guest.c loads and interprets. All the
+          # Mach-O reading happens here, offline: the container carries segment
+          # contents, every rebase site, every bind site and the export
+          # addresses, so the device only has to place bytes and patch
+          # addresses.
+          #
+          # CommerceKit is the SAP driver: it exports _cp2g1b9ro, _Mib5yocT,
+          # _Fc3vhtJDvr and the other two entries, and it imports no CoreFP
+          # symbol at all. CoreFP is a separate service the macOS 27 stack
+          # needs; the 10.9 driver does not.
+          mkdir -p app/DLiPARebuild/Resources
+          go run ./cmd/x86image \
+            -in "$GITHUB_WORKSPACE/osx109/CommerceKit" \
+            -out app/DLiPARebuild/Resources/commerce.x64i
+          ls -la app/DLiPARebuild/Resources/commerce.x64i
+        working-directory: sapbridge
 
       - name: Build the app (unsigned)
         working-directory: app
@@ -354,13 +388,16 @@ jobs:
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
 
-      - name: Copy commerce_native into bundle
+      - name: Copy the SAP guest image into bundle
         run: |
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
-          # Use .bin extension so MobileInstallation doesn't treat it
-          # as a nested executable (which would cause install failure).
-          cp app/DLiPARebuild/Resources/commerce_native "$APP/commerce_native.bin"
-          ls -la "$APP/commerce_native.bin"
+          # A data container, not a Mach-O, so MobileInstallation has nothing
+          # to type as a nested executable.
+          cp app/DLiPARebuild/Resources/commerce.x64i "$APP/commerce.x64i"
+          ls -la "$APP/commerce.x64i"
+          # The app looks for commerce_native.bin first, then commerce.x64i;
+          # keep only the container so a stale binary cannot be picked up.
+          rm -f "$APP/commerce_native.bin"
 
       - name: Write BuildID
         run: |
@@ -485,7 +522,7 @@ jobs:
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           echo "==> bundle root before cleanup"
           ls -la "$APP"
-          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" ! -name "BuildID.txt" ! -name "commerce_native.bin" -print -delete
+          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" ! -name "BuildID.txt" ! -name "commerce_native.bin" ! -name "commerce.x64i" -print -delete
           echo "==> bundle root after cleanup"
           ls -la "$APP"
 

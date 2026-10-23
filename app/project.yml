@@ -36,8 +36,15 @@ targets:
       # the iOS bundle. iOS app bundles are flat; a Resources/ subdirectory
       # makes MobileInstallation type the bundle as System and reject
       # registration with error 181.
+      # The SAP signing path no longer reads these: sap_guest.c runs OS X 10.9
+      # CommerceKit from the X64I container, and that container carries every
+      # byte the guest executes. The 119 MB of extracted macOS binaries were
+      # only ever needed by the Go bridge. The folder is still listed when it
+      # exists so a checkout that has it does not silently lose the assets the
+      # KBSync path may still want.
       - path: DLiPARebuild/Resources/SapAssets
         type: folder
+        optional: true
     # No dependencies. The gomobile archive is force-loaded into the app
     # binary by OTHER_LDFLAGS below, so the symbols resolve at link time and
     # the bundle stays a single executable. Embedding an xcframework gave
@@ -52,9 +59,16 @@ targets:
         INFOPLIST_FILE: DLiPARebuild/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_VERSION: "5.0"
-        # Exposes the gomobile-generated ObjC API to Swift. Without this the
-        # Sapbridge types are unresolvable and the build fails.
+        # Exposes the SAP guest C API (and the remaining Go KBSync helpers)
+        # to Swift. Without this the sap_guest_* and Sapbridge* symbols are
+        # unresolvable and the build fails.
         SWIFT_OBJC_BRIDGING_HEADER: DLiPARebuild/DLiPA-Bridging-Header.h
+        # Unicorn's public headers, staged next to libunicorn.a by
+        # scripts/build-unicorn-ios.sh. DLiPARebuild/Sap/sap_guest.c includes
+        # <unicorn/unicorn.h> and <unicorn/x86.h>, so the search path is the
+        # directory that contains unicorn/, not unicorn/ itself.
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/build/ios/include"
         # Headers the framework installs; keep them so the import resolves.
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
 

@@ -11,6 +11,13 @@
 #import <Foundation/Foundation.h>
 #include <sys/types.h>
 
+// The SAP guest: the probeapp chain turned into a library. This replaces the
+// Go bridge for signing, the handshake and the serial number. The only thing
+// still on the Go side is KBSync, which is a separate FairPlay path.
+// Implementations live in Sap/sap_guest.c and Sap/sap_objc.c, which XcodeGen
+// compiles as part of the target's sources.
+#include "Sap/sap_guest.h"
+
 // ptrace is not in the public iOS SDK headers but exists in libSystem.
 // PT_TRACE_ME = 0; used to set CS_DEBUGGED for JIT support.
 extern int ptrace(int request, pid_t pid, caddr_t addr, int data);

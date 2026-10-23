@@ -13,7 +13,10 @@ struct HardwareIdentity {
     /// Uppercase hex, e.g. A4B2C3D4E5F6. Used as the guid query parameter
     /// and the plist guid field.
     var guid: String {
-        SapbridgeGuidFromHardware(bytes)
+        // Uppercase hex of the raw bytes, e.g. A4B2C3D4E5F6. This was a Go
+        // helper; the conversion is small enough to live here, which keeps the
+        // signing path free of the Go bridge.
+        bytes.map { String(format: "%02X", $0) }.joined()
     }
 
     /// A stable 6-byte identity.
@@ -29,43 +32,183 @@ struct HardwareIdentity {
     }
 }
 
+/// The HTTP round trip between the two exchange legs.
+///
+/// The guest is synchronous and has no network stack, so the C side calls
+/// back into this while it is inside sap_guest_handshake. The setup message is
+/// posted as an XML plist under sign-sap-setup-buffer, and the reply is the
+/// same key in the response.
+final class SAPTransport {
+    private let setupURL: URL
+
+    init(setupURL: String) {
+        self.setupURL = URL(string: setupURL) ?? URL(string: "about:blank")!
+    }
+
+    func post(request: Data) throws -> Data {
+        let envelope: [String: Any] = ["sign-sap-setup-buffer": request]
+        let body = try PropertyListSerialization.data(
+            fromPropertyList: envelope, format: .xml, options: 0)
+
+        var urlRequest = URLRequest(url: setupURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.httpBody = body
+        urlRequest.setValue("application/x-plist", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("Configurator/2.17 (Macintosh; 16G29; Mac OS X 10.12.6)",
+                            forHTTPHeaderField: "User-Agent")
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var payload: Data?
+        var failure: Error?
+        URLSession.shared.dataTask(with: urlRequest) { data, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                failure = error
+                return
+            }
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                failure = NSError(domain: "SAPTransport", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "apple returned \(http.statusCode)",
+                ])
+                return
+            }
+            payload = data
+        }.resume()
+        semaphore.wait()
+
+        if let failure { throw failure }
+        guard let payload,
+              let plist = try PropertyListSerialization
+                .propertyList(from: payload, options: [], format: nil)
+                as? [String: Any],
+              let reply = plist["sign-sap-setup-buffer"] as? Data,
+              !reply.isEmpty else {
+            throw NSError(domain: "SAPTransport", code: 2, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "the reply has no usable sign-sap-setup-buffer",
+            ])
+        }
+        return reply
+    }
+}
+
+/// The C callback the guest uses to reach the transport.
+///
+/// It must not capture anything, so the transport arrives through the userdata
+/// pointer that was installed in sap_guest_config. Returning non-zero aborts
+/// the chain and surfaces as a handshake error.
+private func sapTransportPost(_ request: UnsafePointer<UInt8>?,
+                              _ requestLength: Int,
+                              _ reply: UnsafeMutablePointer<UInt8>?,
+                              _ replyCapacity: Int,
+                              _ replyLength: UnsafeMutablePointer<Int>?,
+                              _ userdata: UnsafeMutableRawPointer?) -> Int32 {
+    guard let userdata, let request, let reply, let replyLength else {
+        return -1
+    }
+    let transport = Unmanaged<SAPTransport>.fromOpaque(userdata).takeUnretainedValue()
+    do {
+        let payload = Data(bytes: request, count: requestLength)
+        let response = try transport.post(request: payload)
+        guard response.count <= replyCapacity else { return -2 }
+        response.copyBytes(to: reply, count: response.count)
+        replyLength.pointee = response.count
+        return 0
+    } catch {
+        AppLog.error("SAP transport FAILED: " + error.localizedDescription, .sap)
+        return -3
+    }
+}
+
 /// Owns the SAP session. Create once after login and share for the whole
 /// session; the session is stateful, so re-signing is required after any
 /// redirect.
 final class SAPSigner {
-    private let signer: SapbridgeSigner
+    /// The Unicorn-backed guest. Owns the X64I container and the emulator.
+    private let guest: OpaquePointer
+    /// Held for the session: the post callback runs while the guest is inside
+    /// sap_guest_handshake, and a deallocated transport would be a use-after-free.
+    private let transport: SAPTransport
     let hardware: HardwareIdentity
 
     init(setupURL: String, certURL: String, version: Int32, hardware: HardwareIdentity) throws {
-        var error: NSError?
-        guard let s = SapbridgeNew(setupURL, certURL, version, hardware.bytes, &error),
-            error == nil else {
-            // The Go side wraps every entry point with recover(), so a panic
-            // deep in the SAP/Unicorn stack surfaces here as an NSError whose
-            // localizedDescription contains "Go panic in SAP handshake: <value>"
-            // plus a stack trace. Log every byte of it so it lands in the
-            // in-app log view, the shareable log, and OSLog (syslog).
-            let detail = error?.localizedDescription
-                ?? error?.localizedFailureReason
-                ?? error?.domain
-                ?? "unknown error"
-            AppLog.error("SAP handshake FAILED: " + detail, .sap)
-            // Also dump to stderr in case OSLog redaction hides part of it;
-            // stderr lines starting with [SAP] are easy to grep in syslog.
-            fputs("[DLiPA] SAP handshake FAILED: " + detail + "\n", stderr)
-            throw error ?? NSError(domain: "SAPSigner", code: 1, userInfo: nil)
-        }
-        self.signer = s
+        // The guest needs three things the old Go bridge fetched for it: the
+        // container, the setup certificate and a transport for the one HTTP
+        // round trip between the two exchange legs.
+        let imagePath = try SAPSigner.imagePath()
+        let certificate = try SAPSigner.fetchCertificate(certURL: certURL)
+        let transport = SAPTransport(setupURL: setupURL)
         self.hardware = hardware
-        AppLog.info("SAP signer ready, hardware " + hardware.guid, .sap)
+
+        var config = sap_guest_config()
+        config.hardware_id_len = hardware.bytes.count
+        var errorBuffer = [CChar](repeating: 0, count: 512)
+
+        // The pointers below have to outlive the call, so the buffers are
+        // held by this scope rather than created inline.
+        let guestPointer: OpaquePointer? = imagePath.withCString { imageCString in
+            certificate.withUnsafeBytes { certificateBytes in
+                hardware.bytes.withUnsafeBytes { hardwareBytes in
+                    config.image_path = imageCString
+                    config.certificate = certificateBytes.bindMemory(
+                        to: UInt8.self).baseAddress
+                    config.certificate_len = certificate.count
+                    config.hardware_id = hardwareBytes.bindMemory(
+                        to: UInt8.self).baseAddress
+                    config.post = sapTransportPost
+                    config.userdata = Unmanaged.passUnretained(transport).toOpaque()
+                    return sap_guest_new(&config, &errorBuffer,
+                                         errorBuffer.count)
+                }
+            }
+        }
+
+        guard let guestPointer else {
+            let detail = String(cString: errorBuffer)
+            AppLog.error("SAP guest load FAILED: " + detail, .sap)
+            fputs("[DLiPA] SAP guest load FAILED: " + detail + "\n", stderr)
+            throw NSError(domain: "SAPSigner", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: detail,
+            ])
+        }
+        self.guest = guestPointer
+        // Kept alive for the whole session: the post callback runs while the
+        // guest is inside sap_guest_handshake.
+        self.transport = transport
+
+        if sap_guest_handshake(guest, &errorBuffer, errorBuffer.count) != 0 {
+            let detail = String(cString: errorBuffer)
+            sap_guest_free(guest)
+            AppLog.error("SAP handshake FAILED: " + detail, .sap)
+            fputs("[DLiPA] SAP handshake FAILED: " + detail + "\n", stderr)
+            throw NSError(domain: "SAPSigner", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: detail,
+            ])
+        }
+
+        var stats = sap_guest_stats()
+        sap_guest_get_stats(guest, &stats)
+        AppLog.info("SAP signer ready, hardware " + hardware.guid
+            + ", cert v\(stats.cert_version) state \(stats.cert_state)"
+            + ", reply v\(stats.reply_version) state \(stats.reply_state)", .sap)
     }
 
     /// The value for the X-Apple-ActionSignature header.
     func signatureHeaderValue(for body: Data) throws -> String {
-        var error: NSError?
-        let value = signer.signatureHeaderValue(body, error: &error)
-        if let error { throw error }
-        return value
+        var errorBuffer = [CChar](repeating: 0, count: 512)
+        var header: UnsafeMutablePointer<CChar>?
+        let status = body.withUnsafeBytes { bodyBytes in
+            sap_guest_sign(guest,
+                           bodyBytes.bindMemory(to: UInt8.self).baseAddress,
+                           body.count, &header, &errorBuffer, errorBuffer.count)
+        }
+        guard status == 0, let header else {
+            throw NSError(domain: "SAPSigner", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: String(cString: errorBuffer),
+            ])
+        }
+        defer { free(header) }
+        return String(cString: header)
     }
 
     /// The FairPlay kbsync blob required by ent/download.
@@ -105,28 +248,96 @@ final class SAPSigner {
     }
 
     /// ent/download serialNumber: base64(54 c8 b0 a9 88 ++ guid[2:]).
+    ///
+    /// A fixed five-byte prefix followed by the hardware identity. This was a
+    /// Go helper; it is arithmetic, not SAP protocol, so it lives here now.
     func serialNumber() throws -> String {
-        var error: NSError?
-        let value = SapbridgeSerialNumber(hardware.bytes, &error)
-        if let error { throw error }
-        return value
+        guard hardware.bytes.count == 6 else {
+            throw NSError(domain: "SAPSigner", code: 5, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "the hardware identity must be 6 bytes, not \(hardware.bytes.count)",
+            ])
+        }
+        var payload = Data([0x54, 0xc8, 0xb0, 0xa9, 0x88])
+        payload.append(hardware.bytes.prefix(6))
+        return payload.base64EncodedString()
     }
 
     func close() {
-        // The gomobile-generated close: method is declared as
-        //   - (BOOL)close:(NSError **)error;
-        // in the bridging header. Swift imports a method whose trailing
-        // NSError ** parameter is named "error" as a throwing method with no
-        // arguments, so the correct call is `try signer.close()`. The earlier
-        // implementation used perform(Selector("close:"), with: error), which
-        // passed an NSError * where the method expects an NSError **; on the
-        // failure path gomobile would write through the (nil) pointer and
-        // segfault.
-        do {
-            try signer.close()
-        } catch {
-            AppLog.error("close failed: " + error.localizedDescription, .sap)
+        // sap_guest_free releases the emulator, the container and the
+        // certificate. Calling it twice would double-free, so the handle is
+        // only ever freed from here and the object is not reused after.
+        sap_guest_free(guest)
+    }
+
+    // MARK: staging
+
+    /// The X64I container produced offline by sapbridge/cmd/x86image.
+    ///
+    /// It ships in the bundle next to the Apple binaries it was built from.
+    /// Both names are tried because the staging scripts have used each.
+    private static func imagePath() throws -> String {
+        for name in ["commerce_native.bin", "commerce.x64i"] {
+            if let url = Bundle.main.url(forResource: (name as NSString)
+                .deletingPathExtension, withExtension: (name as NSString).pathExtension) {
+                return url.path
+            }
         }
+        throw NSError(domain: "SAPSigner", code: 10, userInfo: [
+            NSLocalizedDescriptionKey: "the SAP guest image is missing from the bundle",
+        ])
+    }
+
+    /// Fetches and decodes the setup certificate: the plist entry
+    /// sign-sap-setup-cert, which is the input to the first exchange leg.
+    private static func fetchCertificate(certURL: String) throws -> Data {
+        guard let url = URL(string: certURL) else {
+            throw NSError(domain: "SAPSigner", code: 11, userInfo: [
+                NSLocalizedDescriptionKey: "bad certificate URL " + certURL,
+            ])
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Configurator/2.17 (Macintosh; 16G29; Mac OS X 10.12.6)",
+                         forHTTPHeaderField: "User-Agent")
+
+        // Synchronous on purpose: the caller is already on a background queue
+        // and the guest cannot proceed until it has the certificate.
+        let semaphore = DispatchSemaphore(value: 0)
+        var payload: Data?
+        var failure: Error?
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                failure = error
+                return
+            }
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                failure = NSError(domain: "SAPSigner", code: 12, userInfo: [
+                    NSLocalizedDescriptionKey: "apple returned \(http.statusCode)",
+                ])
+                return
+            }
+            payload = data
+        }.resume()
+        semaphore.wait()
+
+        if let failure { throw failure }
+        guard let payload else {
+            throw NSError(domain: "SAPSigner", code: 13, userInfo: [
+                NSLocalizedDescriptionKey: "empty certificate response",
+            ])
+        }
+        guard let plist = try PropertyListSerialization
+            .propertyList(from: payload, options: [], format: nil)
+            as? [String: Any],
+            let certificate = plist["sign-sap-setup-cert"] as? Data,
+            !certificate.isEmpty else {
+            throw NSError(domain: "SAPSigner", code: 14, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "the plist has no usable sign-sap-setup-cert",
+            ])
+        }
+        return certificate
     }
 
     // MARK: kbsync cache
