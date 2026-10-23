@@ -103,6 +103,12 @@ typedef struct {
 	int objc_sends;
 	int objc_misses;
 	char objc_last_miss[128];
+	/* A pending objc_msgSend: the hook records it and stops, the driver loop
+	 * performs the nested call at top level, then resumes after the call. */
+	int msg_pending;
+	uint64_t msg_receiver;
+	uint64_t msg_selector;
+	uint64_t msg_resume;
 } hook_ctx_t;
 
 typedef struct {
@@ -318,6 +324,30 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 		static uint64_t ticks = 1000;
 		ticks += 1000;
 		set_rax(uc, ticks);
+		return 1;
+	}
+
+	/* objc_msgSend cannot be answered here: calling the resolved method would
+	 * re-enter uc_emu_start while it is running. Record the send and stop; the
+	 * driver loop calls the method at top level and resumes at the return
+	 * address the call pushed. */
+	if (strcmp(name, "_objc_msgSend") == 0 ||
+	    strcmp(name, "_objc_msgSend_fixup") == 0 ||
+	    strcmp(name, "_objc_retain") == 0 ||
+	    strcmp(name, "_objc_release") == 0 ||
+	    strcmp(name, "_objc_retainAutorelease") == 0 ||
+	    strcmp(name, "_objc_retainAutoreleasedReturnValue") == 0 ||
+	    strcmp(name, "_objc_autorelease") == 0 ||
+	    strcmp(name, "_objc_autoreleaseReturnValue") == 0) {
+		ctx->msg_pending = 1;
+		ctx->msg_receiver = a.rdi;
+		ctx->msg_selector = a.rsi;
+		/* The call pushed a return address; the driver resumes there. */
+		uint64_t rsp = 0, ret = 0;
+		uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
+		uc_mem_read(uc, rsp, &ret, 8);
+		ctx->msg_resume = ret;
+		uc_emu_stop(uc);
 		return 1;
 	}
 
@@ -563,6 +593,12 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	}
 	append(out, cap, &used, "[X64] segments mapped at %#llx\n", (unsigned long long)g_base);
 
+	/* The ObjC runtime needs no guest memory: it interns selector names and
+	 * assigns each class a guest address, all in host memory. */
+	objc_runtime_init();
+	append(out, cap, &used, "[X64] objc runtime: %d classes, %d selectors\n",
+	       objc_class_count(), objc_selector_count());
+
 	uint32_t stub_count = import_count;
 	uint64_t stub_size = ((uint64_t)stub_count * STUB_SLOT + 0xfff) & ~0xfffULL;
 	if (uc_mem_map(uc, g_stub_base, (size_t)stub_size, UC_PROT_ALL) != UC_ERR_OK) {
@@ -737,10 +773,90 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			uint64_t at = where;
 
 			for (int s = 0; s < 40; s++) {
+				ctx.msg_pending = 0;
+
 				err = uc_emu_start(uc, at, 0, 50000, 2000000);
 				uint64_t rip = 0;
 				uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 				slices++;
+
+				/* A message send was requested. Resolve it here, at top level,
+				 * because the method's implementation is guest code and calling
+				 * it from inside the hook would re-enter the engine.
+				 *
+				 * The call left its return address on the guest stack, so after
+				 * the method returns, execution resumes at msg_resume with rax
+				 * holding the result - exactly what the caller expects. */
+				if (ctx.msg_pending) {
+					uint64_t isa = 0;
+					const char *reason = NULL;
+					uint64_t imp = 0;
+
+					if (ctx.msg_receiver != 0 &&
+					    uc_mem_read(uc, ctx.msg_receiver, &isa, 8) == UC_ERR_OK) {
+						imp = objc_lookup(isa, ctx.msg_selector, &reason);
+						if (imp == 0) {
+							/* Say what was actually asked for. The receiver
+							 * and its isa are the two facts that separate "the
+							 * guest built an object we do not know" from "the
+							 * selector is not on that class". */
+							append(out, cap, &used,
+							       "[X64] msgSend miss: recv=%#llx isa=%#llx sel=%#llx\n",
+							       (unsigned long long)ctx.msg_receiver,
+							       (unsigned long long)isa,
+							       (unsigned long long)ctx.msg_selector);
+						}
+					} else {
+						reason = "receiver unreadable";
+						append(out, cap, &used,
+						       "[X64] msgSend unreadable receiver %#llx sel=%#llx\n",
+						       (unsigned long long)ctx.msg_receiver,
+						       (unsigned long long)ctx.msg_selector);
+					}
+
+					if (imp == 0) {
+						ctx.objc_misses++;
+						snprintf(ctx.objc_last_miss, sizeof(ctx.objc_last_miss),
+						         "%s", reason ? reason : "unknown");
+						append(out, cap, &used,
+						       "[X64] msgSend unresolved: %s (receiver=%#llx)\n",
+						       ctx.objc_last_miss,
+						       (unsigned long long)ctx.msg_receiver);
+						break;
+					}
+
+					/* Run the method with the caller's own arguments. Its
+					 * return address is already on the stack, so the method
+					 * returns straight to msg_resume. */
+					uint64_t method_args[8] = { 0 };
+					uint64_t rdi = 0, rsi = 0, rdx = 0, rcx = 0, r8v = 0, r9v = 0;
+					uc_reg_read(uc, UC_X86_REG_RDI, &rdi);
+					uc_reg_read(uc, UC_X86_REG_RSI, &rsi);
+					uc_reg_read(uc, UC_X86_REG_RDX, &rdx);
+					uc_reg_read(uc, UC_X86_REG_RCX, &rcx);
+					uc_reg_read(uc, UC_X86_REG_R8, &r8v);
+					uc_reg_read(uc, UC_X86_REG_R9, &r9v);
+					method_args[0] = rdi; method_args[1] = rsi; method_args[2] = rdx;
+					method_args[3] = rcx; method_args[4] = r8v; method_args[5] = r9v;
+
+					uint64_t result = 0;
+					uc_err merr = call_guest_n(uc, g_base + imp,
+					                           g_stack_base + 0x100000,
+					                           trampoline, method_args, 6, &result);
+					ctx.objc_sends++;
+
+					if (merr != UC_ERR_OK) {
+						append(out, cap, &used,
+						       "[X64] msgSend method faulted err=%u\n", merr);
+						break;
+					}
+
+					/* Put the result where the caller reads it and continue at
+					 * the instruction after the call. */
+					set_rax(uc, result);
+					at = ctx.msg_resume;
+					continue;
+				}
 
 				int found = -1;
 				for (int k = 0; k < hot_distinct; k++) {
@@ -967,6 +1083,13 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			if (ctx.syscall_seen) {
 				append(out, cap, &used, "[X64] syscall #%llu reached\n",
 				       (unsigned long long)ctx.syscall_nr);
+			}
+
+			if (ctx.objc_sends > 0 || ctx.objc_misses > 0) {
+				append(out, cap, &used,
+				       "[X64] objc: %d sends served, %d misses (last: %s)\n",
+				       ctx.objc_sends, ctx.objc_misses,
+				       ctx.objc_last_miss[0] ? ctx.objc_last_miss : "none");
 			}
 
 			for (int k = 0; k < ctx.once_count; k++) {
