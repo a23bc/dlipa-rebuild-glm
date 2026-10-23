@@ -1057,6 +1057,33 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			uint8_t id[6] = { 0x3c, 0x22, 0xfb, 0x12, 0x34, 0x56 };
 			uc_mem_write(uc, hardware_addr, &length, 4);
 			uc_mem_write(uc, hardware_addr + 4, id, sizeof(id));
+			/* The initialiser divides by a table size stored in __common, and
+			 * indexes a table through a pointer stored beside it. Both are zero
+			 * on a cold image, so the first call faults on the divide before it
+			 * can create them.
+			 *
+			 * Running the once-initialisers and retrying was the old workaround.
+			 * It made the call return, but not with a usable table: the exchange
+			 * then left through its early-exit path and reported -42023. Seen on
+			 * a local build of the same image: pre-creating the table as an empty
+			 * one lets the initialiser finish on the first try and the exchange
+			 * proceeds to state 1 with a 354-byte request.
+			 *
+			 * The size and the pointer live at fixed image offsets, so they can
+			 * be filled in before the call. */
+			{
+				uint64_t table = guest_alloc(64 * 4);
+				uint8_t zeroes[64 * 4];
+				memset(zeroes, 0, sizeof(zeroes));
+				uc_mem_write(uc, table, zeroes, sizeof(zeroes));
+				uint32_t table_size = 64;
+				uc_mem_write(uc, g_base + 0x2bc874, &table_size, 4);
+				uc_mem_write(uc, g_base + 0x2bbea0, &table, 8);
+				append(out, cap, &used,
+				       "[X64] pre-created hash table at %#llx (size %u)\n",
+				       (unsigned long long)table, table_size);
+			}
+
 			uc_reg_write(uc, UC_X86_REG_RDI, &context_slot);
 			uc_reg_write(uc, UC_X86_REG_RSI, &hardware_addr);
 			append(out, cap, &used, "[X64] calling %s(ctx=%#llx, hw=%#llx)\n",
