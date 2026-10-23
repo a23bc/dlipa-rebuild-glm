@@ -43,6 +43,21 @@ final class AppStoreClient {
         self.session = URLSession(configuration: configuration)
     }
 
+    /// Drops everything about the account currently being signed in.
+    ///
+    /// A sign-in leaves two kinds of state behind: the pod address above, and
+    /// the cookies URLSession stored. Both belong to the account that produced
+    /// them. Signing in as somebody else with the first account's cookies looks
+    /// to Apple like a session being hijacked, which is why a second account
+    /// failed immediately after the first one had signed in.
+    func resetSession() {
+        authenticationPod = nil
+        guard let storage = session.configuration.httpCookieStorage else { return }
+        for cookie in storage.cookies ?? [] {
+            storage.deleteCookie(cookie)
+        }
+    }
+
     // MARK: - Bag
 
     func fetchBag(guid: String) async throws -> StoreBag {

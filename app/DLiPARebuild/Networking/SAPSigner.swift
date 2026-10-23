@@ -19,6 +19,15 @@ struct HardwareIdentity {
         bytes.map { String(format: "%02X", $0) }.joined()
     }
 
+    /// Where the persisted identity lives.
+    static let storageKey = "com.a23bc.dliparebuild.hardwareIdentity"
+
+    /// Posted after `regenerate()`. Anything holding a live SAP session has to
+    /// drop it: the guest was opened with the old hardware id, and the signing
+    /// requests it produces would name a machine that no longer exists.
+    static let didChangeNotification =
+        Notification.Name("com.a23bc.dliparebuild.hardwareIdentityDidChange")
+
     /// A fixed 6-byte identity, generated once and then persisted.
     ///
     /// ipatool derives the guid from the machine's MAC address
@@ -34,20 +43,38 @@ struct HardwareIdentity {
     /// It must also equal the hardware id handed to the SAP guest: the
     /// emulator's request builder compares the two and fails with
     /// "authentication hardware identity mismatch" when they differ.
-    static func stable() -> HardwareIdentity {
-        let key = "com.a23bc.dliparebuild.hardwareIdentity"
+    static func current() -> HardwareIdentity {
         let defaults = UserDefaults.standard
 
-        if let saved = defaults.data(forKey: key), saved.count == 6 {
+        if let saved = defaults.data(forKey: storageKey), saved.count == 6 {
             return HardwareIdentity(bytes: saved)
         }
 
         let seed = UIDevice.current.identifierForVendor?.uuidString ?? "dlipa-fallback"
         let digest = Array(SHA256.hash(data: Data(seed.utf8)))
         let bytes = Data(digest.prefix(6))
-        defaults.set(bytes, forKey: key)
+        defaults.set(bytes, forKey: storageKey)
         AppLog.info("hardware identity generated once: "
                     + bytes.map { String(format: "%02X", $0) }.joined(), .sap)
+        return HardwareIdentity(bytes: bytes)
+    }
+
+    /// Replaces the stored identity with a new random one.
+    ///
+    /// The seed is a fresh UUID rather than the vendor identifier, so every call
+    /// produces a different value. Apple treats the guid as the machine, so this
+    /// is only for when the current one is unusable -- a session bound to a
+    /// stale identity, or a decision to start over as a new device. It signs the
+    /// user out and drops every kbsync blob tied to the old identity.
+    @discardableResult
+    static func regenerate() -> HardwareIdentity {
+        let seed = UUID().uuidString
+        let digest = Array(SHA256.hash(data: Data(seed.utf8)))
+        let bytes = Data(digest.prefix(6))
+        UserDefaults.standard.set(bytes, forKey: storageKey)
+        AppLog.info("hardware identity regenerated: "
+                    + bytes.map { String(format: "%02X", $0) }.joined(), .sap)
+        NotificationCenter.default.post(name: didChangeNotification, object: nil)
         return HardwareIdentity(bytes: bytes)
     }
 }
@@ -385,6 +412,13 @@ final class SAPSigner {
     // MARK: kbsync cache
 
     private static let kbsyncCache = NSMapTable<NSString, NSData>.strongToStrongObjects()
+
+    /// Drops every cached kbsync blob. They are keyed by dsid and guid, and a
+    /// blob minted for one identity is not valid for another, so regenerating
+    /// the device identity has to take them with it.
+    static func forgetAllCachedKBSync() {
+        kbsyncCache.removeAllObjects()
+    }
 
     private static func cacheKey(dsid: String, guid: String) -> NSString {
         return (dsid + ":" + guid) as NSString

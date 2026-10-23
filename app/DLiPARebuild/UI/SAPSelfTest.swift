@@ -18,7 +18,7 @@ enum SAPSelfTest {
     /// state lives. The signer work blocks its caller, so it runs on a
     /// background queue and hops back for every report line.
     static func run(report: @escaping (String) -> Void) {
-        let hardware = HardwareIdentity.stable()
+        let hardware = HardwareIdentity.current()
         report("Device GUID: " + hardware.guid)
 
         DispatchQueue.global(qos: .userInitiated).async {

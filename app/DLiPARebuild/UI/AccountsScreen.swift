@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// The account screen: the sign-in flow the original DLiPA had, rebuilt in
@@ -19,14 +20,25 @@ struct AccountsScreen: View {
                         Section("Signed in") {
                             // LabeledContent is iOS 16+. The deployment
                             // target is 15.0, so the row is built by hand.
-                            detailRow("Apple ID", account.email)
-                            detailRow("DSID", account.dsid)
-                            detailRow("Storefront", account.storefront)
+                            detailRow("Apple ID", account.email, caption: "the account's email address")
+                            // DSID is Apple's own numeric id for the account.
+                            // It is not derived from the email and does not
+                            // change when the email does, which is why it is
+                            // worth showing: it is what the store keys
+                            // purchases and downloads to.
+                            detailRow("DSID", account.dsid,
+                                      caption: "Apple's numeric account id; purchases belong to it")
+                            // The header is a region id, not a country code.
+                            detailRow("Storefront", Storefront.label(account.storefront),
+                                      caption: Storefront.detail(account.storefront)
+                                          ?? "which country's store this account uses")
                         }
                         Section {
                             Button("Sign out", role: .destructive) {
                                 model.signOut()
                             }
+                        } footer: {
+                            Text("Only one account is kept at a time. Signing in again replaces this one.")
                         }
                     }
                 } else {
@@ -44,6 +56,10 @@ struct AccountsScreen: View {
                     // rendered the glyph and attached no action, so tapping it
                     // did nothing at all.
                     Button {
+                        // One account is held at a time, so this replaces the
+                        // current one. The old HTTP session is dropped first;
+                        // its cookies belong to whoever signed in last.
+                        model.beginNewSignIn()
                         showingSignIn = true
                     } label: {
                         Image(systemName: "plus")
@@ -74,6 +90,13 @@ struct AccountsScreen: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: HardwareIdentity.didChangeNotification)) { _ in
+            // Settings replaced the device identity, so the live SAP session,
+            // the cached bag and the signed-in account all describe a machine
+            // that no longer exists.
+            model.handleIdentityChange()
+        }
         .onDisappear {
             // The tab stays alive for the session, but the emulator holds
             // tens of megabytes of guest memory. Release it when the screen
@@ -82,14 +105,26 @@ struct AccountsScreen: View {
         }
     }
 
-    private func detailRow(_ title: String, _ value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.trailing)
+    /// A title, a value right-aligned, and an optional caption underneath that
+    /// says what the value actually means. The values on this screen are Apple's
+    /// internal identifiers, so without the caption they read as noise.
+    private func detailRow(_ title: String, _ value: String,
+                           caption: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                Spacer()
+                Text(value)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+            if let caption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
+        .padding(.vertical, 2)
     }
 }
 
@@ -105,7 +140,9 @@ final class AccountsModel: ObservableObject {
     private var signer: SAPSigner?
     private var bag: StoreBag?
 
-    let hardware = HardwareIdentity.stable()
+    /// Refreshed when the identity is regenerated from Settings, so the next
+    /// sign-in uses the new one rather than the value captured at init.
+    private(set) var hardware = HardwareIdentity.current()
 
     /// One sign-in attempt. Apple answers the first password step with either
     /// an account or a 2FA challenge; the challenge case re-enters with the
@@ -163,6 +200,33 @@ final class AccountsModel: ObservableObject {
         signer = nil
         account = nil
         bag = nil
+        client.resetSession()
+    }
+
+    /// Clears the per-account state before a different Apple ID is tried.
+    ///
+    /// Only one account is held at a time, so signing in again replaces the
+    /// current one. What must go is the HTTP session: the cookies and the pod
+    /// address belong to the account that produced them, and sending them with
+    /// somebody else's credentials is what made the second account fail the
+    /// moment it was submitted.
+    ///
+    /// The SAP signer stays. It is a machine-level session, not an account one,
+    /// and closing it here would break the still-signed-in account if the user
+    /// backs out of the sheet.
+    func beginNewSignIn() {
+        client.resetSession()
+        hardware = HardwareIdentity.current()
+    }
+
+    /// The identity changed under us: everything derived from it is stale.
+    func handleIdentityChange() {
+        signer?.close()
+        signer = nil
+        account = nil
+        bag = nil
+        client.resetSession()
+        hardware = HardwareIdentity.current()
     }
 
     /// deinit cannot touch actor-isolated state, so the signer is released
