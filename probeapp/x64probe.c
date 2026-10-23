@@ -1633,6 +1633,27 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									       e2, (long long)(int32_t)st2, s2,
 									       (unsigned long long)l2);
 
+									/* The context as it stands after the second
+									 * call, to compare with the dump taken before
+									 * it. Every failure this side can construct
+									 * writes state=255; the device returns the
+									 * same status with state=0, which means it
+									 * left before writing that field. Whether the
+									 * context moved says how far it got. */
+									uint8_t cbuf[0x60];
+									if (uc_mem_read(uc, context_value, cbuf,
+									                sizeof(cbuf)) == UC_ERR_OK) {
+										append(out, cap, &used,
+										       "[X64] sap: ctx after exchange2:");
+										for (size_t ci = 0; ci < sizeof(cbuf); ci++) {
+											if (ci % 24 == 0) {
+												append(out, cap, &used, "\n[X64]   +%03zx:", ci);
+											}
+											append(out, cap, &used, " %02x", cbuf[ci]);
+										}
+										append(out, cap, &used, "\n");
+									}
+
 									/* The second exchange consumes the server's
 									 * reply; the condition the reference checks is
 									 * that state comes back 0. Its status is not
