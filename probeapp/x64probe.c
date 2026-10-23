@@ -143,6 +143,12 @@ typedef struct {
 	 * tell apart from a status code alone. */
 	char call_trace[1536];
 	size_t call_trace_len;
+	/* Program counters inside the exchange, as image offsets. A call that
+	 * returns a fixed error without calling a single import cannot be told
+	 * apart from a correct call by its result; the first few hundred addresses
+	 * it executes can be compared against a run that is known to work. */
+	uint32_t pc_trace[256];
+	int pc_count;
 } hook_ctx_t;
 
 typedef struct {
@@ -757,6 +763,16 @@ static void on_vm_state(uc_engine *uc, uint64_t address, uint32_t size, void *us
 	}
 }
 
+/* Records the first addresses executed inside the exchange. */
+static void on_exchange_pc(uc_engine *uc, uint64_t address, uint32_t size, void *user)
+{
+	(void)uc; (void)size;
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	if (ctx->pc_count < 256) {
+		ctx->pc_trace[ctx->pc_count++] = (uint32_t)(address - g_base);
+	}
+}
+
 static void on_guest_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 {
 	(void)uc; (void)size;
@@ -1015,7 +1031,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	}
 	ctx.code_pages = (uint8_t *)calloc((size_t)((ctx.code_pages_count + 7) / 8) + 1, 1);
 
-	uc_hook hook, h1, h2, h3, h4, h5, h6;
+	uc_hook hook, h1, h2, h3, h4, h5, h6, h7;
 	uc_hook_add(uc, &hook, UC_HOOK_CODE, on_code, &ctx,
 	            g_stub_base, g_stub_base + (uint64_t)stub_count * STUB_SLOT - 1);
 	if (ctx.code_pages != NULL) {
@@ -1028,6 +1044,10 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	ctx.vm_site = g_base + 0x1b889d;
 	uc_hook_add(uc, &h6, UC_HOOK_CODE, on_vm_state, &ctx,
 	            ctx.vm_site, ctx.vm_site + 8);
+
+	/* Addresses executed inside the exchange, which starts at image 0x88cd0. */
+	uc_hook_add(uc, &h7, UC_HOOK_CODE, on_exchange_pc, &ctx,
+	            g_base + 0x88cd0, g_base + 0x92000);
 	uc_hook_add(uc, &h1, UC_HOOK_MEM_READ_UNMAPPED, on_bad_read, &ctx, 1, 0);
 	uc_hook_add(uc, &h2, UC_HOOK_MEM_WRITE_UNMAPPED, on_bad_write, &ctx, 1, 0);
 	uc_hook_add(uc, &h3, UC_HOOK_MEM_FETCH_UNMAPPED, on_bad_fetch, &ctx, 1, 0);
@@ -1667,6 +1687,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 		}
 	}
 
+	append(out, cap, &used, "[X64] exchange pc trace (%d):", ctx.pc_count);
+	for (int i = 0; i < ctx.pc_count && i < 160; i++) {
+		append(out, cap, &used, " %x", ctx.pc_trace[i]);
+	}
+	append(out, cap, &used, "\n");
 	append(out, cap, &used, "[X64] call order: %s\n",
 	       ctx.call_trace_len ? ctx.call_trace : "(none)");
 	append(out, cap, &used, "[X64] imports served: %u calls across", ctx.served_total);
