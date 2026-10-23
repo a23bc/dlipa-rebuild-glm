@@ -22,6 +22,8 @@
 #include <unicorn/unicorn.h>
 #include <unicorn/x86.h>
 
+#include "objcruntime.h"
+
 /* CommerceKit carries 392 imports, so the old ceiling of 320 rejected it
  * outright with "counts out of range". */
 #define MAX_IMPORTS 512
@@ -97,6 +99,10 @@ typedef struct {
 	int syscall_seen;
 	char sysctl_names[6][64];
 	int sysctl_count;
+	uint64_t load_base;
+	int objc_sends;
+	int objc_misses;
+	char objc_last_miss[128];
 } hook_ctx_t;
 
 typedef struct {
@@ -154,6 +160,14 @@ static uint64_t guest_alloc(uint64_t size)
 	g_heap_cursor += aligned;
 	return at;
 }
+
+/* objc_msgSend is not served from inside the dispatch hook.
+ *
+ * The hook runs while uc_emu_start is executing; calling the resolved method
+ * from there would mean re-entering the engine. Instead the hook stops the run
+ * and records the request, and the driver loop below performs the nested call
+ * at top level. The guest is then resumed at the instruction after the send,
+ * with rax holding the method's result. */
 
 /* Returns 1 when the import was served, 0 when it has no handler. */
 static int dispatch(hook_ctx_t *ctx, uint32_t slot)

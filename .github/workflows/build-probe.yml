@@ -97,6 +97,12 @@ jobs:
             -I"$TCI_INC" \
             -c probeapp/x64probe.c -o /tmp/x64probe.o
 
+          xcrun --sdk iphoneos clang \
+            -target arm64-apple-ios15.0 \
+            -isysroot "$SDK" \
+            -O2 \
+            -c probeapp/objcruntime.c -o /tmp/objcruntime.o
+
           xcrun --sdk iphoneos swiftc \
             -parse-as-library \
             -target arm64-apple-ios15.0 \
@@ -107,6 +113,7 @@ jobs:
             probeapp/ProbeApp.swift \
             /tmp/tciprobe.o \
             /tmp/x64probe.o \
+            /tmp/objcruntime.o \
             "$TCI_LIB"
           ls -la probeapp/ProbeApp
           file probeapp/ProbeApp
