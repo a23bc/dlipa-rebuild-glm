@@ -1578,8 +1578,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 				for (int i = 0; i < ctx.vm_state_count && i < 64; i++) {
 					append(out, cap, &used, " %u", ctx.vm_states[i]);
 				}
-				append(out, cap, &used, "
-");
+				append(out, cap, &used, "\n");
 			}
 
 			if (ctx.objc_sends > 0 || ctx.objc_misses > 0) {
