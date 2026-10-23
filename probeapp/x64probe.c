@@ -93,6 +93,8 @@ typedef struct {
 	int fault_kind;
 	uint64_t once_inits[8];
 	int once_count;
+	uint64_t syscall_nr;
+	int syscall_seen;
 } hook_ctx_t;
 
 typedef struct {
@@ -310,6 +312,21 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 	return 0;
 }
 
+/* An unhandled syscall surfaces as UC_ERR_EXCEPTION, which says nothing about
+ * what was called. Capturing the number in rax turns a dead end into a fact.
+ *
+ * The handler stops the run rather than pretending to implement the syscall:
+ * guessing wrong here would move the failure somewhere less obvious. */
+static void on_syscall(uc_engine *uc, void *user)
+{
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	uint64_t number = 0;
+	uc_reg_read(uc, UC_X86_REG_RAX, &number);
+	ctx->syscall_nr = number;
+	ctx->syscall_seen = 1;
+	uc_emu_stop(uc);
+}
+
 static void on_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 {
 	(void)size;
@@ -500,12 +517,13 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	ctx.served = served;
 	ctx.hit_slot = -1;
 
-	uc_hook hook, h1, h2, h3;
+	uc_hook hook, h1, h2, h3, h4;
 	uc_hook_add(uc, &hook, UC_HOOK_CODE, on_code, &ctx,
 	            g_stub_base, g_stub_base + (uint64_t)stub_count * STUB_SLOT - 1);
 	uc_hook_add(uc, &h1, UC_HOOK_MEM_READ_UNMAPPED, on_bad_read, &ctx, 1, 0);
 	uc_hook_add(uc, &h2, UC_HOOK_MEM_WRITE_UNMAPPED, on_bad_write, &ctx, 1, 0);
 	uc_hook_add(uc, &h3, UC_HOOK_MEM_FETCH_UNMAPPED, on_bad_fetch, &ctx, 1, 0);
+	uc_hook_add(uc, &h4, UC_HOOK_INSN, on_syscall, &ctx, 1, 0, UC_X86_INS_SYSCALL);
 
 	/* Every candidate entry gets its own run.
 	 *
@@ -603,7 +621,10 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 					hot_distinct++;
 				}
 
-				if (err != UC_ERR_TIMEOUT) {
+				/* Unicorn 2.1 has no timeout status: a long run either runs
+				 * out of its instruction budget and returns OK, or fails with
+				 * a real error. Either way another slice is pointless. */
+				if (err != UC_ERR_OK) {
 					break;
 				}
 				at = rip;
@@ -644,6 +665,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			append(out, cap, &used, "[X64] status=%lld context=%#llx %s\n",
 			       (long long)(int32_t)status, (unsigned long long)context_value,
 			       (int32_t)status == 0 && context_value != 0 ? "OK" : "NOT READY");
+
+			if (ctx.syscall_seen) {
+				append(out, cap, &used, "[X64] syscall #%llu reached\n",
+				       (unsigned long long)ctx.syscall_nr);
+			}
 
 			for (int k = 0; k < ctx.once_count; k++) {
 				append(out, cap, &used, "[X64] once-init not run: %#llx\n",
