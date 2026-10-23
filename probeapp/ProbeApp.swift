@@ -285,7 +285,13 @@ final class ProbeViewController: UIViewController {
         coreFPButton.setTitle("Test CoreFP", for: .normal)
         coreFPButton.addTarget(self, action: #selector(testCoreFP), for: .touchUpInside)
 
-        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton, coreFPButton])
+        // The one that asks the actual question: call CommerceKit's SAP init
+        // the way the driver does, rather than poking exports with zeroes.
+        let sapButton = UIButton(type: .system)
+        sapButton.setTitle("Test SAP", for: .normal)
+        sapButton.addTarget(self, action: #selector(testSAP), for: .touchUpInside)
+
+        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton, coreFPButton, sapButton])
         buttons.axis = .horizontal
         buttons.distribution = .fillEqually
 
@@ -339,7 +345,24 @@ final class ProbeViewController: UIViewController {
         // Larger than the other probes: this report also lists which imports
         // were served and how often.
         var buffer = [CChar](repeating: 0, count: 16384)
-        x64probe_report(path, &buffer, buffer.count)
+        x64probe_report(path, 0, &buffer, buffer.count)
+        report += "\n" + String(cString: buffer)
+        textView.text = report
+        UIPasteboard.general.string = report
+    }
+
+    // CommerceKit for OS X 10.9, called through _cp2g1b9ro with the real
+    // argument shape. This is the first test that is about SAP rather than
+    // about the emulator.
+    @objc private func testSAP() {
+        guard let path = Bundle.main.path(forResource: "commercekit", ofType: "x64i",
+                                          inDirectory: "assets") else {
+            report += "\n[X64] commercekit.x64i missing from the bundle"
+            textView.text = report
+            return
+        }
+        var buffer = [CChar](repeating: 0, count: 16384)
+        x64probe_report(path, 1, &buffer, buffer.count)
         report += "\n" + String(cString: buffer)
         textView.text = report
         UIPasteboard.general.string = report

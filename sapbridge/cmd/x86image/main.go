@@ -81,6 +81,7 @@ func main() {
 	}
 
 	if *report {
+		image.reportSections(file)
 		image.report()
 		return
 	}
@@ -130,9 +131,10 @@ type entry struct {
 type image struct {
 	segments []segment
 	imports  []string
-	rebases  []uint64
-	binds    []bind
-	entries  []entry
+	rebases         []uint64
+	binds           []bind
+	entries         []entry
+	clampedAddends  int
 }
 
 // openX86 picks the x86-64 slice and refuses anything else.
@@ -213,17 +215,33 @@ func build(file *macho.File, raw []byte) (*image, error) {
 		out.imports = append(out.imports, b.Name)
 	}
 
+	// Addends are counted before being trusted. The 10.9 binary reports zero
+	// for every bind, while the macOS 27 one returns values in the hundreds of
+	// millions, which are not plausible offsets and look like a misread of the
+	// lazy-bind stream. Anything outside a sane range is dropped to zero and
+	// counted, so the report shows whether that assumption held.
 	for _, b := range mustBinds(file) {
+		addend := int32(b.Addend)
+		if addend > 0xffff || addend < -0xffff {
+			addend = 0
+			out.clampedAddends++
+		}
 		out.binds = append(out.binds, bind{
 			addr:   b.Offset(),
 			slot:   slotOf[b.Name],
-			addend: int32(b.Addend),
+			addend: addend,
 		})
 	}
 
 	for _, r := range mustRebases(file) {
 		out.rebases = append(out.rebases, r.Start+r.Offset)
 	}
+
+	// Module initialisers first. dyld would call these at load time, and the
+	// first export tried (_WIn9UJ86JKdV4dM) returned after a single stack
+	// probe, which is not what an entry point looks like. Whatever state the
+	// library expects to exist before its API is usable is set up here.
+	out.entries = append(out.entries, moduleInitialisers(file, raw)...)
 
 	for _, name := range wantedEntries {
 		if addr, err := file.FindSymbolAddress(name); err == nil {
@@ -235,6 +253,32 @@ func build(file *macho.File, raw []byte) (*image, error) {
 	sort.Slice(out.rebases, func(i, j int) bool { return out.rebases[i] < out.rebases[j] })
 
 	return out, nil
+}
+
+// moduleInitialisers reads __mod_init_func, the pointer array dyld walks after
+// mapping a dylib. Each entry is a function the library wants run before any
+// of its API is called.
+func moduleInitialisers(file *macho.File, slice []byte) []entry {
+	out := []entry{}
+	for _, sec := range file.Sections {
+		if sec.Name != "__mod_init_func" {
+			continue
+		}
+		start := uint64(sec.Offset)
+		end := start + sec.Size
+		if end > uint64(len(slice)) {
+			continue
+		}
+		data := slice[start:end]
+		for i, n := 0, 0; i+8 <= len(data); i, n = i+8, n+1 {
+			ptr := binary.LittleEndian.Uint64(data[i:])
+			if ptr == 0 {
+				continue
+			}
+			out = append(out, entry{name: fmt.Sprintf("modinit%d", n), addr: ptr})
+		}
+	}
+	return out
 }
 
 func mustBinds(file *macho.File) types.Binds {
@@ -251,6 +295,16 @@ func mustRebases(file *macho.File) []types.Rebase {
 		return nil
 	}
 	return rebases
+}
+
+func (im *image) reportSections(file *macho.File) {
+	fmt.Printf("sections: %d\n", len(file.Sections))
+	for _, sec := range file.Sections {
+		if sec.Size == 0 {
+			continue
+		}
+		fmt.Printf("  %-16s %-24s size=%d\n", sec.Seg, sec.Name, sec.Size)
+	}
 }
 
 func (im *image) report() {
@@ -271,7 +325,7 @@ func (im *image) report() {
 		}
 		fmt.Printf("  %#x\n", addr)
 	}
-	fmt.Printf("binds: %d\n", len(im.binds))
+	fmt.Printf("binds: %d (addends clamped to 0: %d)\n", len(im.binds), im.clampedAddends)
 	for i, b := range im.binds {
 		if i >= 10 {
 			fmt.Printf("  ... %d more\n", len(im.binds)-10)

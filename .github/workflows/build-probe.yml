@@ -144,6 +144,18 @@ jobs:
             -out "$GITHUB_WORKSPACE/converted/commerce.dylib" \
             -name "@rpath/commerce.dylib"
 
+      - name: Fetch the OS X 10.9 SAP binaries
+        run: |
+          # The macOS 27 copy of CommerceKit has an x86-64 slice, but it is a
+          # chained-fixup binary that the classic dyld-info reader cannot take
+          # apart. The 10.9 build is plain LC_DYLD_INFO_ONLY, is x86-64, and is
+          # the same one ipatool-rs drives successfully.
+          #
+          # Roughly 31 MB of the 1.27 GB package is transferred; the script
+          # verifies each file against a pinned SHA-256 before writing it.
+          python3 scripts/fetch-osx109-assets.py --out "$GITHUB_WORKSPACE/osx109"
+          ls -la "$GITHUB_WORKSPACE/osx109"
+
       - name: Build the CoreFP guest image
         working-directory: sapbridge
         run: |
@@ -155,6 +167,12 @@ jobs:
           go run ./cmd/x86image \
             -in "$GITHUB_WORKSPACE/VendorAssets/CoreFP" \
             -out "$GITHUB_WORKSPACE/converted/corefp.x64i"
+
+          # CommerceKit is the SAP driver: it exports _cp2g1b9ro and the other
+          # four entry points the machine package binds.
+          go run ./cmd/x86image \
+            -in "$GITHUB_WORKSPACE/osx109/CommerceKit" \
+            -out "$GITHUB_WORKSPACE/converted/commercekit.x64i"
           ls -la "$GITHUB_WORKSPACE/converted"
 
       - name: Build the dyld acceptance fixtures
@@ -235,6 +253,7 @@ jobs:
           # subdirectory rather than next to the fixtures that get sealed.
           mkdir -p "$APP/assets"
           cp "$GITHUB_WORKSPACE/converted/corefp.x64i" "$APP/assets/"
+          cp "$GITHUB_WORKSPACE/converted/commercekit.x64i" "$APP/assets/"
           # Identifies which build is actually on the device. Without it an
           # over-install that kept the old bundle is indistinguishable from a
           # fresh one.

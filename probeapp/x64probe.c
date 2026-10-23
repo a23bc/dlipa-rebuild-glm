@@ -337,7 +337,7 @@ static void on_bad_fetch(uc_engine *uc, uint64_t address, int size, void *user)
 	ctx->fault_addr = address; ctx->fault_kind = 3;
 }
 
-void x64probe_report(const char *path, char *out, size_t cap)
+void x64probe_report(const char *path, int mode, char *out, size_t cap)
 {
 	if (cap == 0) return;
 	out[0] = 0;
@@ -483,27 +483,96 @@ void x64probe_report(const char *path, char *out, size_t cap)
 	uc_hook_add(uc, &h2, UC_HOOK_MEM_WRITE_UNMAPPED, on_bad_write, &ctx, 1, 0);
 	uc_hook_add(uc, &h3, UC_HOOK_MEM_FETCH_UNMAPPED, on_bad_fetch, &ctx, 1, 0);
 
-	uint64_t start = g_base + entries[0].addr;
-	uint8_t prologue[24];
-	if (uc_mem_read(uc, start, prologue, sizeof(prologue)) == UC_ERR_OK) {
-		append(out, cap, &used, "[X64] bytes at entry:");
-		for (size_t i = 0; i < sizeof(prologue); i++) append(out, cap, &used, " %02x", prologue[i]);
-		append(out, cap, &used, "\n");
-	}
+	/* Every candidate entry gets its own run.
+	 *
+	 * The first export returned after a single stack probe, which is not what
+	 * an entry point looks like, and guessing which of the six is the real one
+	 * costs a rebuild per wrong guess. Running all of them - module
+	 * initialisers first - makes one install answer the whole question: which
+	 * entry does the most work, and what does each of them reach for.
+	 *
+	 * Registers are reset between runs and the stack pointer returned to the
+	 * top. Memory side effects from an earlier entry are not undone, so this is
+	 * a survey rather than six clean experiments; the ordering below puts the
+	 * initialisers first for that reason. */
+	for (uint32_t e = 0; e < entry_count; e++) {
+		/* mode 1 is the real thing: only _cp2g1b9ro, with the arguments the
+		 * SAP driver passes. Everything else stays a zero-argument survey. */
+		if (mode == 1 && strcmp(entries[e].name, "_cp2g1b9ro") != 0) {
+			continue;
+		}
 
-	append(out, cap, &used, "[X64] running %s\n", entries[0].name);
-	err = uc_emu_start(uc, start, 0, 8000000, 40000000);
+		uint64_t zero = 0;
+		uc_reg_write(uc, UC_X86_REG_RAX, &zero);
+		uc_reg_write(uc, UC_X86_REG_RBX, &zero);
+		uc_reg_write(uc, UC_X86_REG_RCX, &zero);
+		uc_reg_write(uc, UC_X86_REG_RDX, &zero);
+		uc_reg_write(uc, UC_X86_REG_RSI, &zero);
+		uc_reg_write(uc, UC_X86_REG_RDI, &zero);
+		uc_reg_write(uc, UC_X86_REG_R8, &zero);
+		uc_reg_write(uc, UC_X86_REG_R9, &zero);
+		uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
 
-	if (ctx.hit_slot >= 0) {
-		append(out, cap, &used, "[X64] stopped at unimplemented import [%d] %s\n",
-		       ctx.hit_slot, import_names[ctx.hit_slot]);
-	} else if (err == UC_ERR_OK) {
-		append(out, cap, &used, "[X64] completed\n");
-	} else {
-		uint64_t rip = 0; uc_reg_read(uc, UC_X86_REG_RIP, &rip);
-		append(out, cap, &used, "[X64] stopped: err=%u (%s) rip=%#llx\n", err, uc_strerror(err), (unsigned long long)rip);
-		const char *kind = ctx.fault_kind == 1 ? "read" : ctx.fault_kind == 2 ? "write" : ctx.fault_kind == 3 ? "fetch" : "none";
-		append(out, cap, &used, "[X64] fault=%s addr=%#llx\n", kind, (unsigned long long)ctx.fault_addr);
+		ctx.hit_slot = -1;
+		ctx.fault_addr = 0;
+		ctx.fault_kind = 0;
+		uint32_t before = ctx.served_total;
+
+		uint64_t where = g_base + entries[e].addr;
+
+		uint64_t context_slot = 0;
+		if (mode == 1) {
+			/* Layout copied from the working arm64 driver: an eight-byte slot
+			 * the callee fills with a context handle, and a 24-byte hardware
+			 * block holding a uint32 length followed by up to twenty ID bytes. */
+			context_slot = guest_alloc(8);
+			uint64_t hardware = guest_alloc(24);
+			uint32_t length = 20;
+			uint8_t id[20];
+			memset(id, 'A', sizeof(id));
+			uc_mem_write(uc, hardware, &length, 4);
+			uc_mem_write(uc, hardware + 4, id, sizeof(id));
+			uc_reg_write(uc, UC_X86_REG_RDI, &context_slot);
+			uc_reg_write(uc, UC_X86_REG_RSI, &hardware);
+			append(out, cap, &used, "[X64] calling %s(ctx=%#llx, hw=%#llx)\n",
+			       entries[e].name, (unsigned long long)context_slot,
+			       (unsigned long long)hardware);
+		}
+
+		if (e == 0) {
+			uint8_t prologue[16];
+			if (uc_mem_read(uc, where, prologue, sizeof(prologue)) == UC_ERR_OK) {
+				append(out, cap, &used, "[X64] bytes at %s:", entries[e].name);
+				for (size_t i = 0; i < sizeof(prologue); i++) append(out, cap, &used, " %02x", prologue[i]);
+				append(out, cap, &used, "\n");
+			}
+		}
+
+		err = uc_emu_start(uc, where, 0, 1500000, 5000000);
+		uint32_t calls = ctx.served_total - before;
+
+		if (ctx.hit_slot >= 0) {
+			append(out, cap, &used, "[X64] %-22s UNIMPLEMENTED %s (%u calls)\n",
+			       entries[e].name, import_names[ctx.hit_slot], calls);
+		} else if (err == UC_ERR_OK) {
+			append(out, cap, &used, "[X64] %-22s completed (%u calls)\n", entries[e].name, calls);
+		} else {
+			uint64_t rip = 0; uc_reg_read(uc, UC_X86_REG_RIP, &rip);
+			append(out, cap, &used, "[X64] %-22s err=%u rip=%#llx fault=%#llx (%u calls)\n",
+			       entries[e].name, err, (unsigned long long)rip,
+			       (unsigned long long)ctx.fault_addr, calls);
+		}
+
+		if (mode == 1) {
+			uint64_t status = 0, context_value = 0;
+			uc_reg_read(uc, UC_X86_REG_RAX, &status);
+			if (context_slot != 0) {
+				uc_mem_read(uc, context_slot, &context_value, 8);
+			}
+			append(out, cap, &used, "[X64] status=%lld context=%#llx %s\n",
+			       (long long)(int32_t)status, (unsigned long long)context_value,
+			       (int32_t)status == 0 && context_value != 0 ? "OK" : "NOT READY");
+		}
 	}
 
 	append(out, cap, &used, "[X64] imports served: %u calls across", ctx.served_total);
