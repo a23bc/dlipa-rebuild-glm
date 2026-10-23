@@ -1,0 +1,43 @@
+DLiPA Rebuild
+Copyright (C) 2026 the DLiPA Rebuild contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See LICENSE.
+
+--------------------------------------------------------------------------------
+Third-party code
+--------------------------------------------------------------------------------
+
+Parts of this project are derived from work released under the MIT licence.
+Those parts remain under the MIT terms, and their notices are preserved in
+THIRD_PARTY_LICENSES.md.
+
+  * DLiPA, by Ahmed Bafkir
+  * ipatool, by Majd Alfhaily
+  * ipatool-rs, by Kosthi
+
+MIT is compatible with the AGPL: permissively licensed code may be combined
+into a work distributed under the AGPL, provided the original notices are kept.
+
+--------------------------------------------------------------------------------
+Apple assets are not distributed here
+--------------------------------------------------------------------------------
+
+This repository contains no Apple code and no Apple binaries. In particular it
+does not contain CommerceKit, CoreFP, or any other Apple framework, and it does
+not contain Apple's SAP setup certificate. Those are obtained by the user from
+their own system or from Apple's public endpoints at build or run time.
+
+Apple, App Store, iTunes and related names are trademarks of Apple Inc. This
+project is not affiliated with, endorsed by, or sponsored by Apple Inc.
+
+--------------------------------------------------------------------------------
+Intended use
+--------------------------------------------------------------------------------
+
+This software is intended for interoperability work and for use with accounts
+and devices that you own. It is provided without warranty of any kind, as set
+out in the AGPL. Nothing here is legal advice; if you intend to distribute
+builds, take advice in your own jurisdiction.
