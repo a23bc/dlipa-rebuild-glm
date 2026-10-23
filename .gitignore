@@ -12,3 +12,7 @@ DerivedData/
 # https://github.com/a23bc/dlipa-rebuild (run `git lfs pull` there) and copy
 # them into VendorAssets/ before building.
 VendorAssets/
+
+# Working notes written during the SAP investigation. Kept locally,
+# not part of the repository.
+/Archive/
