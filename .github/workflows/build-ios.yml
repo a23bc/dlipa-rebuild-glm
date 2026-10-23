@@ -469,7 +469,7 @@ jobs:
           # No space after -I: ldid takes the value from argv+2, so -I<value>.
           # With a space it reads an empty identifier and then treats the
           # bundle id as a file path.
-          /tmp/ldid-src/ldid -Sent.plist "-Icom.a23bc.dliparebuild" "$APP/DLiPA"
+          /tmp/ldid-src/ldid -Sent.plist "-Icom.a23bc.dliparebuild" "$APP/DLiPARebuild"
           rm -f ent.plist
           echo "==> executable sealed"
 
