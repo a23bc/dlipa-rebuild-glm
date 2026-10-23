@@ -159,6 +159,11 @@ typedef struct {
 	 * shipping three million addresses: the first block that differs is the
 	 * region to look at, and it is small enough to disassemble. */
 	uint32_t pc_block[64];
+	/* The whitening loop at 8a7c0 is fixed-length, so its instruction count
+	 * cannot differ between two runs that reach it. Recording its arguments
+	 * and how many times it is entered separates "a different buffer" from
+	 * "a different number of passes". */
+	uint64_t loop_rcx, loop_rsi, loop_hits;
 } hook_ctx_t;
 
 typedef struct {
@@ -792,6 +797,17 @@ static void on_exchange_pc(uc_engine *uc, uint64_t address, uint32_t size, void 
 	ctx->pc_total++;
 }
 
+static void on_whiten(uc_engine *uc, uint64_t address, uint32_t size, void *user)
+{
+	(void)address; (void)size;
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	if (ctx->loop_hits == 0) {
+		uc_reg_read(uc, UC_X86_REG_RCX, &ctx->loop_rcx);
+		uc_reg_read(uc, UC_X86_REG_RSI, &ctx->loop_rsi);
+	}
+	ctx->loop_hits++;
+}
+
 static void on_guest_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 {
 	(void)uc; (void)size;
@@ -1050,7 +1066,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	}
 	ctx.code_pages = (uint8_t *)calloc((size_t)((ctx.code_pages_count + 7) / 8) + 1, 1);
 
-	uc_hook hook, h1, h2, h3, h4, h5, h6, h7;
+	uc_hook hook, h1, h2, h3, h4, h5, h6, h7, h8;
 	uc_hook_add(uc, &hook, UC_HOOK_CODE, on_code, &ctx,
 	            g_stub_base, g_stub_base + (uint64_t)stub_count * STUB_SLOT - 1);
 	if (ctx.code_pages != NULL) {
@@ -1067,6 +1083,8 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	/* Addresses executed inside the exchange, which starts at image 0x88cd0. */
 	uc_hook_add(uc, &h7, UC_HOOK_CODE, on_exchange_pc, &ctx,
 	            g_base + 0x88cd0, g_base + 0x92000);
+	uc_hook_add(uc, &h8, UC_HOOK_CODE, on_whiten, &ctx,
+	            g_base + 0x8a7c0, g_base + 0x8a7c5);
 	uc_hook_add(uc, &h1, UC_HOOK_MEM_READ_UNMAPPED, on_bad_read, &ctx, 1, 0);
 	uc_hook_add(uc, &h2, UC_HOOK_MEM_WRITE_UNMAPPED, on_bad_write, &ctx, 1, 0);
 	uc_hook_add(uc, &h3, UC_HOOK_MEM_FETCH_UNMAPPED, on_bad_fetch, &ctx, 1, 0);
@@ -1711,6 +1729,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 		append(out, cap, &used, " %x", ctx.pc_trace[i]);
 	}
 	append(out, cap, &used, "\n");
+	append(out, cap, &used,
+	       "[X64] whiten loop: entries=%llu rcx=%#llx rsi=%#llx\n",
+	       (unsigned long long)ctx.loop_hits,
+	       (unsigned long long)ctx.loop_rcx,
+	       (unsigned long long)ctx.loop_rsi);
 	append(out, cap, &used, "[X64] pc block sigs (%llu blocks of 4096):",
 	       (unsigned long long)((ctx.pc_total + 4095) >> 12));
 	for (uint32_t b = 0; b < 64 && b < (ctx.pc_total + 4095) >> 12; b++) {
