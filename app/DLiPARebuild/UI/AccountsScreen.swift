@@ -133,9 +133,12 @@ final class AccountsModel: ObservableObject {
         // The signature is computed inside this call and it is the first time
         // the guest runs since the handshake. Log around it so a crash here
         // says which half of the request it died in.
+        // A request carrying a verification code is Apple's second attempt:
+        // the counter must advance with it.
         let result = try await client.authenticate(
             email: email, password: password, authCode: authCode,
-            guid: hardware.guid, endpoint: endpoint, signer: signer)
+            guid: hardware.guid, endpoint: endpoint, signer: signer,
+            attempt: (authCode?.isEmpty == false) ? 2 : 1)
         account = result
         status = ""
         AppLog.info("authenticated, DSID " + result.dsid, .auth)

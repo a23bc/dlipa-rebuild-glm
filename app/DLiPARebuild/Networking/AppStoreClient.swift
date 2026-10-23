@@ -79,19 +79,30 @@ final class AppStoreClient {
         var lastName: String
     }
 
-    /// Signs in. When `authCode` is nil the request is sent without a 2FA
-    /// code; Apple responds with a two-factor challenge (failureType -22506
-    /// or similar) which the caller surfaces as StoreError.twoFactorRequired.
-    /// The caller then collects a code and re-invokes with authCode set.
+    /// Signs in.
+    ///
+    /// Two-factor runs over two requests, and the shape is not obvious:
+    ///
+    /// - The code is appended to the password, not sent in a field of its own.
+    /// - `attempt` counts the request: 1 for the password, 2 for the retry that
+    ///   carries the code. Apple treats a code sent with `attempt` still at 1 as
+    ///   a password typo, so the counter must advance.
+    /// - The challenge is signalled by an EMPTY `failureType` together with
+    ///   `customerMessage` equal to "MZFinance.BadLogin.Configurator_message".
+    ///   There is no failure code to match on, and a response shaped this way
+    ///   otherwise looks like a success: it has no passwordToken and no
+    ///   dsPersonId, which is why they are checked below.
     func authenticate(email: String,
                       password: String,
                       authCode: String?,
                       guid: String,
                       endpoint: String,
-                      signer: SAPSigner) async throws -> Account {
+                      signer: SAPSigner,
+                      attempt: Int = 1) async throws -> Account {
         // A missing trailing slash gets a 204 and nothing else happens.
         let url = endpoint.hasSuffix("/") ? endpoint : endpoint + "/"
-        AppLog.info("authenticating against " + url + (authCode == nil ? " (no 2FA)" : " (with 2FA)"), .auth)
+        AppLog.info("authenticating against " + url + " attempt " + String(attempt)
+                    + (authCode == nil ? " (no 2FA)" : " (with 2FA)"), .auth)
 
         var request = URLRequest(url: URL(string: url)!)
         request.httpMethod = "POST"
@@ -99,47 +110,100 @@ final class AppStoreClient {
         request.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
 
         let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
-        let payload: [String: Any] = [
-            "appleId": email,
-            "attempt": "1",
-            "guid": guid,
-            "password": password + code,
-            "rmp": "0",
-            "why": "signIn",
-        ]
-        // The header says urlencoded but the body really is a plist; this is
-        // what Apple accepts and what the signature must cover.
-        request.httpBody = try PropertyListSerialization.data(
-            fromPropertyList: payload, format: .xml, options: 0)
 
-        let (data, response) = try await signedRequest(
-            request, signer: signer, redirects: 4)
-        try validate(response, data: data)
+        // Apple sometimes rejects a correct password on the first request with
+        // -5000. ipatool retries that once (its "second credential attempt"),
+        // so the counter reaching 2 is not only for 2FA.
+        var sentAttempt = attempt
+        var data = Data()
+        var http: HTTPURLResponse?
+        for pass in 0..<2 {
+            var attemptRequest = request
+            let payload: [String: Any] = [
+                "appleId": email,
+                "attempt": String(sentAttempt),
+                "guid": guid,
+                "password": password + code,
+                "rmp": "0",
+                "why": "signIn",
+            ]
+            // The header says urlencoded but the body really is a plist; this
+            // is what Apple accepts and what the signature must cover.
+            attemptRequest.httpBody = try PropertyListSerialization.data(
+                fromPropertyList: payload, format: .xml, options: 0)
+
+            let result = try await signedRequest(
+                attemptRequest, signer: signer, redirects: 4)
+            data = result.0
+            http = result.1
+
+            // Only the first pass, only without a code, and only for the
+            // invalid-credentials code. Anything else ends the loop.
+            guard pass == 0, sentAttempt == 1, authCode == nil else { break }
+            let probe = (try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil)) as? [String: Any]
+            guard (probe?["failureType"] as? String) == "-5000" else { break }
+
+            AppLog.info("first credential attempt rejected; retrying once", .auth)
+            sentAttempt = 2
+        }
+
+        guard let http else {
+            throw StoreError.httpError(-1, "no response")
+        }
+        try validate(http, data: data)
 
         let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
             as? [String: Any] ?? [:]
 
         // Apple reports recoverable failures in the body with HTTP 200.
-        if let failure = plist["failureType"] as? String, !failure.isEmpty {
-            let message = plist["customerMessage"] as? String ?? ""
-            // -22506 / "NC+SB+DSO" / 2FA challenge — the user must enter a
-            // verification code and retry. ipatool treats these as 2FA.
-            if failure == "-22506" || failure.contains("2FA") || message.contains("verification code") {
-                AppLog.info("2FA required (failureType=\(failure))", .auth)
+        let failure = plist["failureType"] as? String ?? ""
+        let message = plist["customerMessage"] as? String ?? ""
+
+        // The 2FA challenge. Empty failureType, and this specific message --
+        // there is no code to match. ipatool calls this ErrAuthCodeRequired.
+        if failure.isEmpty && message == "MZFinance.BadLogin.Configurator_message" {
+            if authCode == nil || authCode!.isEmpty {
+                AppLog.info("2FA required, asking for the code", .auth)
                 throw StoreError.twoFactorRequired
             }
+            // A code was supplied and Apple still asked: it was wrong or
+            // expired. Sending the same one again cannot help.
+            AppLog.error("2FA rejected after the code was supplied", .auth)
+            throw StoreError.failureType("2FA", "apple did not accept the verification code; try a fresh one")
+        }
+
+        if !failure.isEmpty {
+            AppLog.error("authenticate failed: failureType=\(failure) message=\(message)", .auth)
             throw StoreError.failureType(failure, message)
+        }
+
+        if message == "Your account is disabled." {
+            throw StoreError.failureType("disabled", message)
         }
 
         let accountInfo = plist["accountInfo"] as? [String: Any] ?? [:]
         let address = accountInfo["address"] as? [String: Any] ?? [:]
+        let passwordToken = plist["passwordToken"] as? String ?? ""
+        let dsid = plist["dsPersonId"] as? String ?? ""
+
+        // The success gate. Without both of these there is no session, and
+        // treating the response as an account is what made a 2FA challenge
+        // look like a completed sign-in.
+        guard !passwordToken.isEmpty, !dsid.isEmpty else {
+            AppLog.error("authenticate returned no session: passwordToken "
+                         + String(passwordToken.count) + " chars, dsid "
+                         + String(dsid.count) + " chars, message=\(message)", .auth)
+            throw StoreError.failureType("no-session",
+                                         "apple returned no usable authentication response")
+        }
 
         return Account(
             email: accountInfo["appleId"] as? String ?? email,
-            passwordToken: plist["passwordToken"] as? String ?? "",
-            dsid: plist["dsPersonId"] as? String ?? "",
-            storefront: headerValue(response, "X-Set-Apple-Store-Front") ?? "",
-            pod: headerValue(response, "pod") ?? "",
+            passwordToken: passwordToken,
+            dsid: dsid,
+            storefront: headerValue(http, "X-Set-Apple-Store-Front") ?? "",
+            pod: headerValue(http, "pod") ?? "",
             firstName: address["firstName"] as? String ?? "",
             lastName: address["lastName"] as? String ?? "")
     }

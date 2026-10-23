@@ -19,16 +19,36 @@ struct HardwareIdentity {
         bytes.map { String(format: "%02X", $0) }.joined()
     }
 
-    /// A stable 6-byte identity.
+    /// A fixed 6-byte identity, generated once and then persisted.
     ///
-    /// iOS exposes no MAC address, so the first 6 bytes of the vendor
-    /// identifier UUID string are used. Stable across launches, which matters
-    /// because a cached kbsync blob is only valid for its identity.
+    /// ipatool derives the guid from the machine's MAC address
+    /// (machineIdentity in pkg/appstore/machine_id.go: uppercase hex of the
+    /// hardware address), so it is a machine constant there, not a per-session
+    /// value. iOS exposes no MAC, so the same constant has to be supplied some
+    /// other way, and identifierForVendor alone is not enough: it is stable
+    /// only while some app from the vendor is installed, and it changes if they
+    /// are all removed. A changed guid reads to Apple as a different machine
+    /// and silently invalidates every cached kbsync blob, so the first value is
+    /// written to defaults and reused from then on.
+    ///
+    /// It must also equal the hardware id handed to the SAP guest: the
+    /// emulator's request builder compares the two and fails with
+    /// "authentication hardware identity mismatch" when they differ.
     static func stable() -> HardwareIdentity {
+        let key = "com.a23bc.dliparebuild.hardwareIdentity"
+        let defaults = UserDefaults.standard
+
+        if let saved = defaults.data(forKey: key), saved.count == 6 {
+            return HardwareIdentity(bytes: saved)
+        }
+
         let seed = UIDevice.current.identifierForVendor?.uuidString ?? "dlipa-fallback"
-        let data = Data(seed.utf8)
-        let digest = Array(SHA256.hash(data: data))
-        return HardwareIdentity(bytes: Data(digest.prefix(6)))
+        let digest = Array(SHA256.hash(data: Data(seed.utf8)))
+        let bytes = Data(digest.prefix(6))
+        defaults.set(bytes, forKey: key)
+        AppLog.info("hardware identity generated once: "
+                    + bytes.map { String(format: "%02X", $0) }.joined(), .sap)
+        return HardwareIdentity(bytes: bytes)
     }
 }
 
