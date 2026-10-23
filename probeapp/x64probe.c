@@ -349,6 +349,24 @@ void x64probe_set_post_note(const char *text)
 	snprintf(g_sap_note, sizeof(g_sap_note), "%s", text);
 }
 
+/* A rolling window of the last 64 program counters, armed only around the
+ * second exchange. Its context dump came back byte for byte unchanged, so the
+ * call returns before it does anything; the last few addresses say where from,
+ * which is more than narrowing it down by argument ever did. */
+static uint64_t g_tail[64];
+static int g_tail_n;
+
+static void tail_pc_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user)
+{
+	(void)uc; (void)size; (void)user;
+	if (g_tail_n < 64) {
+		g_tail[g_tail_n++] = addr;
+	} else {
+		memmove(g_tail, g_tail + 1, sizeof(g_tail) - sizeof(g_tail[0]));
+		g_tail[63] = addr;
+	}
+}
+
 static void tok(char *dst, size_t cap, uint64_t v)
 {
 	if (v == 0) {
@@ -1620,9 +1638,24 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									                     reply_addr, reply_len,
 									                     out2, len2, res2 };
 									uint64_t st2 = 0;
+									g_tail_n = 0;
+									uc_hook th = 0;
+									uc_hook_add(uc, &th, UC_HOOK_CODE,
+									            (void *)tail_pc_hook, NULL, 1, 0);
 									uc_err e2 = call_guest_n(uc, exchange_addr,
 									                        g_stack_base + 0x100000,
 									                        trampoline, args2, 8, &st2);
+									if (th != 0) {
+										uc_hook_del(uc, th);
+									}
+									append(out, cap, &used, "[X64] sap: exchange2 tail:");
+									for (int ti = 0; ti < g_tail_n; ti++) {
+										append(out, cap, &used, " %llx",
+										       (unsigned long long)(g_tail[ti] >= g_base
+										                            ? g_tail[ti] - g_base
+										                            : g_tail[ti]));
+									}
+									append(out, cap, &used, "\n");
 									uint64_t o2 = 0, l2 = 0;
 									uint32_t s2 = 0;
 									uc_mem_read(uc, out2, &o2, 8);
