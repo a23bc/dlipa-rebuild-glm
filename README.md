@@ -125,7 +125,8 @@ the source was never published, only the compiled IPA.
 
 ## Licence
 
-This project's own code is [MIT](LICENSE).
+This project's own code is [AGPL-3.0](LICENSE). Code inherited from DLiPA and
+ipatool stays under MIT; see [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 Components it depends on keep their own terms, and some of them matter:
 **Unicorn is GNU GPL v2 and is statically linked**, so its terms travel with
