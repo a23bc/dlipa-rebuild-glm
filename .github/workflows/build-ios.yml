@@ -522,7 +522,21 @@ jobs:
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           echo "==> bundle root before cleanup"
           ls -la "$APP"
-          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" ! -name "DLiPA" ! -name "Assets.car" ! -name "*.png" ! -name "BuildID.txt" ! -name "commerce_native.bin" ! -name "commerce.x64i" -print -delete
+          # The executable name has to come from the bundle, not from a
+          # hard-coded string. The allowlist here said "DLiPA" while the
+          # product is "DLiPARebuild", so this step deleted the app binary
+          # itself and the IPA packaged a bundle with no executable.
+          EXE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist")
+          echo "==> executable: $EXE"
+          find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" \
+            ! -name "$EXE" ! -name "Assets.car" ! -name "*.png" \
+            ! -name "BuildID.txt" ! -name "commerce_native.bin" ! -name "commerce.x64i" \
+            -print -delete
+          if [ ! -f "$APP/$EXE" ]; then
+            echo "::error::cleanup removed the executable $EXE"
+            ls -la "$APP"
+            exit 1
+          fi
           echo "==> bundle root after cleanup"
           ls -la "$APP"
 
