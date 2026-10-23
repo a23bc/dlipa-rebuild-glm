@@ -334,16 +334,37 @@ static void on_syscall(uc_engine *uc, void *user)
  * counter reaches that page. This is what makes it possible to run the
  * pthread_once initialisers that the shim records: skipping them left a global
  * at zero, and the first 32-bit divide in CommerceKit then raised #DE. */
-static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
-                         uint64_t trampoline, uint64_t *out_rax)
+static uc_err call_guest_n(uc_engine *uc, uint64_t fn, uint64_t stack_top,
+                           uint64_t trampoline, const uint64_t *args,
+                           int nargs, uint64_t *out_rax)
 {
-	uint64_t rsp = (stack_top - 0x400) & ~0xfULL;
+	/* The frame is built as if a call had already happened: [rsp] holds the
+	 * return address, so rsp must be 8 mod 16 on entry, and any arguments past
+	 * the sixth live at [rsp+8], [rsp+16]. */
+	uint64_t rsp = (stack_top - 0x800) & ~0xfULL;
 	rsp -= 8;
 
 	uint64_t return_address = trampoline;
 	if (uc_mem_write(uc, rsp, &return_address, 8) != UC_ERR_OK) {
 		return UC_ERR_WRITE_UNMAPPED;
 	}
+
+	for (int i = 6; i < nargs; i++) {
+		uint64_t value = args[i];
+		if (uc_mem_write(uc, rsp + 8 + (uint64_t)(i - 6) * 8, &value, 8) != UC_ERR_OK) {
+			return UC_ERR_WRITE_UNMAPPED;
+		}
+	}
+
+	static const int regs[6] = {
+		UC_X86_REG_RDI, UC_X86_REG_RSI, UC_X86_REG_RDX,
+		UC_X86_REG_RCX, UC_X86_REG_R8,  UC_X86_REG_R9,
+	};
+	for (int i = 0; i < nargs && i < 6; i++) {
+		uint64_t value = args[i];
+		uc_reg_write(uc, regs[i], &value);
+	}
+
 	uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
 
 	uc_err err = uc_emu_start(uc, fn, trampoline, 3000000, 0);
@@ -351,6 +372,12 @@ static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
 		uc_reg_read(uc, UC_X86_REG_RAX, out_rax);
 	}
 	return err;
+}
+
+static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
+                         uint64_t trampoline, uint64_t *out_rax)
+{
+	return call_guest_n(uc, fn, stack_top, trampoline, NULL, 0, out_rax);
 }
 
 static void on_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
@@ -575,7 +602,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 	for (uint32_t e = 0; e < entry_count; e++) {
 		/* mode 1 is the real thing: only _cp2g1b9ro, with the arguments the
 		 * SAP driver passes. Everything else stays a zero-argument survey. */
-		if (mode == 1 && strcmp(entries[e].name, "_cp2g1b9ro") != 0) {
+		if (mode >= 1 && strcmp(entries[e].name, "_cp2g1b9ro") != 0) {
 			continue;
 		}
 
@@ -599,7 +626,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 
 		uint64_t context_slot = 0;
 		uint64_t hardware_addr = 0;
-		if (mode == 1) {
+		if (mode >= 1) {
 			/* Layout copied from the working arm64 driver: an eight-byte slot
 			 * the callee fills with a context handle, and a 24-byte hardware
 			 * block holding a uint32 length followed by up to twenty ID bytes. */
@@ -701,6 +728,70 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 				       "[X64] retry after once-inits: err=%u (%u calls)\n",
 				       err, ctx.served_total);
 			}
+
+			/* mode 2 continues into the exchange step. Eight arguments, so the
+			 * last two travel on the stack; the field it writes doubles as an
+			 * output pointer and a length, which is why both are read back. */
+			if (mode >= 2 && context_slot != 0) {
+				uint64_t exchange_addr = 0;
+				for (uint32_t q = 0; q < entry_count; q++) {
+					if (strcmp(entries[q].name, "_Mib5yocT") == 0) {
+						exchange_addr = g_base + entries[q].addr;
+					}
+				}
+
+				if (exchange_addr == 0) {
+					append(out, cap, &used, "[X64] no _Mib5yocT in this image\n");
+				} else {
+					uint64_t context_value = 0;
+					uc_mem_read(uc, context_slot, &context_value, 8);
+
+					uint64_t input_addr = guest_alloc(16);
+					uint64_t out_field = guest_alloc(8);
+					uint64_t len_field = guest_alloc(8);
+					uint64_t res_field = guest_alloc(4);
+					uint64_t zero = 0;
+					uint32_t zero32 = 0;
+					uc_mem_write(uc, input_addr, &zero, 8);
+					uc_mem_write(uc, out_field, &zero, 8);
+					uc_mem_write(uc, len_field, &zero, 8);
+					uc_mem_write(uc, res_field, &zero32, 4);
+
+					uint64_t args[8] = {
+						200, hardware_addr, context_value, input_addr,
+						0, out_field, len_field, res_field,
+					};
+
+					uint64_t exchange_status = 0;
+					uc_err xerr = call_guest_n(uc, exchange_addr,
+					                           g_stack_base + 0x100000,
+					                           trampoline, args, 8,
+					                           &exchange_status);
+
+					uint64_t out_ptr = 0, out_len = 0;
+					uint32_t result_code = 0;
+					uc_mem_read(uc, out_field, &out_ptr, 8);
+					uc_mem_read(uc, len_field, &out_len, 8);
+					uc_mem_read(uc, res_field, &result_code, 4);
+
+					append(out, cap, &used,
+					       "[X64] exchange err=%u status=%lld result=%u out=%#llx len=%llu\n",
+					       xerr, (long long)(int32_t)exchange_status, result_code,
+					       (unsigned long long)out_ptr, (unsigned long long)out_len);
+
+					if (out_ptr != 0 && out_len > 0 && out_len < 4096) {
+						uint8_t dump[48];
+						size_t take = out_len < sizeof(dump) ? (size_t)out_len : sizeof(dump);
+						if (uc_mem_read(uc, out_ptr, dump, take) == UC_ERR_OK) {
+							append(out, cap, &used, "[X64] output:");
+							for (size_t i = 0; i < take; i++) {
+								append(out, cap, &used, " %02x", dump[i]);
+							}
+							append(out, cap, &used, "\n");
+						}
+					}
+				}
+			}
 		} else {
 			err = uc_emu_start(uc, where, 0, 1500000, 5000000);
 			calls = ctx.served_total - before;
@@ -720,7 +811,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			       (unsigned long long)ctx.fault_addr, calls);
 		}
 
-		if (mode == 1) {
+		if (mode >= 1) {
 			uint64_t status = 0, context_value = 0;
 			uc_reg_read(uc, UC_X86_REG_RAX, &status);
 			if (context_slot != 0) {

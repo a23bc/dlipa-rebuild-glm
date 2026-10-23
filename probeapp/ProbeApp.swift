@@ -291,7 +291,11 @@ final class ProbeViewController: UIViewController {
         sapButton.setTitle("Test SAP", for: .normal)
         sapButton.addTarget(self, action: #selector(testSAP), for: .touchUpInside)
 
-        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton, coreFPButton, sapButton])
+        let exchangeButton = UIButton(type: .system)
+        exchangeButton.setTitle("Test Exchange", for: .normal)
+        exchangeButton.addTarget(self, action: #selector(testExchange), for: .touchUpInside)
+
+        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton, coreFPButton, sapButton, exchangeButton])
         buttons.axis = .horizontal
         buttons.distribution = .fillEqually
 
@@ -363,6 +367,23 @@ final class ProbeViewController: UIViewController {
         }
         var buffer = [CChar](repeating: 0, count: 16384)
         x64probe_report(path, 1, &buffer, buffer.count)
+        report += "\n" + String(cString: buffer)
+        textView.text = report
+        UIPasteboard.general.string = report
+    }
+
+    // Initialise, then call the exchange entry with an empty input. No network:
+    // the question is whether the call contract and the output fields are
+    // right, which has to be settled before any HTTP is worth wiring up.
+    @objc private func testExchange() {
+        guard let path = Bundle.main.path(forResource: "commercekit", ofType: "x64i",
+                                          inDirectory: "assets") else {
+            report += "\n[X64] commercekit.x64i missing from the bundle"
+            textView.text = report
+            return
+        }
+        var buffer = [CChar](repeating: 0, count: 32768)
+        x64probe_report(path, 2, &buffer, buffer.count)
         report += "\n" + String(cString: buffer)
         textView.text = report
         UIPasteboard.general.string = report
