@@ -18,10 +18,41 @@ struct SearchScreen: View {
         NavigationView {
             Group {
                 if model.results.isEmpty {
-                    EmptyStateView(
-                        title: model.hasSearched ? "No Results" : "Search",
-                        systemImage: "magnifyingglass",
-                        detail: model.errorText ?? (model.hasSearched ? nil : "Look up an app by name, bundle identifier or App Store link."))
+                    if model.hasSearched {
+                        EmptyStateView(title: "No Results",
+                                       systemImage: "magnifyingglass",
+                                       detail: model.errorText)
+                    } else if model.history.isEmpty {
+                        EmptyStateView(
+                            title: "Search",
+                            systemImage: "magnifyingglass",
+                            detail: "Look up an app by name, bundle identifier or App Store link.")
+                    } else {
+                        List {
+                            Section {
+                                ForEach(model.history, id: \.self) { entry in
+                                    Button { model.useHistory(entry) } label: {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: "clock.arrow.circlepath")
+                                                .foregroundColor(.secondary)
+                                            Text(entry)
+                                                .foregroundColor(.primary)
+                                            Spacer(minLength: 0)
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(RowPressStyle())
+                                }
+                            } header: {
+                                Text("Recent")
+                                    .textCase(nil)
+                            }
+                            Section {
+                                Button("Clear history") { model.clearHistory() }
+                            }
+                        }
+                        .listStyle(.insetGrouped)
+                    }
                 } else {
                     List {
                         Section {
@@ -29,7 +60,7 @@ struct SearchScreen: View {
                                 Button { actionTarget = app } label: {
                                     SearchResultRow(app: app)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(RowPressStyle())
                             }
                         } header: {
                             // A grouped list upper-cases its headers by
@@ -57,8 +88,10 @@ struct SearchScreen: View {
                 }
             }
             .actionSheet(item: $actionTarget) { app in
-                ActionSheet(title: Text(app.trackName),
-                            message: Text(app.bundleId),
+                // Both lines go in the title. ActionSheet draws its message
+                // after a blank line, which is the extra empty row appearing
+                // above the buttons.
+                ActionSheet(title: Text(app.trackName + "\n" + app.bundleId),
                             buttons: [
                                 .default(Text("Download")) {
                                     Task { await model.download(app, versionID: nil) }
@@ -95,6 +128,23 @@ struct SearchScreen: View {
             }
         }
         .navigationViewStyle(.stack)
+    }
+}
+
+/// Pressed state for a list row.
+///
+/// `.plain` gave no feedback of its own, and what did show came out white in
+/// both appearances, which is invisible on a light background. `.primary` is
+/// black in light mode and white in dark mode, so at low opacity the highlight
+/// darkens the row in light mode and lightens it in dark mode.
+struct RowPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(configuration.isPressed ? 0.12 : 0))
+            )
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -171,12 +221,45 @@ private struct ArtworkView: View {
 final class SearchModel: ObservableObject {
     @Published var term = ""
     @Published private(set) var results: [StoreApp] = []
+    /// Recent search terms, newest first. Kept here rather than in the view so
+    /// it survives the tab being rebuilt.
+    @Published private(set) var history: [String] = []
     @Published private(set) var busy = false
     @Published private(set) var status = ""
     @Published private(set) var errorText: String?
     @Published private(set) var hasSearched = false
 
     private var lastQuery = ""
+
+    private static let historyKey = "com.a23bc.dliparebuild.searchHistory"
+    private static let historyLimit = 12
+
+    init() {
+        history = UserDefaults.standard.stringArray(forKey: Self.historyKey) ?? []
+    }
+
+    func record(_ term: String) {
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var next = history.filter { $0.caseInsensitiveCompare(trimmed) != .orderedSame }
+        next.insert(trimmed, at: 0)
+        if next.count > Self.historyLimit {
+            next = Array(next.prefix(Self.historyLimit))
+        }
+        history = next
+        UserDefaults.standard.set(next, forKey: Self.historyKey)
+    }
+
+    func useHistory(_ entry: String) {
+        term = entry
+        lastQuery = ""
+        Task { await run() }
+    }
+
+    func clearHistory() {
+        history = []
+        UserDefaults.standard.removeObject(forKey: Self.historyKey)
+    }
 
     func clear() {
         results = []
@@ -198,6 +281,7 @@ final class SearchModel: ObservableObject {
         do {
             results = try await AppSession.shared.search(query)
             hasSearched = true
+            record(query)
         } catch {
             results = []
             hasSearched = true

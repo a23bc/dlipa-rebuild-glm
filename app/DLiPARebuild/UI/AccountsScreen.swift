@@ -201,6 +201,9 @@ struct SignInView: View {
                 }
             }
             .navigationTitle("Add Account")
+            // Sheets default to an inline title, which puts the form right
+            // under the bar. A large title gives the same gap Settings has.
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -270,6 +273,7 @@ struct TwoFactorView: View {
                 }
             }
             .navigationTitle("Two-Factor")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

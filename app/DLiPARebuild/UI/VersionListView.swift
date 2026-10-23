@@ -57,6 +57,7 @@ struct VersionListView: View {
                 }
             }
             .navigationTitle(allowsDownload ? "Pick a Version" : "Version History")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }

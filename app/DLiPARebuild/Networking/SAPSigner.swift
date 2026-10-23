@@ -298,6 +298,17 @@ final class SAPSigner {
             let detail = error?.localizedDescription ?? "unknown"
             AppLog.error("kbsync generation failed: " + detail, .sap)
             fputs("[DLiPA] kbsync generation failed: " + detail + "\n", stderr)
+            // The raw failure is several lines about cache directories and
+            // BundleDir. What it means is that the FairPlay key exchange is
+            // still the Go bridge, and that bridge needs the four pinned macOS
+            // binaries which this build does not ship.
+            if detail.contains("SAP assets") || detail.contains("BundleDir")
+                || detail.contains("apple-assets") {
+                throw NSError(domain: "SAPSigner", code: 5, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Downloads need the FairPlay key exchange (kbsync). That path still runs through the Go bridge and needs the four pinned macOS binaries, which are not in this build.",
+                ])
+            }
             throw error ?? NSError(domain: "SAPSigner", code: 3, userInfo: nil)
         }
         AppLog.info("kbsync generated, " + String(fresh.count) + " bytes", .sap)
