@@ -580,8 +580,22 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 				uc_mem_write(uc, oldlenp, &written, 8);
 				set_rax(uc, 0);
 			} else {
-				uc_mem_write(uc, oldlenp, &needed, 8);
-				set_rax(uc, (uint64_t)-1);
+				/* A short buffer must still succeed. The guest asks for the OS
+				 * version as part of building the machine's identity, and a
+				 * failure here is not a detail it shrugs off - it abandons the
+				 * exchange. Truncating into whatever room it offered keeps the
+				 * call successful, which is what a real host would do when the
+				 * value fits in the caller's buffer. */
+				if (a.rdx != 0 && capacity > 0) {
+					uint64_t room = capacity < needed ? capacity : needed;
+					uc_mem_write(uc, a.rdx, version, room);
+					uint64_t written = room;
+					uc_mem_write(uc, oldlenp, &written, 8);
+					set_rax(uc, 0);
+				} else {
+					uc_mem_write(uc, oldlenp, &needed, 8);
+					set_rax(uc, (uint64_t)-1);
+				}
 			}
 			return 1;
 		}
@@ -1401,6 +1415,14 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			for (int k = 0; k < ctx.sysctl_count; k++) {
 				append(out, cap, &used, "[X64] sysctl asked: %s (answered -1)\n",
 				       ctx.sysctl_names[k]);
+			}
+
+			if (ctx.sysctl_count > 0) {
+				append(out, cap, &used, "[X64] sysctl keys:");
+				for (int k = 0; k < ctx.sysctl_count; k++) {
+					append(out, cap, &used, " %s", ctx.sysctl_names[k]);
+				}
+				append(out, cap, &used, "\n");
 			}
 
 			if (ctx.syscall_seen) {
