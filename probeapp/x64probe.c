@@ -1250,6 +1250,31 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 					append(out, cap, &used, "[X64] exchange out=%#llx len=%llu\n",
 					       (unsigned long long)out_ptr, (unsigned long long)out_len);
 
+					/* If the return value looks like an address inside the image
+					 * rather than a small status code, read what it points at.
+					 * A pointer to a message would name the failure outright,
+					 * and that is worth more than another round of guessing at
+					 * which shim is wrong. */
+					if (exchange_status >= g_base && exchange_status < g_base + code_span) {
+						uint8_t text_at[96];
+						memset(text_at, 0, sizeof(text_at));
+						if (uc_mem_read(uc, exchange_status, text_at, sizeof(text_at) - 1) == UC_ERR_OK) {
+							append(out, cap, &used, "[X64] rax points into image (+%#llx):\n",
+							       (unsigned long long)(exchange_status - g_base));
+							append(out, cap, &used, "[X64]   hex:");
+							for (size_t i = 0; i < 48; i++) {
+								append(out, cap, &used, " %02x", text_at[i]);
+							}
+							append(out, cap, &used, "\n[X64]   ascii: ");
+							for (size_t i = 0; i < 48; i++) {
+								uint8_t ch = text_at[i];
+								append(out, cap, &used, "%c",
+								       (ch >= 0x20 && ch < 0x7f) ? (char)ch : '.');
+							}
+							append(out, cap, &used, "\n");
+						}
+					}
+
 					if (out_ptr != 0 && out_len > 0 && out_len < 4096) {
 						uint8_t dump[48];
 						size_t take = out_len < sizeof(dump) ? (size_t)out_len : sizeof(dump);
