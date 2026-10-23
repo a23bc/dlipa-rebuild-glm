@@ -251,13 +251,14 @@ jobs:
           ls -la app/DLiPARebuild/Resources/commerce.x64i
       - name: Install build tools
         run: |
-          # Only xcodegen. It turns project.yml into a real .xcodeproj, so
-          # there is no hand-edited pbxproj to go stale.
+          # xcodegen turns project.yml into a real .xcodeproj, so there is no
+          # hand-edited pbxproj to go stale.
           #
-          # ldid is deliberately not installed from brew: the seal step builds
-          # the procursus fork from source, because homebrew 2.1.5 dropped -S.
-          # Installing both was a brew run for a binary that was never called.
-          brew install xcodegen
+          # libplist and pkg-config are for the seal step: it builds the
+          # procursus ldid from source (homebrew's 2.1.5 dropped -S), and that
+          # build needs plist/plist.h plus the pkg-config file. Brew's ldid is
+          # not installed -- the binary is never called.
+          brew install xcodegen libplist pkg-config
           xcodegen --version
 
       - name: Build the app (unsigned)
