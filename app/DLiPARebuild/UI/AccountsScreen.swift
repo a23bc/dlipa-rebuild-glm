@@ -11,42 +11,34 @@ struct AccountsScreen: View {
     /// Non-nil once Apple has asked for a verification code. It drives the
     /// second modal; the password sheet is already gone by then.
     @State private var twoFactor: TwoFactorChallenge?
+    /// Which row is showing its identifiers. Only one at a time, and only via
+    /// the disclosure control: tapping the row itself selects the account.
+    @State private var expandedID: String?
 
     var body: some View {
         NavigationView {
             Group {
-                if let account = model.account {
-                    List {
-                        Section("Signed in") {
-                            // LabeledContent is iOS 16+. The deployment
-                            // target is 15.0, so the row is built by hand.
-                            detailRow("Apple ID", account.email, caption: "the account's email address")
-                            // DSID is Apple's own numeric id for the account.
-                            // It is not derived from the email and does not
-                            // change when the email does, which is why it is
-                            // worth showing: it is what the store keys
-                            // purchases and downloads to.
-                            detailRow("DSID", account.dsid,
-                                      caption: "Apple's numeric account id; purchases belong to it")
-                            // The header is a region id, not a country code.
-                            detailRow("Storefront", Storefront.label(account.storefront),
-                                      caption: Storefront.detail(account.storefront)
-                                          ?? "which country's store this account uses")
-                        }
-                        Section {
-                            Button("Sign out", role: .destructive) {
-                                model.signOut()
-                            }
-                        } footer: {
-                            Text("Only one account is kept at a time. Signing in again replaces this one.")
-                        }
-                    }
-                } else {
+                if model.accounts.isEmpty {
                     EmptyStateView(
                         title: "No Accounts",
                         systemImage: "person.crop.circle",
                         detail: "Add an Apple ID to sign in. Credentials stay on this device."
                     )
+                } else {
+                    List {
+                        ForEach(model.accounts) { account in
+                            AccountRow(
+                                account: account,
+                                isActive: account.id == model.activeAccount?.id,
+                                isExpanded: expandedID == account.id,
+                                onSelect: { model.select(account.id) },
+                                onToggleExpand: {
+                                    expandedID = (expandedID == account.id) ? nil : account.id
+                                })
+                        }
+                        .onDelete { model.remove(at: $0) }
+                    }
+                    .listStyle(.insetGrouped)
                 }
             }
             .navigationTitle("Accounts")
@@ -56,9 +48,8 @@ struct AccountsScreen: View {
                     // rendered the glyph and attached no action, so tapping it
                     // did nothing at all.
                     Button {
-                        // One account is held at a time, so this replaces the
-                        // current one. The old HTTP session is dropped first;
-                        // its cookies belong to whoever signed in last.
+                        // Drop the previous account's HTTP session before
+                        // somebody else's credentials go over it.
                         model.beginNewSignIn()
                         showingSignIn = true
                     } label: {
@@ -105,23 +96,65 @@ struct AccountsScreen: View {
         }
     }
 
-    /// A title, a value right-aligned, and an optional caption underneath that
-    /// says what the value actually means. The values on this screen are Apple's
-    /// internal identifiers, so without the caption they read as noise.
-    private func detailRow(_ title: String, _ value: String,
-                           caption: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                Spacer()
-                Text(value)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.trailing)
+}
+
+// MARK: - Account row
+
+/// One account in the list.
+///
+/// The row is two hit targets: the body selects the account, and the control on
+/// the right is the only thing that expands it. Keeping them as separate
+/// buttons is what makes that split reliable inside a List -- a tap gesture on
+/// the row would otherwise swallow the disclosure taps.
+private struct AccountRow: View {
+    let account: StoreAccount
+    let isActive: Bool
+    let isExpanded: Bool
+    let onSelect: () -> Void
+    let onToggleExpand: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Button(action: onSelect) {
+                    HStack(alignment: .center, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.displayName)
+                                .foregroundColor(.primary)
+                            Text(account.email)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        if isActive {
+                            Image(systemName: "checkmark")
+                                .font(.body.weight(.semibold))
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onToggleExpand) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(isExpanded ? "Hide account details" : "Show account details")
             }
-            if let caption {
-                Text(caption)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("DSID: " + account.dsid)
+                    Text("Storefront: " + Storefront.label(account.storefront))
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.leading, 2)
             }
         }
         .padding(.vertical, 2)
@@ -132,13 +165,34 @@ struct AccountsScreen: View {
 
 @MainActor
 final class AccountsModel: ObservableObject {
-    @Published var account: AppStoreClient.Account?
+    /// Every signed-in Apple ID, in the order they were added.
+    @Published private(set) var accounts: [StoreAccount] = []
+
+    /// Which one the rest of the app acts as.
+    @Published private(set) var activeID: String?
+
     @Published var busy = false
     @Published var status = ""
 
     private let client = AppStoreClient()
     private var signer: SAPSigner?
     private var bag: StoreBag?
+
+    /// The account the app is currently acting as.
+    var activeAccount: StoreAccount? {
+        guard let activeID else { return accounts.first }
+        return accounts.first { $0.id == activeID }
+    }
+
+    init() {
+        // Restored on launch; without this the list was empty every time the
+        // app started, whatever had been signed in before.
+        accounts = AccountStore.loadAccounts()
+        activeID = AccountStore.loadActiveID()
+        if activeID == nil || !accounts.contains(where: { $0.id == activeID }) {
+            activeID = accounts.first?.id
+        }
+    }
 
     /// Refreshed when the identity is regenerated from Settings, so the next
     /// sign-in uses the new one rather than the value captured at init.
@@ -161,7 +215,7 @@ final class AccountsModel: ObservableObject {
             guard fetched.hasSAPConfiguration,
                   let setup = fetched.signSapSetup,
                   let cert = fetched.signSapSetupCert,
-                  let authenticate = fetched.authenticateAccount else {
+                  fetched.authenticateAccount != nil else {
                 throw StoreError.noBagEndpoint
             }
             status = "Running the SAP handshake..."
@@ -190,30 +244,54 @@ final class AccountsModel: ObservableObject {
             email: email, password: password, authCode: authCode,
             guid: hardware.guid, endpoint: endpoint, signer: signer,
             attempt: (authCode?.isEmpty == false) ? 2 : 1)
-        account = result
+        // Signing in again with the same Apple ID refreshes its stored copy
+        // rather than adding a duplicate row: the DSID identifies the account,
+        // and the token and storefront can change between sign-ins.
+        upsert(StoreAccount(result))
+        activeID = result.dsid
+        persist()
         status = ""
         AppLog.info("authenticated, DSID " + result.dsid, .auth)
     }
 
-    func signOut() {
-        signer?.close()
-        signer = nil
-        account = nil
-        bag = nil
-        client.resetSession()
+    // MARK: - The list
+
+    func select(_ id: String) {
+        guard accounts.contains(where: { $0.id == id }) else { return }
+        activeID = id
+        persist()
     }
 
-    /// Clears the per-account state before a different Apple ID is tried.
+    func remove(at offsets: IndexSet) {
+        let removed = offsets.map { accounts[$0].id }
+        accounts.remove(atOffsets: offsets)
+        if let activeID, removed.contains(activeID) {
+            // The selected account went away; fall back to whatever is left.
+            self.activeID = accounts.first?.id
+        }
+        persist()
+    }
+
+    private func upsert(_ account: StoreAccount) {
+        if let index = accounts.firstIndex(where: { $0.id == account.id }) {
+            accounts[index] = account
+        } else {
+            accounts.append(account)
+        }
+    }
+
+    private func persist() {
+        AccountStore.save(accounts, active: activeID)
+    }
+
+    /// Clears the per-account HTTP state before a different Apple ID is tried.
     ///
-    /// Only one account is held at a time, so signing in again replaces the
-    /// current one. What must go is the HTTP session: the cookies and the pod
-    /// address belong to the account that produced them, and sending them with
-    /// somebody else's credentials is what made the second account fail the
-    /// moment it was submitted.
+    /// The cookies and the pod address belong to the account that produced
+    /// them, and sending them with somebody else's credentials is what made a
+    /// second account fail the moment it was submitted.
     ///
-    /// The SAP signer stays. It is a machine-level session, not an account one,
-    /// and closing it here would break the still-signed-in account if the user
-    /// backs out of the sheet.
+    /// The SAP signer stays: it is a machine-level session, not an account
+    /// one, and closing it would break the accounts already signed in.
     func beginNewSignIn() {
         client.resetSession()
         hardware = HardwareIdentity.current()
@@ -223,9 +301,13 @@ final class AccountsModel: ObservableObject {
     func handleIdentityChange() {
         signer?.close()
         signer = nil
-        account = nil
         bag = nil
         client.resetSession()
+        // The stored accounts were signed against the old device identity and
+        // their tokens cannot be renewed with the new one.
+        accounts = []
+        activeID = nil
+        persist()
         hardware = HardwareIdentity.current()
     }
 
