@@ -875,6 +875,27 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						}
 					}
 
+					/* Every field dumped raw. Reading only the three that were
+					 * guessed to matter hid the possibility that the call writes
+					 * somewhere else entirely, or that a field is narrower than
+					 * the eight bytes read from it. */
+					uint8_t raw[32];
+					if (uc_mem_read(uc, out_field, raw, 32) == UC_ERR_OK) {
+						append(out, cap, &used, "[X64] raw out_field..+32:");
+						for (int i = 0; i < 32; i++) {
+							append(out, cap, &used, " %02x", raw[i]);
+						}
+						append(out, cap, &used, "\n");
+					}
+
+					/* The return value is int32_t to the caller, but reading the
+					 * whole rax shows whether the upper half carries anything. */
+					append(out, cap, &used,
+					       "[X64] status raw rax=%#llx as i32=%lld as u32=%lu\n",
+					       (unsigned long long)exchange_status,
+					       (long long)(int32_t)(uint32_t)exchange_status,
+					       (unsigned long)(uint32_t)exchange_status);
+
 					append(out, cap, &used, "[X64] exchange out=%#llx len=%llu\n",
 					       (unsigned long long)out_ptr, (unsigned long long)out_len);
 
