@@ -494,8 +494,15 @@ jobs:
         run: |
           # Name the file with a short digest of the binary. A stale copy
           # downloaded earlier is then impossible to confuse with this build.
-          SHA=$(shasum -a 256 "${{ steps.app.outputs.path }}/DLiPA" | cut -c1-8)
-          NAME="DLiPA-${SHA}.ipa"
+          EXE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "${{ steps.app.outputs.path }}/Info.plist")
+          if [ ! -x "${{ steps.app.outputs.path }}/$EXE" ]; then
+            echo "::error::no executable named $EXE inside the bundle"
+            ls -la "${{ steps.app.outputs.path }}"
+            find "${{ steps.app.outputs.path }}" -maxdepth 1 -type f
+            exit 1
+          fi
+          SHA=$(shasum -a 256 "${{ steps.app.outputs.path }}/$EXE" | cut -c1-8)
+          NAME="DLiPARebuild-${SHA}.ipa"
           sh scripts/package-ipa.sh "${{ steps.app.outputs.path }}" "$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           ls -la "$NAME"
@@ -529,15 +536,15 @@ jobs:
       - name: Checksum
         run: |
           cd dist
-          NAME=$(ls dist/DLiPA-*.ipa | head -n 1)
+          NAME=$(ls dist/DLiPARebuild-*.ipa | head -n 1)
           sha256sum "$NAME" > "$NAME.sha256"
           cat "$NAME.sha256"
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/DLiPA-*.ipa
-            dist/DLiPA-*.ipa.sha256
+            dist/DLiPARebuild-*.ipa
+            dist/DLiPARebuild-*.ipa.sha256
           body: |
             ## DLiPA (SAP-adapted build)
 
