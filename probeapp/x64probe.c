@@ -1645,7 +1645,12 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 										uint64_t sig_len = guest_alloc(8);
 										uc_mem_write(uc, sig_out, &zero, 8);
 										uc_mem_write(uc, sig_len, &zero, 8);
-										uint64_t sargs[5] = { context_slot, reply_addr,
+										/* The context, not its address: the exchange
+										 * takes context_value in the same position,
+										 * and passing the slot instead made the
+										 * signature fail with the code the exchange
+										 * had already put in a shared field. */
+										uint64_t sargs[5] = { context_value, reply_addr,
 										                      reply_len, sig_out, sig_len };
 										uint64_t st3 = 0;
 										uc_err e3 = call_guest_n(uc, sign_addr,
