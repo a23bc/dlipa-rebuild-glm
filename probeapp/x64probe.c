@@ -138,6 +138,11 @@ typedef struct {
 	uint32_t vm_states[256];
 	int vm_state_count;
 	uint64_t vm_site;
+	/* The order imports are called in separates "a shim returned the wrong
+	 * value" from "the guest took a different path". The two are impossible to
+	 * tell apart from a status code alone. */
+	char call_trace[1536];
+	size_t call_trace_len;
 } hook_ctx_t;
 
 typedef struct {
@@ -287,27 +292,16 @@ static int name_in(const char *name, const char *const *table, size_t count)
 static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
                          uint64_t trampoline, uint64_t *out_rax);
 
-static uc_err once_call(uc_engine *uc, uint64_t fn)
+static void trace_call(hook_ctx_t *ctx, const char *name)
 {
-	static const int ids[] = {
-		UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
-		UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RBP, UC_X86_REG_RSP,
-		UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_R10, UC_X86_REG_R11,
-		UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15,
-		UC_X86_REG_RFLAGS, UC_X86_REG_RIP,
-	};
-	enum { N = (int)(sizeof(ids) / sizeof(ids[0])) };
-	uint64_t saved[N];
-	for (int i = 0; i < N; i++) {
-		uc_reg_read(uc, ids[i], &saved[i]);
+	size_t n = strlen(name);
+	if (ctx->call_trace_len + n + 2 >= sizeof(ctx->call_trace)) {
+		return;
 	}
-	uint64_t ignored = 0;
-	uc_err err = call_guest(uc, fn, g_stack_base + 0x180000, ONCE_TRAMPOLINE,
-	                        &ignored);
-	for (int i = 0; i < N; i++) {
-		uc_reg_write(uc, ids[i], &saved[i]);
-	}
-	return err;
+	memcpy(ctx->call_trace + ctx->call_trace_len, name, n);
+	ctx->call_trace_len += n;
+	ctx->call_trace[ctx->call_trace_len++] = ' ';
+	ctx->call_trace[ctx->call_trace_len] = 0;
 }
 
 static int dispatch(hook_ctx_t *ctx, uint32_t slot)
@@ -315,6 +309,7 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 	uc_engine *uc = ctx->uc;
 	const char *name = ctx->names[slot];
 	args_t a = read_args(uc);
+	trace_call(ctx, name);
 
 	/* CoreFoundation strings. The reference implements these for real rather
 	 * than stubbing them, which suggests the guest compares or copies the
@@ -495,15 +490,12 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 		/* Run the initialiser now, once, if the once word says it has not run
 		 * yet. Deferring it left the globals it sets at zero, which is what
 		 * the exchange's early exit was reacting to. */
-		if (a.rdi != 0) {
-			uint64_t word = 0;
-			uc_mem_read(uc, a.rdi, &word, 8);
-			if (word == 0 && a.rsi != 0) {
-				if (ctx->once_count < 8) {
-					ctx->once_inits[ctx->once_count++] = a.rsi;
-				}
-				once_call(uc, a.rsi);
-			}
+		/* Record and mark done, but do not call. Running the routine from
+		 * inside the hook is a re-entrant emulation and it breaks the caller:
+		 * the same change made a locally working build fail, so the deferred
+		 * form is the one that matches. */
+		if (a.rsi != 0 && ctx->once_count < 8) {
+			ctx->once_inits[ctx->once_count++] = a.rsi;
 		}
 		/* pthread_once_t is 8 bytes on x86-64. Writing four left the upper
 		 * half alone, the sentinel never matched, and the guest asked for the
@@ -1675,6 +1667,8 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 		}
 	}
 
+	append(out, cap, &used, "[X64] call order: %s\n",
+	       ctx.call_trace_len ? ctx.call_trace : "(none)");
 	append(out, cap, &used, "[X64] imports served: %u calls across", ctx.served_total);
 	int distinct = 0;
 	for (uint32_t i = 0; i < import_count; i++) if (served[i] > 0) distinct++;
