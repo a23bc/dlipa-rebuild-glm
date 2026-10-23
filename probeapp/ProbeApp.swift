@@ -155,6 +155,14 @@ private func sapPostCallback(_ request: UnsafePointer<UInt8>?,
         return -7
     }
     guard value.count <= replyCap else { return -8 }
+
+    // The reply's own bytes, not just its length: two runs can return the same
+    // length and still differ in content, and the library answers both with the
+    // same code.
+    let payloadHead = value.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
+    let detail = "\(note) payload=[\(payloadHead)]"
+    detail.withCString { x64probe_set_post_note($0) }
+
     value.copyBytes(to: reply, count: value.count)
     replyLen.pointee = value.count
     return 0
