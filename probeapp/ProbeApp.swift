@@ -295,9 +295,22 @@ final class ProbeViewController: UIViewController {
         exchangeButton.setTitle("Test Exchange", for: .normal)
         exchangeButton.addTarget(self, action: #selector(testExchange), for: .touchUpInside)
 
-        let buttons = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton, coreFPButton, sapButton, exchangeButton])
-        buttons.axis = .horizontal
+        // Two rows of three. One row of six gave every title a third of the
+        // width it needed and the labels were unreadable.
+        let actionRow = UIStackView(arrangedSubviews: [copyButton, shareButton, jitButton])
+        actionRow.axis = .horizontal
+        actionRow.distribution = .fillEqually
+        actionRow.spacing = 4
+
+        let emulatorRow = UIStackView(arrangedSubviews: [coreFPButton, sapButton, exchangeButton])
+        emulatorRow.axis = .horizontal
+        emulatorRow.distribution = .fillEqually
+        emulatorRow.spacing = 4
+
+        let buttons = UIStackView(arrangedSubviews: [actionRow, emulatorRow])
+        buttons.axis = .vertical
         buttons.distribution = .fillEqually
+        buttons.spacing = 8
 
         let outer = UIStackView(arrangedSubviews: [buttons, textView])
         outer.axis = .vertical
@@ -310,7 +323,7 @@ final class ProbeViewController: UIViewController {
             outer.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
             outer.topAnchor.constraint(equalTo: guide.topAnchor),
             outer.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
-            buttons.heightAnchor.constraint(equalToConstant: 44),
+            buttons.heightAnchor.constraint(equalToConstant: 96),
         ])
 
         run()

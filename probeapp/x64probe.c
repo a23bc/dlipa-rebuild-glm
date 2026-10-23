@@ -655,7 +655,10 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 
 		uint32_t calls = 0;
 
-		if (mode == 1) {
+		/* Everything from here on belongs to the driver modes; mode 0 is the
+		 * zero-argument survey and must not go through the initialisation
+		 * sequence at all. */
+		if (mode >= 1) {
 			/* A single long run only says "timed out". Slicing it does better:
 			 * each slice ends on a small budget, the program counter is read
 			 * between slices, and the addresses that recur identify the loop
@@ -799,12 +802,12 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 
 		/* mode 1 already reported per slice; the generic branches below would
 		 * describe a timeout as "completed", so they are skipped for it. */
-		if (mode != 1 && ctx.hit_slot >= 0) {
+		if (mode == 0 && ctx.hit_slot >= 0) {
 			append(out, cap, &used, "[X64] %-22s UNIMPLEMENTED %s (%u calls)\n",
 			       entries[e].name, import_names[ctx.hit_slot], calls);
-		} else if (mode != 1 && err == UC_ERR_OK) {
+		} else if (mode == 0 && err == UC_ERR_OK) {
 			append(out, cap, &used, "[X64] %-22s completed (%u calls)\n", entries[e].name, calls);
-		} else if (mode != 1) {
+		} else if (mode == 0) {
 			uint64_t rip = 0; uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 			append(out, cap, &used, "[X64] %-22s err=%u rip=%#llx fault=%#llx (%u calls)\n",
 			       entries[e].name, err, (unsigned long long)rip,
