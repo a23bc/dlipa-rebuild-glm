@@ -268,6 +268,44 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 	const char *name = ctx->names[slot];
 	args_t a = read_args(uc);
 
+	/* CoreFoundation strings. The reference implements these for real rather
+	 * than stubbing them, which suggests the guest compares or copies the
+	 * values. Because creation and lookup are both answered here, the handle
+	 * can simply be the address of a copy of the C string: nothing else ever
+	 * inspects it. */
+	if (strcmp(name, "_CFStringCreateWithCString") == 0) {
+		char text[256];
+		memset(text, 0, sizeof(text));
+		if (a.rsi != 0) {
+			uc_mem_read(uc, a.rsi, text, sizeof(text) - 1);
+		}
+		size_t len = strlen(text);
+		uint64_t handle = guest_alloc((uint64_t)len + 1);
+		uc_mem_write(uc, handle, text, len + 1);
+		set_rax(uc, handle);
+		return 1;
+	}
+
+	if (strcmp(name, "_CFStringGetCString") == 0) {
+		char text[256];
+		memset(text, 0, sizeof(text));
+		if (a.rdi != 0) {
+			uc_mem_read(uc, a.rdi, text, sizeof(text) - 1);
+		}
+		size_t len = strlen(text);
+		if (a.rsi != 0 && a.rdx > 0) {
+			size_t room = (size_t)(a.rdx - 1);
+			if (len > room) {
+				len = room;
+			}
+			uc_mem_write(uc, a.rsi, text, len);
+			char zero_byte = 0;
+			uc_mem_write(uc, a.rsi + len, &zero_byte, 1);
+		}
+		set_rax(uc, 1);
+		return 1;
+	}
+
 	if (name_in(name, k_return_zero, sizeof(k_return_zero) / sizeof(k_return_zero[0]))) {
 		set_rax(uc, 0);
 		return 1;
