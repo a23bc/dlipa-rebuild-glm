@@ -61,6 +61,7 @@ typedef struct sap_guest_stats {
     int32_t reply_state;
     int32_t attempts;      /* the reply leg often succeeds on the second try */
     size_t signature_len;
+    uint32_t imports_served;
 } sap_guest_stats;
 
 void sap_guest_get_stats(const sap_guest *guest, sap_guest_stats *out);

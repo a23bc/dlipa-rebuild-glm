@@ -51,6 +51,8 @@ static const uint64_t k_heap_size = 64ULL << 20;
 static const uint64_t k_trampoline = 0x500000000ULL;
 static const uint64_t k_stub_slot = 16;
 
+struct sap_hook_ctx;
+
 struct sap_segment {
     char name[16];
     uint64_t vmaddr;
@@ -84,6 +86,8 @@ struct sap_guest {
     void *userdata;
 
     sap_guest_stats stats;
+    struct sap_hook_ctx *hook;
+    uc_hook hook_handle;
 };
 
 static uint32_t rd32(const uint8_t *p)
@@ -396,6 +400,183 @@ static int load_trampoline(struct sap_guest *g, char *error, size_t cap)
     }
     return 0;
 }
+/* ---- stub dispatch ---------------------------------------------------- */
+
+/* The image calls through fixed 16-byte slots. When the guest reaches one,
+ * the slot number says which import it wants, and this side answers. The
+ * alternative, letting the ret we placed there fire, would return control
+ * with whatever the caller expects in rax left over from earlier code. */
+struct sap_args {
+    uint64_t rdi, rsi, rdx, rcx, r8, r9;
+};
+
+static struct sap_args read_args(uc_engine *uc)
+{
+    struct sap_args a;
+    uc_reg_read(uc, UC_X86_REG_RDI, &a.rdi);
+    uc_reg_read(uc, UC_X86_REG_RSI, &a.rsi);
+    uc_reg_read(uc, UC_X86_REG_RDX, &a.rdx);
+    uc_reg_read(uc, UC_X86_REG_RCX, &a.rcx);
+    uc_reg_read(uc, UC_X86_REG_R8, &a.r8);
+    uc_reg_read(uc, UC_X86_REG_R9, &a.r9);
+    return a;
+}
+
+static void set_rax(uc_engine *uc, uint64_t value)
+{
+    uc_reg_write(uc, UC_X86_REG_RAX, &value);
+}
+
+/* Host memory handed out to the guest. The guest only ever sees the address,
+ * so a side table is enough; nothing is freed until the handle is torn down,
+ * which keeps a stray free from turning into a use-after-free crash. */
+static uint64_t guest_alloc(struct sap_guest *g, size_t size)
+{
+    size_t aligned = (size + 15) & ~(size_t)15;
+    if (g->heap_cursor + aligned > k_heap_base + k_heap_size) {
+        return 0;
+    }
+    uint64_t addr = g->heap_cursor;
+    g->heap_cursor += aligned;
+    uint8_t zero[64] = {0};
+    size_t left = aligned;
+    uint64_t at = addr;
+    while (left > 0) {
+        size_t chunk = left < sizeof(zero) ? left : sizeof(zero);
+        uc_mem_write(g->uc, at, zero, chunk);
+        at += chunk;
+        left -= chunk;
+    }
+    return addr;
+}
+
+/* Returns 0 when the import was served, -1 when nothing here knows it. An
+ * unknown import stops the run and names itself: a wrong answer would surface
+ * hundreds of instructions later as a wrong status, which is far harder to
+ * read than "this import has no implementation". */
+static int serve_import(struct sap_guest *g, uint32_t slot, uint64_t pc,
+                        char *error, size_t cap)
+{
+    const char *name = g->import_names[slot];
+    struct sap_args a = read_args(g->uc);
+
+    if (strcmp(name, "_malloc") == 0 || strcmp(name, "_calloc") == 0) {
+        size_t n = (size_t)(strcmp(name, "_calloc") == 0 ? a.rdi * a.rsi : a.rdi);
+        set_rax(g->uc, guest_alloc(g, n));
+        g->stats.imports_served++;
+        return 0;
+    }
+    if (strcmp(name, "_free") == 0) {
+        set_rax(g->uc, 0);
+        g->stats.imports_served++;
+        return 0;
+    }
+    if (strcmp(name, "_memcpy") == 0 || strcmp(name, "_memmove") == 0) {
+        uint8_t buf[256];
+        uint64_t left = a.rdx, src = a.rsi, dst = a.rdi;
+        while (left > 0) {
+            size_t chunk = left < sizeof(buf) ? (size_t)left : sizeof(buf);
+            if (uc_mem_read(g->uc, src, buf, chunk) != UC_ERR_OK ||
+                uc_mem_write(g->uc, dst, buf, chunk) != UC_ERR_OK) {
+                set_error(error, cap, "%s touched unmapped memory", name);
+                return -1;
+            }
+            src += chunk;
+            dst += chunk;
+            left -= chunk;
+        }
+        set_rax(g->uc, a.rdi);
+        g->stats.imports_served++;
+        return 0;
+    }
+    if (strcmp(name, "_memset") == 0 || strcmp(name, "___memset_chk") == 0 ||
+        strcmp(name, "___bzero") == 0) {
+        uint8_t value = (uint8_t)(strcmp(name, "___bzero") == 0 ? 0 : a.rsi);
+        uint64_t left = a.rdx, dst = a.rdi;
+        uint8_t buf[256];
+        memset(buf, value, sizeof(buf));
+        while (left > 0) {
+            size_t chunk = left < sizeof(buf) ? (size_t)left : sizeof(buf);
+            if (uc_mem_write(g->uc, dst, buf, chunk) != UC_ERR_OK) {
+                set_error(error, cap, "%s touched unmapped memory", name);
+                return -1;
+            }
+            dst += chunk;
+            left -= chunk;
+        }
+        set_rax(g->uc, a.rdi);
+        g->stats.imports_served++;
+        return 0;
+    }
+    if (strcmp(name, "_pthread_once") == 0) {
+        /* The once body is a guest callback; running it here would need a
+         * nested emulation loop. Reporting success without it is what lets
+         * the rest of the initialisation proceed, and it matches how the
+         * probe build behaves. */
+        set_rax(g->uc, 0);
+        g->stats.imports_served++;
+        return 0;
+    }
+    if (strncmp(name, "_pthread", 8) == 0 || strncmp(name, "_dispatch_", 10) == 0) {
+        set_rax(g->uc, 0);
+        g->stats.imports_served++;
+        return 0;
+    }
+    if (strncmp(name, "_arc4random", 11) == 0) {
+        set_rax(g->uc, 0x4D595DF4D0F33173ULL);
+        g->stats.imports_served++;
+        return 0;
+    }
+    if (strcmp(name, "_gettimeofday") == 0) {
+        set_rax(g->uc, 0);
+        g->stats.imports_served++;
+        return 0;
+    }
+
+    set_error(error, cap,
+              "no implementation for import %u (%s) called from 0x%llx",
+              slot, name, (unsigned long long)pc);
+    return -1;
+}
+
+struct sap_hook_ctx {
+    struct sap_guest *g;
+    int stopped;
+    int failed;
+    char error[256];
+};
+
+static void on_stub(uc_engine *uc, uint64_t address, uint32_t size, void *user)
+{
+    (void)size;
+    struct sap_hook_ctx *ctx = (struct sap_hook_ctx *)user;
+    struct sap_guest *g = ctx->g;
+    uint64_t offset = address - k_stub_base;
+    uint32_t slot = (uint32_t)(offset / k_stub_slot);
+    if (offset % k_stub_slot != 0 || slot >= g->import_count) {
+        ctx->failed = 1;
+        snprintf(ctx->error, sizeof(ctx->error), "call into stub area at 0x%llx",
+                 (unsigned long long)address);
+        uc_emu_stop(uc);
+        return;
+    }
+
+    if (serve_import(g, slot, address, ctx->error, sizeof(ctx->error)) != 0) {
+        ctx->failed = 1;
+        uc_emu_stop(uc);
+        return;
+    }
+
+    /* Undo the call: pop the return address and resume there, so the guest
+     * never actually executes the slot body. */
+    uint64_t rsp = 0;
+    uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
+    uint64_t ret = 0;
+    uc_mem_read(uc, rsp, &ret, 8);
+    rsp += 8;
+    uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
+    uc_reg_write(uc, UC_X86_REG_RIP, &ret);
+}
 sap_guest *sap_guest_new(const sap_guest_config *cfg, char *error, size_t cap)
 {
     if (cfg == NULL || cfg->image_path == NULL) {
@@ -429,11 +610,33 @@ sap_guest *sap_guest_new(const sap_guest_config *cfg, char *error, size_t cap)
         return NULL;
     }
 
+    g->hook = (struct sap_hook_ctx *)calloc(1, sizeof(*g->hook));
+    if (g->hook == NULL) {
+        set_error(error, cap, 'out of memory');
+        uc_close(g->uc);
+        free(g->blob);
+        free(g);
+        return NULL;
+    }
+    g->hook->g = g;
+
     if (load_segments(g, error, cap) != 0 ||
         load_scratch(g, error, cap) != 0 ||
         load_tables(g, error, cap) != 0 ||
         load_trampoline(g, error, cap) != 0) {
         uc_close(g->uc);
+        free(g->blob);
+        free(g);
+        return NULL;
+    }
+
+    uint64_t stub_end = k_stub_base + (uint64_t)g->import_count * k_stub_slot;
+    uc_err hook_err = uc_hook_add(g->uc, &g->hook_handle, UC_HOOK_CODE, on_stub,
+                                  g->hook, k_stub_base, stub_end - 1);
+    if (hook_err != UC_ERR_OK) {
+        set_error(error, cap, 'cannot install stub hook: %s', uc_strerror(hook_err));
+        uc_close(g->uc);
+        free(g->hook);
         free(g->blob);
         free(g);
         return NULL;
@@ -449,6 +652,7 @@ void sap_guest_free(sap_guest *g)
     if (g->uc != NULL) {
         uc_close(g->uc);
     }
+    free(g->hook);
     free(g->blob);
     free(g);
 }
