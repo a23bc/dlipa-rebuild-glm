@@ -364,9 +364,19 @@ static int g_tail_n;
 static uint32_t g_state[1024];
 static int g_state_n;
 
+/* The first addresses of the second call. Both sides run the same binary with
+ * the same arguments, so the instruction stream is directly comparable; the
+ * first place they differ is the branch that decides the outcome. Reading the
+ * structure out of a disassembly led to three wrong guesses in a row. */
+static uint64_t g_pc2[512];
+static int g_pc2_n;
+
 static void tail_pc_hook(uc_engine *uc, uint64_t addr, uint32_t size, void *user)
 {
 	(void)size; (void)user;
+	if (g_pc2_n < 512) {
+		g_pc2[g_pc2_n++] = addr >= g_base ? addr - g_base : addr;
+	}
 	if (addr == g_base + 0x89031 && g_state_n < 1024) {
 		uint64_t rax = 0;
 		if (uc_reg_read(uc, UC_X86_REG_EAX, &rax) == UC_ERR_OK) {
@@ -1654,6 +1664,7 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									uint64_t st2 = 0;
 									g_tail_n = 0;
 									g_state_n = 0;
+									g_pc2_n = 0;
 									uc_hook th = 0;
 									uc_hook_add(uc, &th, UC_HOOK_CODE,
 									            (void *)tail_pc_hook, NULL, 1, 0);
@@ -1663,6 +1674,12 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									if (th != 0) {
 										uc_hook_del(uc, th);
 									}
+									append(out, cap, &used, "[X64] sap: pc2 (%d):", g_pc2_n);
+									for (int pi = 0; pi < g_pc2_n; pi++) {
+										append(out, cap, &used, " %llx",
+										       (unsigned long long)g_pc2[pi]);
+									}
+									append(out, cap, &used, "\n");
 									append(out, cap, &used, "[X64] sap: states (%d):", g_state_n);
 									for (int si = 0; si < g_state_n; si++) {
 										append(out, cap, &used, " %x", g_state[si]);
