@@ -1731,6 +1731,13 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 									uint64_t args2[8] = { args[0], hardware_addr, context_slot,
 									                     reply_addr, reply_len,
 									                     out2, len2, res2 };
+									/* The second leg rejects anything below 210:
+									 * it compares the version against 0xd2 and
+									 * leaves with -42091 when smaller. 200 is what
+									 * the bag advertises, and that is right for the
+									 * certificate leg only. 211 and above fail too,
+									 * so this is an exact match, not a floor. */
+									args2[0] = 210;
 									uint64_t st2 = 0;
 									g_tail_n = 0;
 									g_state_n = 0;
