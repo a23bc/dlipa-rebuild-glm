@@ -197,12 +197,13 @@ final class AppSession: ObservableObject {
 
     /// The versions Apple still lists for an app, newest first.
     func versions(for app: StoreApp) async throws -> AppStoreClient.VersionList {
-        let (account, bag, signer) = try await ensureSession()
+        // No signer: the version request is unsigned, the way ipatool-rs sends
+        // it, and it must not open the guest just to list versions.
+        let (account, bag, _) = try await ensureSession()
         return try await client.listVersions(appId: String(app.trackId),
                                              guid: hardware.guid,
                                              account: account.asAccount(),
-                                             bag: bag,
-                                             signer: signer)
+                                             bag: bag)
     }
 
     /// The signed URL for an app, or for one specific version of it.

@@ -132,7 +132,8 @@ private struct AccountRow: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                // No .plain: that suppresses the system's cell highlight, which
+                // is the press feedback the other rows get for free.
 
                 Button(action: onToggleExpand) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")

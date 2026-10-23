@@ -312,16 +312,54 @@ final class AppStoreClient {
     ///
     /// There is no version endpoint: the list rides along in the download
     /// product response as `softwareVersionExternalIdentifiers` in the item
-    /// metadata, so asking for versions means asking for the download and
-    /// throwing the URL away.
+    /// metadata.
+    ///
+    /// This is deliberately NOT the download request. ipatool-rs sends a
+    /// trimmed body here -- salableAdamId, guid, creditDisplay, and nothing
+    /// else, with no serialNumber and no X-Token -- so Apple treats it as a
+    /// metadata query rather than a download and does not demand a licence.
+    /// Sending the download shape is what kept answering 9610.
     func listVersions(appId: String,
                       guid: String,
                       account: Account,
-                      bag: StoreBag,
-                      signer: SAPSigner) async throws -> VersionList {
-        let plist = try await downloadProduct(
-            appId: appId, externalVersionId: nil,
-            guid: guid, account: account, bag: bag, signer: signer)
+                      bag: StoreBag) async throws -> VersionList {
+        guard let endpoint = bag.volumeStoreDownloadProduct else {
+            AppLog.error("bag has no download endpoint", .download)
+            throw StoreError.noBagEndpoint
+        }
+        var components = URLComponents(string: endpoint)!
+        components.queryItems = [URLQueryItem(name: "guid", value: guid)]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+        request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+        request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+
+        let payload: [String: Any] = [
+            // A string here; the download body uses an integer.
+            "salableAdamId": appId,
+            "guid": guid,
+            "creditDisplay": "",
+        ]
+        request.httpBody = try PropertyListSerialization.data(
+            fromPropertyList: payload, format: .xml, options: 0)
+
+        AppLog.info("listing versions for " + appId, .download)
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        AppLog.info("version list returned HTTP " + String(status)
+                    + ", " + String(data.count) + " bytes", .download)
+
+        let plist = (try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+
+        let failure = plist["failureType"] as? String ?? ""
+        if !failure.isEmpty {
+            let message = plist["customerMessage"] as? String ?? ""
+            AppLog.error("version list failed: " + failure + " " + message, .download)
+            throw StoreError.failureType(failure, message)
+        }
 
         guard let items = plist["songList"] as? [Any],
               let first = items.first as? [String: Any] else {
