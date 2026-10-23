@@ -1021,7 +1021,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			 * bytes of a locally administered address is what a real client
 			 * sends. */
 			uint32_t length = 6;
-			uint8_t id[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
+			/* A globally unique address with Apple's own OUI. The previous
+			 * value started with 0x02, which is the locally administered bit -
+			 * legal on the wire, but not something a real NIC reports, and the
+			 * guest may well reject it when it builds its machine identity. */
+			uint8_t id[6] = { 0x3c, 0x22, 0xfb, 0x12, 0x34, 0x56 };
 			uc_mem_write(uc, hardware_addr, &length, 4);
 			uc_mem_write(uc, hardware_addr + 4, id, sizeof(id));
 			uc_reg_write(uc, UC_X86_REG_RDI, &context_slot);
