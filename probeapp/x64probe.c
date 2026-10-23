@@ -194,11 +194,103 @@ static uint64_t guest_alloc(uint64_t size)
  * with rax holding the method's result. */
 
 /* Returns 1 when the import was served, 0 when it has no handler. */
+/* Imports answered by category rather than by behaviour.
+ *
+ * The reference implementation groups these the same way: a long list of
+ * CoreFoundation and IOKit calls whose results the guest never inspects, a
+ * few that must fail, and a few that must return a handle-shaped non-zero
+ * value. Answering them individually would be forty near-identical branches,
+ * and leaving them unanswered is worse than it sounds: an unhandled stub
+ * returns whatever rax happened to hold, so the guest believes it received a
+ * valid object and dereferences it.
+ *
+ * _IORegistryEntryFromPath matters most here. The reference makes it fail
+ * deliberately, which is how the guest falls back to the hardware ID passed
+ * in by the caller. Returning a non-zero leftover instead sends it down a
+ * path that reads properties off a handle that never existed. */
+static const char *const k_return_zero[] = {
+	"_CFBundleGetMainBundle",
+	"_CFDataGetBytePtr",
+	"_CFDataGetLength",
+	"_CFStringGetLength",
+	"_CFStringGetMaximumSizeForEncoding",
+	"_CFUUIDCreateString",
+	"_CFStringCreateWithCStringNoCopy",
+	"_CFRelease",
+	"_IORegistryEntryFromPath",
+	"_IORegistryEntrySearchCFProperty",
+	"_IOServiceMatching",
+	"_IOObjectRelease",
+	"_getenv",
+	"_pthread_self",
+	"_close",
+	"_close$UNIX2003",
+	"_pthread_mutex_lock",
+	"_pthread_mutex_unlock",
+	"_pthread_rwlock_init",
+	"_pthread_rwlock_init$UNIX2003",
+};
+
+static const char *const k_return_minus_one[] = {
+	"_fcntl",
+	"_fcntl$UNIX2003",
+	"_lstat$INODE64",
+	"_statfs",
+	"_statfs$UNIX2003",
+	"_sysctl",
+};
+
+static const char *const k_return_uint32_max[] = {
+	"_IOServiceGetMatchingService",
+};
+
+static const char *const k_return_fake_handle[] = {
+	"_CFDictionaryGetValue",
+	"_DADiskCopyDescription",
+	"_DADiskCreateFromBSDName",
+	"_DASessionCreate",
+	"_IORegistryEntryCreateCFProperty",
+};
+
+static int name_in(const char *name, const char *const *table, size_t count)
+{
+	for (size_t i = 0; i < count; i++) {
+		if (strcmp(name, table[i]) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 {
 	uc_engine *uc = ctx->uc;
 	const char *name = ctx->names[slot];
 	args_t a = read_args(uc);
+
+	if (name_in(name, k_return_zero, sizeof(k_return_zero) / sizeof(k_return_zero[0]))) {
+		set_rax(uc, 0);
+		return 1;
+	}
+
+	if (name_in(name, k_return_minus_one,
+	            sizeof(k_return_minus_one) / sizeof(k_return_minus_one[0]))) {
+		set_rax(uc, (uint64_t)-1);
+		return 1;
+	}
+
+	if (name_in(name, k_return_uint32_max,
+	            sizeof(k_return_uint32_max) / sizeof(k_return_uint32_max[0]))) {
+		set_rax(uc, 0xffffffffu);
+		return 1;
+	}
+
+	if (name_in(name, k_return_fake_handle,
+	            sizeof(k_return_fake_handle) / sizeof(k_return_fake_handle[0]))) {
+		/* A handle-shaped value: non-zero so "did it succeed" checks pass. */
+		set_rax(uc, 1);
+		return 1;
+	}
 
 	if (strcmp(name, "____chkstk_darwin") == 0 ||
 	    strcmp(name, "___chkstk_darwin") == 0) {
