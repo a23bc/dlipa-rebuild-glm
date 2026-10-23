@@ -98,6 +98,58 @@ private let fixtureNames = [
     "commerce",
 ]
 
+// Bridge for the SAP callback. The guest is synchronous and has no network
+// stack, so the driver calls out here at the point where it holds the request
+// the library produced, and expects the reply bytes back on return.
+//
+// The envelope is a plist with one data value, keyed the same name the bag
+// advertises for the endpoint; the reply uses the same key.
+private func sapPostCallback(_ request: UnsafePointer<UInt8>?,
+                             _ requestLen: Int,
+                             _ reply: UnsafeMutablePointer<UInt8>?,
+                             _ replyCap: Int,
+                             _ replyLen: UnsafeMutablePointer<Int>?) -> Int32 {
+    guard let request, let reply, let replyLen else { return -1 }
+    let payload = Data(bytes: request, count: requestLen)
+    let xml = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0"><dict><key>sign-sap-setup-buffer</key><data>\
+    (payload.base64EncodedString())</data></dict></plist>
+    """
+    guard let url = URL(string: "https://fpinit.itunes.apple.com/v1/signSapSetup/legacy") else {
+        return -2
+    }
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("application/x-plist", forHTTPHeaderField: "Content-Type")
+    req.httpBody = xml.data(using: .utf8)
+    req.timeoutInterval = 40
+
+    var body: Data?
+    let sem = DispatchSemaphore(value: 0)
+    URLSession.shared.dataTask(with: req) { data, _, _ in
+        body = data
+        sem.signal()
+    }.resume()
+    if sem.wait(timeout: .now() + 45) == .timedOut { return -3 }
+
+    guard let body,
+          let text = String(data: body, encoding: .utf8),
+          let keyRange = text.range(of: "<key>sign-sap-setup-buffer</key>"),
+          let openTag = text.range(of: "<data>", range: keyRange.upperBound..<text.endIndex),
+          let closeTag = text.range(of: "</data>", range: openTag.upperBound..<text.endIndex) else {
+        return -4
+    }
+    let base64 = text[openTag.upperBound..<closeTag.lowerBound]
+        .filter { !$0.isWhitespace }
+    guard let decoded = Data(base64Encoded: base64), !decoded.isEmpty else { return -5 }
+    guard decoded.count <= replyCap else { return -6 }
+    decoded.copyBytes(to: reply, count: decoded.count)
+    replyLen.pointee = decoded.count
+    return 0
+}
+
 private func probeFixtures(_ sink: (String) -> Void) {
     sink("[FIXTURE] --- dyld acceptance matrix ---")
 
@@ -395,6 +447,10 @@ final class ProbeViewController: UIViewController {
             textView.text = report
             return
         }
+        // Installs the HTTP leg. Without it the driver stops after the
+        // certificate exchange, which is the network-free behaviour the button
+        // had before.
+        x64probe_set_post(sapPostCallback)
         var buffer = [CChar](repeating: 0, count: 32768)
         x64probe_report(path, 2, &buffer, buffer.count)
         report += "\n" + String(cString: buffer)

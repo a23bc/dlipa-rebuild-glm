@@ -320,6 +320,20 @@ static int name_in(const char *name, const char *const *table, size_t count)
 static uc_err call_guest(uc_engine *uc, uint64_t fn, uint64_t stack_top,
                          uint64_t trampoline, uint64_t *out_rax);
 
+/* The HTTP round trip between the two exchange calls belongs to the app: the
+ * guest is synchronous and has no network stack, and the fallback in the
+ * library code is written for a host process.
+ *
+ * The driver calls back out at the one point where it holds the request the
+ * library just produced, then feeds whatever comes back into the second
+ * exchange. Returning 0 means the reply is valid. */
+static sap_post_fn g_sap_post;
+
+void x64probe_set_post(sap_post_fn fn)
+{
+	g_sap_post = fn;
+}
+
 static void tok(char *dst, size_t cap, uint64_t v)
 {
 	if (v == 0) {
@@ -1440,9 +1454,13 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			 * output pointer and a length, which is why both are read back. */
 			if (mode >= 2 && context_slot != 0) {
 				uint64_t exchange_addr = 0;
+				uint64_t sign_addr = 0;
 				for (uint32_t q = 0; q < entry_count; q++) {
 					if (strcmp(entries[q].name, "_Mib5yocT") == 0) {
 						exchange_addr = g_base + entries[q].addr;
+					}
+					if (strcmp(entries[q].name, "_Fc3vhtJDvr") == 0) {
+						sign_addr = g_base + entries[q].addr;
 					}
 				}
 
@@ -1535,6 +1553,87 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						append(out, cap, &used,
 						       "[X64]   expected state 1 after the certificate leg and 0 after "
 						       "the server reply; status must be 0\n");
+
+						/* First leg succeeded: hand the request to the app, feed the
+						 * reply back, then sign. Only runs when the app installed a
+						 * callback; without one this build behaves as before. */
+						if ((int32_t)exchange_status == 0 && result_code == 1 &&
+						    out_len > 0 && out_len <= 8192 && g_sap_post != 0) {
+							uint8_t request[8192];
+							uint8_t reply[24576];
+							size_t reply_len = 0;
+							if (uc_mem_read(uc, out_ptr, request, (size_t)out_len) != UC_ERR_OK) {
+								append(out, cap, &used, "[X64] sap: cannot read request\n");
+							} else {
+								int rc = g_sap_post(request, (size_t)out_len,
+								                    reply, sizeof(reply), &reply_len);
+								append(out, cap, &used,
+								       "[X64] sap: post rc=%d reply=%zu\n", rc, reply_len);
+								if (rc == 0 && reply_len > 0) {
+									uint64_t zero = 0;
+									uint32_t zero4 = 0;
+									uint64_t reply_addr = guest_alloc(reply_len);
+									uc_mem_write(uc, reply_addr, reply, reply_len);
+									uint64_t out2 = guest_alloc(8);
+									uint64_t len2 = guest_alloc(8);
+									uint64_t res2 = guest_alloc(4);
+									uc_mem_write(uc, out2, &zero, 8);
+									uc_mem_write(uc, len2, &zero, 8);
+									uc_mem_write(uc, res2, &zero4, 4);
+
+									uint64_t args2[8] = { args[0], hardware_addr, context_slot,
+									                     reply_addr, reply_len,
+									                     out2, len2, res2 };
+									uint64_t st2 = 0;
+									uc_err e2 = call_guest_n(uc, exchange_addr,
+									                        g_stack_base + 0x100000,
+									                        trampoline, args2, 8, &st2);
+									uint64_t o2 = 0, l2 = 0;
+									uint32_t s2 = 0;
+									uc_mem_read(uc, out2, &o2, 8);
+									uc_mem_read(uc, len2, &l2, 8);
+									uc_mem_read(uc, res2, &s2, 4);
+									append(out, cap, &used,
+									       "[X64] sap: exchange2 err=%u status=%lld state=%u outlen=%llu\n",
+									       e2, (long long)(int32_t)st2, s2,
+									       (unsigned long long)l2);
+
+									if (e2 == UC_ERR_OK && (int32_t)st2 == 0 && s2 == 0 &&
+									    sign_addr != 0) {
+										uint64_t sig_out = guest_alloc(8);
+										uint64_t sig_len = guest_alloc(8);
+										uc_mem_write(uc, sig_out, &zero, 8);
+										uc_mem_write(uc, sig_len, &zero, 8);
+										uint64_t sargs[5] = { context_slot, reply_addr,
+										                      reply_len, sig_out, sig_len };
+										uint64_t st3 = 0;
+										uc_err e3 = call_guest_n(uc, sign_addr,
+										                        g_stack_base + 0x100000,
+										                        trampoline, sargs, 5, &st3);
+										uint64_t so = 0, sl = 0;
+										uc_mem_read(uc, sig_out, &so, 8);
+										uc_mem_read(uc, sig_len, &sl, 8);
+										append(out, cap, &used,
+										       "[X64] sap: sign err=%u status=%lld len=%llu\n",
+										       e3, (long long)(int32_t)st3,
+										       (unsigned long long)sl);
+										if (e3 == UC_ERR_OK && (int32_t)st3 == 0 &&
+										    so != 0 && sl > 0 && sl <= 4096) {
+											uint8_t sig[4096];
+											if (uc_mem_read(uc, so, sig, (size_t)sl) == UC_ERR_OK) {
+												append(out, cap, &used,
+												       "[X64] sap: signature=");
+												for (uint64_t i = 0; i < sl; i++) {
+													append(out, cap, &used, "%02x", sig[i]);
+												}
+												append(out, cap, &used, "\n");
+											}
+										}
+									}
+								}
+							}
+							break;
+						}
 
 						/* Any initialiser the call registered is replayed before
 						 * the next attempt, so the sweep does not just repeat the
