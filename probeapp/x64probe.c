@@ -273,35 +273,35 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 	 * values. Because creation and lookup are both answered here, the handle
 	 * can simply be the address of a copy of the C string: nothing else ever
 	 * inspects it. */
+	/* CoreFoundation strings, answered the way the reference answers them.
+	 *
+	 * Creation succeeds only for the three machine-identity keys; everything
+	 * else gets a null string. Lookup always yields the empty string, which is
+	 * enough because the caller checks for success, not for content.
+	 *
+	 * Returning a copy of the requested string - as an earlier version of this
+	 * probe did - is worse than returning empty: it hands back a value the guest
+	 * will try to parse as a serial number or a board id. */
 	if (strcmp(name, "_CFStringCreateWithCString") == 0) {
 		char text[256];
 		memset(text, 0, sizeof(text));
 		if (a.rsi != 0) {
 			uc_mem_read(uc, a.rsi, text, sizeof(text) - 1);
 		}
-		size_t len = strlen(text);
-		uint64_t handle = guest_alloc((uint64_t)len + 1);
-		uc_mem_write(uc, handle, text, len + 1);
-		set_rax(uc, handle);
+		int wanted = strcmp(text, "IOPlatformSerialNumber") == 0 ||
+		             strcmp(text, "IOPlatformUUID") == 0 ||
+		             strcmp(text, "board-id") == 0;
+		set_rax(uc, wanted ? 0xffffffffffffffffULL : 0);
 		return 1;
 	}
 
 	if (strcmp(name, "_CFStringGetCString") == 0) {
-		char text[256];
-		memset(text, 0, sizeof(text));
-		if (a.rdi != 0) {
-			uc_mem_read(uc, a.rdi, text, sizeof(text) - 1);
+		if (a.rsi == 0 || a.rdx == 0) {
+			set_rax(uc, 0);
+			return 1;
 		}
-		size_t len = strlen(text);
-		if (a.rsi != 0 && a.rdx > 0) {
-			size_t room = (size_t)(a.rdx - 1);
-			if (len > room) {
-				len = room;
-			}
-			uc_mem_write(uc, a.rsi, text, len);
-			char zero_byte = 0;
-			uc_mem_write(uc, a.rsi + len, &zero_byte, 1);
-		}
+		char zero_byte = 0;
+		uc_mem_write(uc, a.rsi, &zero_byte, 1);
 		set_rax(uc, 1);
 		return 1;
 	}
@@ -325,8 +325,9 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 
 	if (name_in(name, k_return_fake_handle,
 	            sizeof(k_return_fake_handle) / sizeof(k_return_fake_handle[0]))) {
-		/* A handle-shaped value: non-zero so "did it succeed" checks pass. */
-		set_rax(uc, 1);
+		/* The reference uses u64::MAX here, and the guest compares against it
+		 * directly in places, so the exact value matters. */
+		set_rax(uc, 0xffffffffffffffffULL);
 		return 1;
 	}
 
