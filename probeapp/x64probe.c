@@ -95,6 +95,8 @@ typedef struct {
 	int once_count;
 	uint64_t syscall_nr;
 	int syscall_seen;
+	char sysctl_names[6][64];
+	int sysctl_count;
 } hook_ctx_t;
 
 typedef struct {
@@ -305,9 +307,23 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 		return 1;
 	}
 
-	if (strcmp(name, "_sysctlbyname") == 0 || strcmp(name, "_confstr") == 0) {
-		/* Reporting failure is honest: these ask about the host, and the
-		 * guest is not running on the host. */
+	if (strcmp(name, "_sysctlbyname") == 0) {
+		/* The key matters. Returning -1 for every key is honest, but the name
+		 * the guest asked for is what says whether a real answer is needed -
+		 * an identity query is not the same as a hardware capability probe. */
+		if (ctx->sysctl_count < 6) {
+			char key[64];
+			memset(key, 0, sizeof(key));
+			uc_mem_read(uc, a.rdi, key, sizeof(key) - 1);
+			snprintf(ctx->sysctl_names[ctx->sysctl_count],
+			         sizeof(ctx->sysctl_names[0]), "%s", key);
+			ctx->sysctl_count++;
+		}
+		set_rax(uc, (uint64_t)-1);
+		return 1;
+	}
+
+	if (strcmp(name, "_confstr") == 0) {
 		set_rax(uc, (uint64_t)-1);
 		return 1;
 	}
@@ -778,7 +794,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 					uint64_t out_ptr = 0, out_len = 0;
 					uint32_t result_code = 0;
 
-					static const uint64_t candidate_versions[] = {200, 3, 2, 1, 0};
+					/* 200 is the only version the binary accepts: 3, 2, 1 and 0
+					 * all return the same -42091, while 200 takes a different
+					 * path. The sweep was worth running once; it is not worth
+					 * repeating on every probe. */
+					static const uint64_t candidate_versions[] = {200};
 
 					for (size_t v = 0;
 					     v < sizeof(candidate_versions) / sizeof(candidate_versions[0]);
@@ -860,6 +880,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			append(out, cap, &used, "[X64] status=%lld context=%#llx %s\n",
 			       (long long)(int32_t)status, (unsigned long long)context_value,
 			       (int32_t)status == 0 && context_value != 0 ? "OK" : "NOT READY");
+
+			for (int k = 0; k < ctx.sysctl_count; k++) {
+				append(out, cap, &used, "[X64] sysctl asked: %s (answered -1)\n",
+				       ctx.sysctl_names[k]);
+			}
 
 			if (ctx.syscall_seen) {
 				append(out, cap, &used, "[X64] syscall #%llu reached\n",
