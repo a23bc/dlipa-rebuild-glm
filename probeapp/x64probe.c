@@ -127,6 +127,9 @@ typedef struct {
 	uint64_t entry_addrs[8];
 	uint32_t entry_hits[8];
 	int entry_count;
+	/* The guest walks the IO registry looking for machine identity. The walk
+	 * must terminate, so the iterator yields one entry and then zero. */
+	int io_iterator;
 } hook_ctx_t;
 
 typedef struct {
@@ -303,6 +306,49 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 		}
 		char zero_byte = 0;
 		uc_mem_write(uc, a.rsi, &zero_byte, 1);
+		set_rax(uc, 1);
+		return 1;
+	}
+
+	/* The IO registry walk. The guest asks for services matching "IOPlatform",
+	 * then walks the iterator looking for a serial number, a UUID and a board
+	 * id. A real machine answers with one entry; none makes the walk end, and
+	 * answering forever would hang it. */
+	if (strcmp(name, "_IOServiceGetMatchingServices") == 0) {
+		uint32_t fake = 0xffffffffu;
+		if (a.rdx != 0) {
+			uc_mem_write(uc, a.rdx, &fake, 4);
+		}
+		ctx->io_iterator = 0;
+		set_rax(uc, 0);
+		return 1;
+	}
+
+	if (strcmp(name, "_IOIteratorNext") == 0) {
+		ctx->io_iterator++;
+		set_rax(uc, (uint64_t)(ctx->io_iterator % 2));
+		return 1;
+	}
+
+	if (strcmp(name, "_IORegistryEntryGetParentEntry") == 0) {
+		uint32_t fake = 0xffffffffu;
+		if (a.rdx != 0) {
+			uc_mem_write(uc, a.rdx, &fake, 4);
+		}
+		set_rax(uc, 0);
+		return 1;
+	}
+
+	if (strcmp(name, "_OSAtomicCompareAndSwap32Barrier") == 0) {
+		uint32_t expected = (uint32_t)a.rdi;
+		uint32_t replacement = (uint32_t)a.rsi;
+		uint32_t current = 0;
+		if (a.rdx == 0 || uc_mem_read(uc, a.rdx, &current, 4) != UC_ERR_OK ||
+		    current != expected) {
+			set_rax(uc, 0);
+			return 1;
+		}
+		uc_mem_write(uc, a.rdx, &replacement, 4);
 		set_rax(uc, 1);
 		return 1;
 	}
