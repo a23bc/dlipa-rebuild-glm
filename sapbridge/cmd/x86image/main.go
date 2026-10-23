@@ -70,12 +70,12 @@ func main() {
 		fail("read input: %v", err)
 	}
 
-	file, err := openX86(raw)
+	file, slice, err := openX86(raw)
 	if err != nil {
 		fail("parse input: %v", err)
 	}
 
-	image, err := build(file, raw)
+	image, err := build(file, slice)
 	if err != nil {
 		fail("build image: %v", err)
 	}
@@ -142,11 +142,22 @@ type image struct {
 // counts came out as 4 segments and 9792 rebases instead of 3 and 1004, and
 // nothing failed. A wrong-architecture image would have been installed on a
 // device and debugged as if it were a loader problem.
-func openX86(raw []byte) (*macho.File, error) {
+// The slice bytes are returned alongside the file because segment file
+// offsets are relative to the slice, not to the archive. Indexing the fat file
+// with them silently copies the wrong region: the first attempt produced an
+// image whose entry point held the fat header's neighbours, and the guest
+// executed garbage until it read from address 0x69.
+func openX86(raw []byte) (*macho.File, []byte, error) {
 	if fat, err := macho.NewFatFile(bytes.NewReader(raw)); err == nil {
 		for _, arch := range fat.Arches {
 			if arch.File.FileHeader.CPU == types.CPUAmd64 {
-				return arch.File, nil
+				end := uint64(arch.Offset) + uint64(arch.Size)
+				if end > uint64(len(raw)) {
+					return nil, nil, fmt.Errorf(
+						"x86-64 slice runs past the end of the file (offset %d, size %d, file %d)",
+						arch.Offset, arch.Size, len(raw))
+				}
+				return arch.File, raw[arch.Offset:end], nil
 			}
 		}
 
@@ -155,23 +166,23 @@ func openX86(raw []byte) (*macho.File, error) {
 			names = append(names, arch.File.FileHeader.CPU.String())
 		}
 
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"universal binary has no x86-64 slice (has %v); the TCI build only interprets x86",
 			names)
 	}
 
 	file, err := macho.NewFile(bytes.NewReader(raw))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if file.FileHeader.CPU != types.CPUAmd64 {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"binary is %v, not x86-64; the TCI build only interprets x86",
 			file.FileHeader.CPU)
 	}
 
-	return file, nil
+	return file, raw, nil
 }
 
 func build(file *macho.File, raw []byte) (*image, error) {
@@ -268,9 +279,12 @@ func (im *image) report() {
 		}
 		fmt.Printf("  %#x -> slot %d addend %d (%s)\n", b.addr, b.slot, b.addend, im.imports[b.slot])
 	}
+	// The bytes at each export are the cheapest possible sanity check on the
+	// slice arithmetic: real code starts with 55 48 89 e5 or 48 83 ec, not
+	// with something that decodes as an add into a wild pointer.
 	fmt.Printf("entries: %d\n", len(im.entries))
 	for _, e := range im.entries {
-		fmt.Printf("  %-20s %#x\n", e.name, e.addr)
+		fmt.Printf("  %-20s %#x  %s\n", e.name, e.addr, hexAt(im, e.addr, 8))
 	}
 }
 
@@ -313,6 +327,23 @@ func (im *image) encode() ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// hexAt returns the first n bytes at a guest virtual address, so the report can
+// show what the export actually points at.
+func hexAt(im *image, addr uint64, n int) string {
+	for _, s := range im.segments {
+		if addr < s.vmaddr || addr >= s.vmaddr+s.vmsize {
+			continue
+		}
+		off := addr - s.vmaddr
+		end := off + uint64(n)
+		if end > uint64(len(s.content)) {
+			return "(beyond file content)"
+		}
+		return fmt.Sprintf("% x", s.content[off:end])
+	}
+	return "(not in any segment)"
 }
 
 func putU32(buf *bytes.Buffer, v uint32) { binary.Write(buf, binary.LittleEndian, v) }
