@@ -32,7 +32,10 @@ struct SearchScreen: View {
                                 .buttonStyle(.plain)
                             }
                         } header: {
+                            // A grouped list upper-cases its headers by
+                            // default; the original shows "Results (38)".
                             Text("Results (\(model.results.count))")
+                                .textCase(nil)
                         }
                     }
                     .listStyle(.insetGrouped)
