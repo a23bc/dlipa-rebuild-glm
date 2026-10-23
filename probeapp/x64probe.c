@@ -96,7 +96,38 @@ typedef struct {
 	uint32_t stub_count;
 	int hit_slot;
 	uint64_t hit_pc;
+	uint64_t fault_addr;
+	int fault_kind;
 } hook_ctx_t;
+
+/* Captures where the guest went wrong instead of only that it did. "Invalid
+ * memory read" with no address says nothing; the address, plus the instruction
+ * that caused it, usually says everything. */
+static void on_bad_read(uc_engine *uc, uc_mem_type type, uint64_t address,
+                        int size, int64_t value, void *user)
+{
+	(void)uc; (void)type; (void)size; (void)value;
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	ctx->fault_addr = address;
+	ctx->fault_kind = 1;
+}
+
+static void on_bad_write(uc_engine *uc, uc_mem_type type, uint64_t address,
+                         int size, int64_t value, void *user)
+{
+	(void)uc; (void)type; (void)size; (void)value;
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	ctx->fault_addr = address;
+	ctx->fault_kind = 2;
+}
+
+static void on_bad_fetch(uc_engine *uc, uint64_t address, int size, void *user)
+{
+	(void)uc; (void)size;
+	hook_ctx_t *ctx = (hook_ctx_t *)user;
+	ctx->fault_addr = address;
+	ctx->fault_kind = 3;
+}
 
 static void on_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 {
@@ -321,12 +352,34 @@ void x64probe_report(const char *path, char *out, size_t cap)
 	/* Scoped to the stub region on purpose. A hook over the whole address
 	 * space fires a callback per instruction, which at tens of millions of
 	 * instructions is far slower than the emulation it is watching. */
-	hook_ctx_t ctx = {uc, stub_base, stub_count, -1, 0};
+	hook_ctx_t ctx = {0};
+	ctx.uc = uc;
+	ctx.stub_base = stub_base;
+	ctx.stub_count = stub_count;
+	ctx.hit_slot = -1;
+
 	uc_hook hook;
 	uc_hook_add(uc, &hook, UC_HOOK_CODE, on_code, &ctx,
 	            stub_base, stub_base + (uint64_t)stub_count * STUB_SLOT - 1);
 
+	uc_hook bad_read, bad_write, bad_fetch;
+	uc_hook_add(uc, &bad_read, UC_HOOK_MEM_READ_UNMAPPED, on_bad_read, &ctx, 1, 0);
+	uc_hook_add(uc, &bad_write, UC_HOOK_MEM_WRITE_UNMAPPED, on_bad_write, &ctx, 1, 0);
+	uc_hook_add(uc, &bad_fetch, UC_HOOK_MEM_FETCH_UNMAPPED, on_bad_fetch, &ctx, 1, 0);
+
 	uint64_t start = base + entries[0].addr;
+
+	/* The prologue decides everything: an entry that loads a global first is a
+	 * different kind of function from one that saves registers and returns. */
+	uint8_t prologue[24];
+	if (uc_mem_read(uc, start, prologue, sizeof(prologue)) == UC_ERR_OK) {
+		append(out, cap, &used, "[X64] bytes at entry:");
+		for (size_t i = 0; i < sizeof(prologue); i++) {
+			append(out, cap, &used, " %02x", prologue[i]);
+		}
+		append(out, cap, &used, "\n");
+	}
+
 	append(out, cap, &used, "[X64] running %s for up to 20M instructions\n", entries[0].name);
 
 	err = uc_emu_start(uc, start, 0, 5000000, 20000000);
@@ -338,10 +391,28 @@ void x64probe_report(const char *path, char *out, size_t cap)
 	} else if (err == UC_ERR_OK) {
 		append(out, cap, &used, "[X64] completed without calling an import\n");
 	} else {
-		uint64_t rip = 0;
+		uint64_t rip = 0, rax = 0, rcx = 0, rdx = 0, rsi = 0, rdi = 0, rsp_now = 0;
 		uc_reg_read(uc, UC_X86_REG_RIP, &rip);
+		uc_reg_read(uc, UC_X86_REG_RAX, &rax);
+		uc_reg_read(uc, UC_X86_REG_RCX, &rcx);
+		uc_reg_read(uc, UC_X86_REG_RDX, &rdx);
+		uc_reg_read(uc, UC_X86_REG_RSI, &rsi);
+		uc_reg_read(uc, UC_X86_REG_RDI, &rdi);
+		uc_reg_read(uc, UC_X86_REG_RSP, &rsp_now);
+
 		append(out, cap, &used, "[X64] stopped: err=%u (%s) rip=%#llx\n",
 		       err, uc_strerror(err), (unsigned long long)rip);
+		append(out, cap, &used, "[X64] regs rax=%#llx rcx=%#llx rdx=%#llx rsi=%#llx rdi=%#llx rsp=%#llx\n",
+		       (unsigned long long)rax, (unsigned long long)rcx,
+		       (unsigned long long)rdx, (unsigned long long)rsi,
+		       (unsigned long long)rdi, (unsigned long long)rsp_now);
+
+		const char *kind = ctx.fault_kind == 1 ? "read" :
+		                   ctx.fault_kind == 2 ? "write" :
+		                   ctx.fault_kind == 3 ? "fetch" : "none";
+		append(out, cap, &used, "[X64] fault=%s addr=%#llx (mapped: %s)\n",
+		       kind, (unsigned long long)ctx.fault_addr,
+		       ctx.fault_addr >= base && ctx.fault_addr < base + 0x2000000 ? "yes" : "no");
 	}
 
 	uc_close(uc);
