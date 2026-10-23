@@ -381,12 +381,25 @@ final class AppStoreClient {
         request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
         request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
 
+        // Four fields, exactly as ipatool-rs builds this request
+        // (download_request_body in src/api/download.rs):
+        //
+        //   salableAdamId   integer, not a string
+        //   guid            the device identity
+        //   creditDisplay   empty
+        //   serialNumber    the literal "0"
+        //
+        // There is no kbsync. The Go ipatool sends one, but the Rust fork does
+        // not, and it works: kbsync is the FairPlay blob a decryption session
+        // wants, not something ent/download requires. That removes the whole
+        // macOS 27 asset path from downloading.
         var payload: [String: Any] = [
             "creditDisplay": "",
             "guid": guid,
-            "kbsync": try signer.kbsync(dsid: account.dsid),
-            "salableAdamId": appId,
-            "serialNumber": try signer.serialNumber(),
+            // Integer, not a string: ipatool-rs sends an integer and its
+            // tests pin the payload types.
+            "salableAdamId": Int64(appId) ?? 0,
+            "serialNumber": "0",
         ]
         if let externalVersionId {
             payload["externalVersionId"] = externalVersionId
@@ -401,15 +414,8 @@ final class AppStoreClient {
         let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
             as? [String: Any] ?? [:]
 
-        // A failure on the download leg is often a stale kbsync blob. Drop it
-        // so the next attempt regenerates rather than replaying the rejected
-        // value; ipatool does the same, but only once, and never for a fresh
-        // blob.
         if let failure = plist["failureType"] as? String, !failure.isEmpty {
             let message = plist["customerMessage"] as? String ?? ""
-            if failure == "2034" || failure == "2042" || failure == "1008" {
-                signer.invalidateKBSync(dsid: account.dsid)
-            }
             throw StoreError.failureType(failure, message)
         }
 

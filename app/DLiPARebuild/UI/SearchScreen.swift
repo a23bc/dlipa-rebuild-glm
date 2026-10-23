@@ -43,6 +43,7 @@ struct SearchScreen: View {
                                     }
                                     .buttonStyle(RowPressStyle())
                                 }
+                                .onDelete { model.removeHistory(at: $0) }
                             } header: {
                                 Text("Recent")
                                     .textCase(nil)
@@ -62,6 +63,7 @@ struct SearchScreen: View {
                                 }
                                 .buttonStyle(RowPressStyle())
                             }
+                            .onDelete { model.removeResult(at: $0) }
                         } header: {
                             // A grouped list upper-cases its headers by
                             // default; the original shows "Results (38)".
@@ -138,11 +140,22 @@ struct SearchScreen: View {
 /// black in light mode and white in dark mode, so at low opacity the highlight
 /// darkens the row in light mode and lightens it in dark mode.
 struct RowPressStyle: ButtonStyle {
+    /// How far the tint reaches past the label.
+    ///
+    /// A List row insets its content, so a background applied to the label only
+    /// covers the text and leaves a margin unstyled -- which is what made the
+    /// press look like it belonged to the text rather than the row. The
+    /// rectangle is grown by the row insets so it fills the row edge to edge.
+    var horizontalBleed: CGFloat = 20
+    var verticalBleed: CGFloat = 11
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                Rectangle()
                     .fill(Color.primary.opacity(configuration.isPressed ? 0.12 : 0))
+                    .padding(.horizontal, -horizontalBleed)
+                    .padding(.vertical, -verticalBleed)
             )
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -259,6 +272,17 @@ final class SearchModel: ObservableObject {
     func clearHistory() {
         history = []
         UserDefaults.standard.removeObject(forKey: Self.historyKey)
+    }
+
+    func removeHistory(at offsets: IndexSet) {
+        history.remove(atOffsets: offsets)
+        UserDefaults.standard.set(history, forKey: Self.historyKey)
+    }
+
+    /// Drops a result from the current list. The catalogue is not modified, so
+    /// the entry comes back on the next search.
+    func removeResult(at offsets: IndexSet) {
+        results.remove(atOffsets: offsets)
     }
 
     func clear() {
