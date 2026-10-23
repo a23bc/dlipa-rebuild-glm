@@ -765,21 +765,49 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						0, out_field, len_field, res_field,
 					};
 
+					/* The exchange registers initialisers of its own. Calling it
+					 * once therefore is not enough: the first attempt returns a
+					 * status and no output, and only then reveals what it wanted
+					 * run. Each round replays whatever appeared and tries again. */
 					uint64_t exchange_status = 0;
-					uc_err xerr = call_guest_n(uc, exchange_addr,
-					                           g_stack_base + 0x100000,
-					                           trampoline, args, 8,
-					                           &exchange_status);
-
+					uc_err xerr = UC_ERR_OK;
 					uint64_t out_ptr = 0, out_len = 0;
 					uint32_t result_code = 0;
-					uc_mem_read(uc, out_field, &out_ptr, 8);
-					uc_mem_read(uc, len_field, &out_len, 8);
-					uc_mem_read(uc, res_field, &result_code, 4);
 
-					append(out, cap, &used,
-					       "[X64] exchange err=%u status=%lld result=%u out=%#llx len=%llu\n",
-					       xerr, (long long)(int32_t)exchange_status, result_code,
+					for (int round = 0; round < 4; round++) {
+						int before_count = ctx.once_count;
+
+						xerr = call_guest_n(uc, exchange_addr,
+						                    g_stack_base + 0x100000,
+						                    trampoline, args, 8,
+						                    &exchange_status);
+
+						out_ptr = 0; out_len = 0; result_code = 0;
+						uc_mem_read(uc, out_field, &out_ptr, 8);
+						uc_mem_read(uc, len_field, &out_len, 8);
+						uc_mem_read(uc, res_field, &result_code, 4);
+
+						append(out, cap, &used,
+						       "[X64] exchange round %d: err=%u status=%lld result=%u len=%llu\n",
+						       round, xerr, (long long)(int32_t)exchange_status,
+						       result_code, (unsigned long long)out_len);
+
+						if (ctx.once_count == before_count) {
+							break;
+						}
+
+						for (int k = before_count; k < ctx.once_count && k < 8; k++) {
+							uint64_t once_rax = 0;
+							uc_err once_err = call_guest(uc, ctx.once_inits[k],
+							                             g_stack_base + 0x100000,
+							                             trampoline, &once_rax);
+							append(out, cap, &used,
+							       "[X64]   ran late once-init %#llx err=%u\n",
+							       (unsigned long long)ctx.once_inits[k], once_err);
+						}
+					}
+
+					append(out, cap, &used, "[X64] exchange out=%#llx len=%llu\n",
 					       (unsigned long long)out_ptr, (unsigned long long)out_len);
 
 					if (out_ptr != 0 && out_len > 0 && out_len < 4096) {
