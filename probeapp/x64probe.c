@@ -1213,6 +1213,29 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 			}
 			append(out, cap, &used, "\n");
 
+			/* The context object carries a sentinel at +0x2b8. The disassembly
+			 * compares that field against 0x12db3c8a and writes the same value
+			 * on the path that ends in the early return, so its value after the
+			 * call says which path ran. */
+			if (context_slot != 0) {
+				uint64_t context_value = 0;
+				if (uc_mem_read(uc, context_slot, &context_value, 8) == UC_ERR_OK &&
+				    context_value != 0) {
+					uint32_t sentinel = 0;
+					if (uc_mem_read(uc, context_value + 0x2b8, &sentinel, 4) == UC_ERR_OK) {
+						append(out, cap, &used,
+						       "[X64] context+0x2b8 = %#x %s\n",
+						       sentinel,
+						       sentinel == 0x12db3c8au ? "(matches sentinel)" : "(does not match)");
+					}
+					uint64_t field_2b0 = 0;
+					if (uc_mem_read(uc, context_value + 0x2b0, &field_2b0, 8) == UC_ERR_OK) {
+						append(out, cap, &used, "[X64] context+0x2b0 = %#llx\n",
+						       (unsigned long long)field_2b0);
+					}
+				}
+			}
+
 			if (ctx.objc_sends > 0 || ctx.objc_misses > 0) {
 				append(out, cap, &used,
 				       "[X64] objc: %d sends served, %d misses (last: %s)\n",
