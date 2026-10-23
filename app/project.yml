@@ -48,13 +48,13 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.a23bc.dliparebuild
-        PRODUCT_NAME: DLiPA
-        INFOPLIST_FILE: DLiPA/Info.plist
+        PRODUCT_NAME: DLiPARebuild
+        INFOPLIST_FILE: DLiPARebuild/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_VERSION: "5.0"
         # Exposes the gomobile-generated ObjC API to Swift. Without this the
         # Sapbridge types are unresolvable and the build fails.
-        SWIFT_OBJC_BRIDGING_HEADER: DLiPA/DLiPA-Bridging-Header.h
+        SWIFT_OBJC_BRIDGING_HEADER: DLiPARebuild/DLiPA-Bridging-Header.h
         # Headers the framework installs; keep them so the import resolves.
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
 
