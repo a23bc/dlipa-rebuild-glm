@@ -149,6 +149,11 @@ typedef struct {
 	 * it executes can be compared against a run that is known to work. */
 	uint32_t pc_trace[256];
 	int pc_count;
+	/* The first addresses match on both runs, so the difference is later.
+	 * A ring of the most recent addresses shows where each run stopped, which
+	 * is the same information read from the other end. */
+	uint32_t pc_last[256];
+	uint64_t pc_total;
 } hook_ctx_t;
 
 typedef struct {
@@ -771,6 +776,8 @@ static void on_exchange_pc(uc_engine *uc, uint64_t address, uint32_t size, void 
 	if (ctx->pc_count < 256) {
 		ctx->pc_trace[ctx->pc_count++] = (uint32_t)(address - g_base);
 	}
+	ctx->pc_last[ctx->pc_total % 256] = (uint32_t)(address - g_base);
+	ctx->pc_total++;
 }
 
 static void on_guest_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
@@ -1692,6 +1699,16 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 		append(out, cap, &used, " %x", ctx.pc_trace[i]);
 	}
 	append(out, cap, &used, "\n");
+	{
+		uint64_t total = ctx.pc_total;
+		uint64_t start = total > 256 ? total - 256 : 0;
+		append(out, cap, &used, "[X64] exchange pc last (%llu):",
+		       (unsigned long long)total);
+		for (uint64_t i = start; i < total; i++) {
+			append(out, cap, &used, " %x", ctx.pc_last[i % 256]);
+		}
+		append(out, cap, &used, "\n");
+	}
 	append(out, cap, &used, "[X64] call order: %s\n",
 	       ctx.call_trace_len ? ctx.call_trace : "(none)");
 	append(out, cap, &used, "[X64] imports served: %u calls across", ctx.served_total);
