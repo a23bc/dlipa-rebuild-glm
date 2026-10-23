@@ -783,7 +783,7 @@ static void on_exchange_pc(uc_engine *uc, uint64_t address, uint32_t size, void 
 	}
 	ctx->pc_last[ctx->pc_total % 256] = (uint32_t)(address - g_base);
 	{
-		uint32_t block = (uint32_t)(ctx->pc_total >> 16);
+		uint32_t block = (uint32_t)(ctx->pc_total >> 12);
 		if (block < 64) {
 			ctx->pc_block[block] = ctx->pc_block[block] * 16777619u
 			                     + (uint32_t)(address - g_base) + 1u;
@@ -1711,9 +1711,9 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 		append(out, cap, &used, " %x", ctx.pc_trace[i]);
 	}
 	append(out, cap, &used, "\n");
-	append(out, cap, &used, "[X64] pc block sigs (%llu blocks):",
-	       (unsigned long long)((ctx.pc_total + 65535) >> 16));
-	for (uint32_t b = 0; b < 64 && b < (ctx.pc_total + 65535) >> 16; b++) {
+	append(out, cap, &used, "[X64] pc block sigs (%llu blocks of 4096):",
+	       (unsigned long long)((ctx.pc_total + 4095) >> 12));
+	for (uint32_t b = 0; b < 64 && b < (ctx.pc_total + 4095) >> 12; b++) {
 		append(out, cap, &used, " %x", ctx.pc_block[b]);
 	}
 	append(out, cap, &used, "\n");
