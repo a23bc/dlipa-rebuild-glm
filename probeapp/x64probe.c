@@ -236,6 +236,7 @@ static const char *const k_return_minus_one[] = {
 	"_fcntl$UNIX2003",
 	"_lstat$INODE64",
 	"_statfs",
+	"_statfs$INODE64",
 	"_statfs$UNIX2003",
 	"_sysctl",
 };
@@ -1406,6 +1407,15 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 				append(out, cap, &used, " %s=%u", entries[i].name, ctx.entry_hits[i]);
 			}
 			append(out, cap, &used, "\n");
+
+			/* Dispatch stops the guest when it has no handler, so the slot it
+			 * stopped on is the name of the missing implementation. Printing it
+			 * saves decoding a stub address by hand. */
+			if (ctx.hit_slot >= 0 && (uint32_t)ctx.hit_slot < ctx.stub_count) {
+				append(out, cap, &used,
+				       "[X64] stopped on unhandled import: %s (slot %d)\n",
+				       import_names[ctx.hit_slot], ctx.hit_slot);
+			}
 
 			append(out, cap, &used, "[X64] stubs hit (%d distinct):", ctx.visited_count);
 			for (int i = 0; i < ctx.visited_count; i++) {
