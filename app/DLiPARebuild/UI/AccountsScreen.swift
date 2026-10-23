@@ -54,11 +54,17 @@ struct AccountsScreen: View {
             }
             .overlay {
                 if model.busy {
-                    ProgressView(model.status.isEmpty ? nil : model.status)
+                    ProgressView(model.status.isEmpty ? "Working..." : model.status)
                         .padding()
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
+        }
+        .onDisappear {
+            // The tab stays alive for the session, but the emulator holds
+            // tens of megabytes of guest memory. Release it when the screen
+            // goes away rather than waiting for deallocation.
+            model.shutdown()
         }
     }
 
@@ -139,10 +145,11 @@ final class AccountsModel: ObservableObject {
         bag = nil
     }
 
-    deinit {
-        // sap_guest_free releases the emulator and the container. Without this
-        // they wait for the next launch.
+    /// deinit cannot touch actor-isolated state, so the signer is released
+    /// here instead. The view calls this when it disappears.
+    func shutdown() {
         signer?.close()
+        signer = nil
     }
 }
 
@@ -150,7 +157,7 @@ final class AccountsModel: ObservableObject {
 
 struct SignInView: View {
     @ObservedObject var model: AccountsModel
-    @Environment(.dismiss) private var dismiss
+    @Environment(\.dismiss) private var dismiss
 
     @State private var email = ""
     @State private var password = ""
@@ -165,7 +172,7 @@ struct SignInView: View {
                     TextField("Apple ID", text: $email)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.emailAddress)
-                        .autocorrectionDisabled()
+                        .disableAutocorrection(true)
                     SecureField("Password", text: $password)
                 }
                 if needsCode {
@@ -191,7 +198,6 @@ struct SignInView: View {
                 }
             }
         }
-        .navigationViewStyle(.stack)
     }
 
     private func submit() {

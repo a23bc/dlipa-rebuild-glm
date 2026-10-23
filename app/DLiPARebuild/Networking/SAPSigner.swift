@@ -263,10 +263,16 @@ final class SAPSigner {
         return payload.base64EncodedString()
     }
 
+    /// Set once close() has run. sap_guest_free is not idempotent, and the
+    /// account screen can reach this from both sign-out and teardown.
+    private var closed = false
+
     func close() {
         // sap_guest_free releases the emulator, the container and the
-        // certificate. Calling it twice would double-free, so the handle is
-        // only ever freed from here and the object is not reused after.
+        // certificate. A second call would free the same pointer again, so the
+        // first one wins.
+        guard !closed else { return }
+        closed = true
         sap_guest_free(guest)
     }
 
