@@ -308,17 +308,44 @@ static int dispatch(hook_ctx_t *ctx, uint32_t slot)
 	}
 
 	if (strcmp(name, "_sysctlbyname") == 0) {
-		/* The key matters. Returning -1 for every key is honest, but the name
-		 * the guest asked for is what says whether a real answer is needed -
-		 * an identity query is not the same as a hardware capability probe. */
+		char key[64];
+		memset(key, 0, sizeof(key));
+		uc_mem_read(uc, a.rdi, key, sizeof(key) - 1);
+
 		if (ctx->sysctl_count < 6) {
-			char key[64];
-			memset(key, 0, sizeof(key));
-			uc_mem_read(uc, a.rdi, key, sizeof(key) - 1);
 			snprintf(ctx->sysctl_names[ctx->sysctl_count],
 			         sizeof(ctx->sysctl_names[0]), "%s", key);
 			ctx->sysctl_count++;
 		}
+
+		/* kern.osversion is the only key the exchange asks for, and it is a
+		 * plain string query: oldval, oldlenp. Answering -1 tells the caller
+		 * the host has no version at all, which is not something a real Mac
+		 * would ever report. A 10.9-era string is the consistent answer. */
+		if (strcmp(key, "kern.osversion") == 0) {
+			static const char version[] = "13A603";
+			uint64_t oldp = a.rdi;
+			uint64_t oldlenp = a.rsi;
+			(void)oldp;
+
+			uint64_t capacity = 0;
+			if (oldlenp != 0) {
+				uc_mem_read(uc, oldlenp, &capacity, 8);
+			}
+			uint64_t needed = sizeof(version);
+
+			if (capacity >= needed && a.rdx != 0) {
+				uc_mem_write(uc, a.rdx, version, needed);
+				uint64_t written = needed;
+				uc_mem_write(uc, oldlenp, &written, 8);
+				set_rax(uc, 0);
+			} else {
+				uc_mem_write(uc, oldlenp, &needed, 8);
+				set_rax(uc, (uint64_t)-1);
+			}
+			return 1;
+		}
+
 		set_rax(uc, (uint64_t)-1);
 		return 1;
 	}
@@ -674,6 +701,13 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 
 		uint32_t calls = 0;
 
+		/* The exchange result, kept where the summary line can reach it. The
+		 * replay of a late initialiser overwrites rax, and the summary used to
+		 * report that clobbered value - printing OK for a call that had
+		 * returned 0x10000600. */
+		uint64_t exchange_final = 0;
+		int exchange_reported = 0;
+
 		/* Everything from here on belongs to the driver modes; mode 0 is the
 		 * zero-argument survey and must not go through the initialisation
 		 * sequence at all. */
@@ -794,6 +828,8 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 					uint64_t out_ptr = 0, out_len = 0;
 					uint32_t result_code = 0;
 
+
+
 					/* 200 is the only version the binary accepts: 3, 2, 1 and 0
 					 * all return the same -42091, while 200 takes a different
 					 * path. The sweep was worth running once; it is not worth
@@ -819,6 +855,9 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 						uc_mem_read(uc, out_field, &out_ptr, 8);
 						uc_mem_read(uc, len_field, &out_len, 8);
 						uc_mem_read(uc, res_field, &result_code, 4);
+
+						exchange_final = exchange_status;
+						exchange_reported = 1;
 
 						append(out, cap, &used,
 						       "[X64] version %-3llu: err=%u status=%lld result=%u len=%llu\n",
@@ -873,7 +912,11 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 
 		if (mode >= 1) {
 			uint64_t status = 0, context_value = 0;
-			uc_reg_read(uc, UC_X86_REG_RAX, &status);
+			if (exchange_reported) {
+				status = exchange_final;
+			} else {
+				uc_reg_read(uc, UC_X86_REG_RAX, &status);
+			}
 			if (context_slot != 0) {
 				uc_mem_read(uc, context_slot, &context_value, 8);
 			}
