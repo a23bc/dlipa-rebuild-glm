@@ -109,6 +109,10 @@ typedef struct {
 	uint64_t msg_receiver;
 	uint64_t msg_selector;
 	uint64_t msg_resume;
+	/* Every distinct stub slot that was entered, in order, so a missing call can
+	 * be distinguished from a call that was served silently. */
+	uint16_t visited[32];
+	int visited_count;
 } hook_ctx_t;
 
 typedef struct {
@@ -481,6 +485,16 @@ static void on_code(uc_engine *uc, uint64_t address, uint32_t size, void *user)
 
 	uint32_t slot = (uint32_t)((address - ctx->stub_base) / STUB_SLOT);
 	if (slot >= ctx->stub_count) return;
+
+	if (ctx->visited_count < 32) {
+		int seen = 0;
+		for (int i = 0; i < ctx->visited_count; i++) {
+			if (ctx->visited[i] == (uint16_t)slot) { seen = 1; break; }
+		}
+		if (!seen) {
+			ctx->visited[ctx->visited_count++] = (uint16_t)slot;
+		}
+	}
 
 	if (dispatch(ctx, slot)) {
 		ctx->served[slot]++;
@@ -1084,6 +1098,15 @@ void x64probe_report(const char *path, int mode, char *out, size_t cap)
 				append(out, cap, &used, "[X64] syscall #%llu reached\n",
 				       (unsigned long long)ctx.syscall_nr);
 			}
+
+			/* Which imports actually ran, in the order they were first hit.
+			 * Without this a missing objc_msgSend looks the same whether the
+			 * code path was never taken or the call was answered silently. */
+			append(out, cap, &used, "[X64] stubs hit (%d distinct):", ctx.visited_count);
+			for (int i = 0; i < ctx.visited_count; i++) {
+				append(out, cap, &used, " %s", import_names[ctx.visited[i]]);
+			}
+			append(out, cap, &used, "\n");
 
 			if (ctx.objc_sends > 0 || ctx.objc_misses > 0) {
 				append(out, cap, &used,
