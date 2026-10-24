@@ -450,20 +450,25 @@ final class AppStoreClient {
             AppLog.warn("bag has no authorizeMachine endpoint", .auth)
             return
         }
-        AppLog.info("authorizeMachine: " + url.absoluteString, .auth)
+        // The token is minted on the pod host (p<n>-buy...authenticate/?Pod=n)
+        // while the bag names the generic host for this call. A token issued by
+        // one and presented to the other is exactly the kind of mismatch that
+        // reads back as "your password has changed", so both hosts are tried.
+        var urls: [(String, URL)] = [("bag", url)]
+        if !account.pod.isEmpty,
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.host = "p" + account.pod + "-buy.itunes.apple.com"
+            if let podURL = components.url { urls.append(("pod", podURL)) }
+        }
 
         let name = "DLiPA Rebuild"
-        let variants: [(String, [String: Any])] = [
-            ("guid+serial+name", ["guid": guid, "serialNumber": guid, "machineName": name]),
-            ("guid+serial", ["guid": guid, "serialNumber": guid]),
-            ("guid", ["guid": guid]),
-            ("guid+dsid+serial+name", ["guid": guid, "dsid": account.dsid,
-                                       "serialNumber": guid, "machineName": name]),
-        ]
+        let payload: [String: Any] = ["guid": guid, "serialNumber": guid,
+                                      "machineName": name]
 
-        for (label, payload) in variants {
+        for (hostLabel, hostURL) in urls {
             for signed in [false, true] {
-                var request = URLRequest(url: url)
+                let label = hostLabel + "/" + (signed ? "signed" : "plain")
+                var request = URLRequest(url: hostURL)
                 request.httpMethod = "POST"
                 request.setValue("application/x-apple-plist",
                                  forHTTPHeaderField: "Content-Type")
@@ -473,7 +478,7 @@ final class AppStoreClient {
                 request.httpBody = try? PropertyListSerialization.data(
                     fromPropertyList: payload, format: .xml, options: 0)
 
-                let tag = "authorizeMachine [" + label + (signed ? "+signed]" : "]")
+                let tag = "authorizeMachine [" + label + "]"
                 do {
                     let data: Data
                     let status: Int
