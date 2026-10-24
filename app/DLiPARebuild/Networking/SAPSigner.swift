@@ -187,10 +187,16 @@ final class SAPSigner {
     func close() {
         guard !closed else { return }
         closed = true
-        // Swift imports this one as close(): the BOOL return and the NSError
-        // out-parameter collapse into a single throwing call, unlike the other
-        // methods, which keep their explicit error pointer.
-        bridge.close()
+        // Swift imports this one as a throwing close(): the BOOL return and the
+        // NSError out-parameter collapse into a single throwing call, unlike the
+        // other methods, which keep their explicit error pointer. A failure here
+        // is not fatal -- the session is being torn down anyway -- so it is
+        // logged rather than thrown out of deinit-adjacent code.
+        do {
+            try bridge.close()
+        } catch {
+            AppLog.warn("SAP close reported: " + error.localizedDescription, .sap)
+        }
     }
 
     // MARK: kbsync cache
