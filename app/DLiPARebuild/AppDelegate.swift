@@ -56,12 +56,24 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         } else {
             AppLog.error("BuildID.txt not found in bundle — this is not a CI build", .app)
         }
-        // Nothing to stage. The SAP signing path runs OS X 10.9 CommerceKit
-        // out of the X64I container that ships in the bundle, so the 119 MB of
-        // extracted macOS binaries the Go bridge needed are no longer part of
-        // the launch path. AssetStaging is kept for the KBSync path, which
-        // still goes through the Go bridge.
-        print("[DLiPA] AppDelegate: no asset staging needed for the SAP path")
+        // Staging is back on the launch path.
+        //
+        // It was dropped when signing ran through sap_guest.c and the OS X 10.9
+        // container: that engine read its own image and needed none of the four
+        // macOS 27 binaries. Signing now goes through the Go bridge's arm64
+        // machine, which reads those four from a directory it is told about, and
+        // they ship inside the bundle. Copying them somewhere writable and
+        // pointing the bridge at it is exactly what AssetStaging does.
+        //
+        // It runs in the background: the copy is ~125 MB, and the first sign-in
+        // is the first thing that needs it.
+        AssetStaging.stageIfNeeded(progress: nil) { error in
+            if let error {
+                AppLog.error("asset staging failed: " + error.localizedDescription, .assets)
+            } else {
+                AppLog.info("SAP assets staged for the arm64 bridge", .assets)
+            }
+        }
         print("[DLiPA] AppDelegate.didFinishLaunchingWithOptions returning true")
         return true
     }
