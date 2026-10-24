@@ -119,12 +119,14 @@ final class SAPSigner {
     func signatureHeaderValue(for body: Data) throws -> String {
         AppLog.info("sign: entering with " + String(body.count) + " bytes", .sap)
         var error: NSError?
+        // The generated header declares this as non-optional NSString, so a
+        // failure shows up only as a non-nil error. Checking the error first
+        // keeps the reason visible; the string itself is never nil.
         let value = bridge.signatureHeaderValue(body, error: &error)
-        guard let value else {
-            let detail = error?.localizedDescription ?? "unknown"
-            AppLog.error("sign FAILED: " + detail, .sap)
+        if let error {
+            AppLog.error("sign FAILED: " + error.localizedDescription, .sap)
             throw NSError(domain: "SAPSigner", code: 4, userInfo: [
-                NSLocalizedDescriptionKey: detail,
+                NSLocalizedDescriptionKey: error.localizedDescription,
             ])
         }
         AppLog.info("sign: returned header=" + String(value.count), .sap)
