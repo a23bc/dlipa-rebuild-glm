@@ -148,9 +148,20 @@ final class SAPSigner {
         // emulators do not fit: each is ~173 MB resident, and the second
         // uc_open dies inside QEMU with exit(1), which iOS records as a silent
         // kill with no crash report.
-        var error: NSError?
-        guard let fresh = bridge.generateKBSync(dsid, error: &error) else {
-            let detail = error?.localizedDescription ?? "unknown"
+        // Swift imports this one as throwing, the same way it does close(): a
+        // nullable return plus an NSError out-parameter becomes one call that
+        // throws. signatureHeaderValue keeps its explicit error pointer because
+        // its return is non-nullable, which is why the two look different here.
+        let fresh: Data
+        do {
+            guard let blob = try bridge.generateKBSync(dsid) else {
+                throw NSError(domain: "SAPSigner", code: 3, userInfo: [
+                    NSLocalizedDescriptionKey: "the bridge returned no kbsync blob",
+                ])
+            }
+            fresh = blob
+        } catch {
+            let detail = error.localizedDescription
             AppLog.error("kbsync generation failed: " + detail, .sap)
             fputs("[DLiPA] kbsync generation failed: " + detail + "\n", stderr)
             throw NSError(domain: "SAPSigner", code: 3, userInfo: [
