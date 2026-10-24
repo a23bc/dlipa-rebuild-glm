@@ -736,11 +736,15 @@ final class AppStoreClient {
         var components = URLComponents(string: endpoint)!
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
 
+        // Exactly the shape that produced a real 9610 answer before: form
+        // content type, the Configurator user agent, store-front and token, and
+        // no DSID headers. Adding iCloud-DSID/X-Dsid here turned the same call
+        // into an empty 500, which is a request Apple will not parse.
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
-        request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
-        request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
-        request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+        request.setValue("application/x-www-form-urlencoded; charset=utf-8",
+                         forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
         request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
 
