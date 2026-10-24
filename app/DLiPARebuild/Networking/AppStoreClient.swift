@@ -311,68 +311,21 @@ final class AppStoreClient {
 
     /// Lists the versions available for an app, acquiring a licence if Apple
     /// asks for one.
+    ///
+    /// Uses the signed download request. Two cheaper variants were tried and
+    /// both failed for reasons that had nothing to do with the licence: with
+    /// the DSID headers only, Apple answered 401 and an empty body; unsigned
+    /// with a trimmed body, it answered 500. The signed request is the one that
+    /// produces a real response, so the only variable left is the licence,
+    /// which downloadProduct buys and retries on.
     func listVersions(appId: String,
                       guid: String,
                       account: Account,
-                      bag: StoreBag) async throws -> VersionList {
-        do {
-            return try await listVersionsOnce(appId: appId, guid: guid,
-                                              account: account, bag: bag)
-        } catch {
-            guard let store = error as? StoreError,
-                  case .failureType(let type, _) = store,
-                  type == "9610" else { throw error }
-            AppLog.info("version list asked for a licence; acquiring one", .download)
-            try await acquireLicense(appId: appId, guid: guid, account: account)
-            return try await listVersionsOnce(appId: appId, guid: guid,
-                                              account: account, bag: bag)
-        }
-    }
-
-    /// One attempt at the version list.
-    ///
-    /// The body is the trimmed metadata shape -- salableAdamId, guid,
-    /// creditDisplay, no serialNumber -- rather than the download shape. The
-    /// headers are not trimmed: without X-Token Apple answers 401 with an empty
-    /// body, which is what the first version of this did. ipatool-rs gets away
-    /// with DSID only because its client carries a cookie jar; this one has no
-    /// session cookies for the store, so the token has to be explicit.
-    private func listVersionsOnce(appId: String,
-                                  guid: String,
-                                  account: Account,
-                                  bag: StoreBag) async throws -> VersionList {
-        guard let endpoint = bag.volumeStoreDownloadProduct else {
-            AppLog.error("bag has no download endpoint", .download)
-            throw StoreError.noBagEndpoint
-        }
-        var components = URLComponents(string: endpoint)!
-        components.queryItems = [URLQueryItem(name: "guid", value: guid)]
-
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
-        request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
-        request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
-        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-        request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
-
-        let payload: [String: Any] = [
-            // A string here; the download body uses an integer.
-            "salableAdamId": appId,
-            "guid": guid,
-            "creditDisplay": "",
-        ]
-        request.httpBody = try PropertyListSerialization.data(
-            fromPropertyList: payload, format: .xml, options: 0)
-
-        AppLog.info("listing versions for " + appId, .download)
-        let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        AppLog.info("version list returned HTTP " + String(status)
-                    + ", " + String(data.count) + " bytes", .download)
-
-        let plist = (try? PropertyListSerialization.propertyList(
-            from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+                      bag: StoreBag,
+                      signer: SAPSigner) async throws -> VersionList {
+        let plist = try await downloadProduct(
+            appId: appId, externalVersionId: nil,
+            guid: guid, account: account, bag: bag, signer: signer)
 
         let failure = plist["failureType"] as? String ?? ""
         // 5002 is "licence already exists". Alongside a songList it is not an
@@ -386,14 +339,9 @@ final class AppStoreClient {
 
         // songList comes in two shapes and both are valid: an array whose first
         // item carries metadata, or a dictionary keyed by external version id.
-        // Only accepting the array is what reported "no items".
         guard let songList = plist["songList"] else {
-            let preview = String(data: data.prefix(1500), encoding: .utf8)
-                ?? "<\(data.count) binary bytes>"
-            AppLog.error("version list had no songList; body follows", .download)
-            AppLog.error(preview, .download)
-            AppLog.error("top-level keys: " + plist.keys.sorted().joined(separator: ", "),
-                         .download)
+            AppLog.error("version list had no songList; keys: "
+                         + plist.keys.sorted().joined(separator: ", "), .download)
             throw StoreError.failureType("versions", "apple returned no songList")
         }
 
@@ -422,10 +370,10 @@ final class AppStoreClient {
         }
 
         guard !identifiers.isEmpty else {
-            let preview = String(data: data.prefix(1500), encoding: .utf8)
-                ?? "<\(data.count) binary bytes>"
-            AppLog.error("version list had no identifiers; body follows", .download)
-            AppLog.error(preview, .download)
+            AppLog.error("version list had no identifiers; item keys: "
+                         + ((songList as? [Any])?.first
+                            .flatMap { ($0 as? [String: Any])?.keys.sorted().joined(separator: ", ") }
+                            ?? "not an array"), .download)
             throw StoreError.failureType("versions", "apple returned no versions")
         }
 
