@@ -14,6 +14,8 @@ import (
         "os"
         "strconv"
         "strings"
+        "sync"
+        "sync/atomic"
         "time"
 
         "github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap"
@@ -40,12 +42,42 @@ type Signer struct {
 // recovered here and converted to errors, so a bug deep in the guest
 // runtime surfaces as a normal NSError on the Swift side instead of
 // killing the host iOS process via os.Exit(2).
+// liveSessions counts the sessions that currently own an emulator, and openMu
+// makes the check-and-create atomic.
+//
+// iOS fits exactly one emulator. A second uc_open fails inside QEMU's
+// code_gen_alloc, which calls exit(1): the app disappears with no crash report
+// and the last thing in the log is whatever printed before. Two callers racing
+// into this function produced exactly that, at a resident size far below what the
+// first engine eventually uses, because the second one dies while the first is
+// still being built.
+//
+// So a second attempt is refused with an error the caller can show, instead of
+// being allowed to kill the process.
+var (
+        openMu       sync.Mutex
+        liveSessions int32
+)
+
 func New(setupURL, certURL string, version int32, hardwareID []byte) (signer *Signer, err error) {
+        openMu.Lock()
+        defer openMu.Unlock()
+
+        if live := atomic.LoadInt32(&liveSessions); live > 0 {
+                return nil, fmt.Errorf("a SAP session is already open (%d); iOS fits only one emulator", live)
+        }
+
         err = runRecovered("SAP handshake", func() error {
                 var innerErr error
                 signer, innerErr = newSigner(setupURL, certURL, version, hardwareID)
                 return innerErr
         })
+        if err != nil {
+                return nil, err
+        }
+
+        atomic.AddInt32(&liveSessions, 1)
+
         return signer, err
 }
 
@@ -183,6 +215,7 @@ func (s *Signer) close() error {
         }
         err := s.inner.Close()
         s.inner = nil
+        atomic.AddInt32(&liveSessions, -1)
         return err
 }
 

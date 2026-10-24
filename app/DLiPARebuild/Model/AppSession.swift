@@ -147,6 +147,7 @@ final class AppSession: ObservableObject {
 
     /// The identity changed under us: everything derived from it is stale.
     func handleIdentityChange() {
+        sessionBuild = nil
         signer?.close()
         signer = nil
         bag = nil
@@ -162,6 +163,7 @@ final class AppSession: ObservableObject {
     /// deinit cannot touch actor-isolated state, so the signer is released
     /// here instead. The view calls this when it disappears.
     func shutdown() {
+        sessionBuild = nil
         signer?.close()
         signer = nil
     }
@@ -179,7 +181,35 @@ final class AppSession: ObservableObject {
 
     /// Makes sure the bag and the SAP session exist, then hands back what the
     /// download path needs. Throws when nobody is signed in.
+    /// In-flight session build.
+    ///
+    /// ensureSession is called from several places that can overlap -- opening a
+    /// version list while a download is starting, for instance -- and the body
+    /// below suspends at its first await. Without this, both callers see signer
+    /// == nil and each builds one, which means two emulators. iOS fits one: the
+    /// second uc_open dies inside QEMU with exit(1), so the app vanishes with no
+    /// crash report, and it happens fast enough that it looks like whichever
+    /// button was pressed caused it.
+    private var sessionBuild: Task<(StoreAccount, StoreBag, SAPSigner), Error>?
+
     private func ensureSession() async throws -> (StoreAccount, StoreBag, SAPSigner) {
+        if let build = sessionBuild {
+            return try await build.value
+        }
+
+        let build = Task { try await self.buildSession() }
+        sessionBuild = build
+
+        do {
+            return try await build.value
+        } catch {
+            // Let the next attempt start over rather than replaying this failure.
+            sessionBuild = nil
+            throw error
+        }
+    }
+
+    private func buildSession() async throws -> (StoreAccount, StoreBag, SAPSigner) {
         guard let account = activeAccount else {
             AppLog.error("download requested with no account signed in", .download)
             throw StoreError.noBagEndpoint
