@@ -193,8 +193,11 @@ final class SAPSigner {
                     "the hardware identity must be 6 bytes, not \(hardware.bytes.count)",
             ])
         }
+        // Upstream builds this as the five-byte prefix followed by
+        // hardwareID[2:], so the first two bytes of the identity are dropped.
+        // Appending all six produced a different string for every account.
         var payload = Data([0x54, 0xc8, 0xb0, 0xa9, 0x88])
-        payload.append(hardware.bytes.prefix(6))
+        payload.append(hardware.bytes.dropFirst(2))
         return payload.base64EncodedString()
     }
 

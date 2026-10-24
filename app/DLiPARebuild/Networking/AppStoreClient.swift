@@ -800,10 +800,11 @@ final class AppStoreClient {
         request.setValue("application/x-www-form-urlencoded; charset=utf-8",
                          forHTTPHeaderField: "Content-Type")
         request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
-        // No X-Apple-Store-Front here: ipatool's download request does not send
-        // one, and this app has been sending the login store-front to a
-        // different service all along. Its absence is the last structural
-        // difference from the reference request.
+        // ent/download does want the store-front. ipatool sets it from the
+        // account (appstore_kbsync.go:122) alongside the Configurator agent and
+        // the store token; the earlier note here claiming otherwise was written
+        // while the request was still missing kbsync and everything else.
+        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
         // The store's own X-Token cookie, not the passwordToken.
         request.setValue(account.sessionToken.isEmpty ? account.passwordToken
                                                       : account.sessionToken,
@@ -812,13 +813,24 @@ final class AppStoreClient {
             request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
         }
 
-        var payload: [String: Any] = [
+        // ent/download exists because of kbsync: the blob is what lets the
+        // download be bound to this account and device. Without it the request
+        // is the classic one wearing a different URL. Field by field this
+        // mirrors appstore_kbsync.go:124.
+        // Both calls happen before the literal so neither sits behind a key
+        // path in a dictionary, where Swift is fussy about a trailing try.
+        let blob = try signer.kbsync(dsid: account.dsid)
+        let serial = try signer.serialNumber()
+        let payload: [String: Any] = [
             "creditDisplay": "",
             "guid": guid,
-            "salableAdamId": Int64(appId) ?? 0,
-            "serialNumber": "0",
+            "kbsync": blob.base64EncodedString(),
+            // A string upstream (strconv.FormatInt), not a number.
+            "salableAdamId": appId,
+            "serialNumber": serial,
+            // Always present, empty when unpinned.
+            "externalVersionId": externalVersionId ?? "",
         ]
-        if let externalVersionId { payload["externalVersionId"] = externalVersionId }
         request.httpBody = try PropertyListSerialization.data(
             fromPropertyList: payload, format: .xml, options: 0)
 
@@ -848,7 +860,8 @@ final class AppStoreClient {
         // volumeStoreDownloadProduct with only iCloud-DSID and X-Dsid, no
         // X-Token, no store-front, and no signature. ent/download is a separate
         // newer path that ipatool only takes when it has a kbsync generator.
-        // This app has no kbsync, so it should be on the classic path.
+        // This app has one now, so ent/download is tried first and this is the
+        // fallback for apps it will not serve.
         let podPrefix = account.pod.isEmpty ? "" : "p" + account.pod + "-"
         let endpoint = "https://" + podPrefix
             + "buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct"
