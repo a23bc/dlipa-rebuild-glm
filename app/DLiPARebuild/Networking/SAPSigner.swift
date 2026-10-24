@@ -187,11 +187,10 @@ final class SAPSigner {
     func close() {
         guard !closed else { return }
         closed = true
-        var error: NSError?
-        if !bridge.close(&error) {
-            AppLog.warn("SAP close reported: "
-                        + (error?.localizedDescription ?? "unknown"), .sap)
-        }
+        // Swift imports this one as close(): the BOOL return and the NSError
+        // out-parameter collapse into a single throwing call, unlike the other
+        // methods, which keep their explicit error pointer.
+        bridge.close()
     }
 
     // MARK: kbsync cache
