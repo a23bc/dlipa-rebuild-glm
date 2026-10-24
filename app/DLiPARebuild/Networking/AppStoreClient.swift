@@ -791,10 +791,6 @@ final class AppStoreClient {
         var components = URLComponents(string: endpoint)!
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
 
-        // Exactly the shape that produced a real 9610 answer before: form
-        // content type, the Configurator user agent, store-front and token, and
-        // no DSID headers. Adding iCloud-DSID/X-Dsid here turned the same call
-        // into an empty 500, which is a request Apple will not parse.
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded; charset=utf-8",
@@ -804,21 +800,10 @@ final class AppStoreClient {
         // account (appstore_kbsync.go:122) alongside the Configurator agent and
         // the store token; the earlier note here claiming otherwise was written
         // while the request was still missing kbsync and everything else.
-        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-        // The store's own X-Token cookie, not the passwordToken.
-        request.setValue(account.sessionToken.isEmpty ? account.passwordToken
-                                                      : account.sessionToken,
-                         forHTTPHeaderField: "X-Token")
-        if !capturedCookieHeader.isEmpty {
-            request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
-        }
-
-        // ent/download exists because of kbsync: the blob is what lets the
-        // download be bound to this account and device. Without it the request
-        // is the classic one wearing a different URL. Field by field this
-        // mirrors appstore_kbsync.go:124.
-        // Both calls happen before the literal so neither sits behind a key
-        // path in a dictionary, where Swift is fussy about a trailing try.
+        // ent/download exists because of kbsync: the blob is what binds the
+        // download to this account and device. Without it the request is the
+        // classic one wearing a different URL. Field by field this mirrors
+        // appstore_kbsync.go:124.
         let blob = try signer.kbsync(dsid: account.dsid)
         let serial = try signer.serialNumber()
         let payload: [String: Any] = [
@@ -831,20 +816,65 @@ final class AppStoreClient {
             // Always present, empty when unpinned.
             "externalVersionId": externalVersionId ?? "",
         ]
-        request.httpBody = try PropertyListSerialization.data(
+        let body = try PropertyListSerialization.data(
             fromPropertyList: payload, format: .xml, options: 0)
 
-        let (data, http) = try await signedRequest(request, signer: signer, redirects: 4)
-        let plist = (try? PropertyListSerialization.propertyList(
-            from: data, options: [], format: nil)) as? [String: Any] ?? [:]
-        let failure = plist["failureType"] as? String ?? ""
-        AppLog.info("ent/download HTTP " + String(http.statusCode) + ", "
-                    + String(data.count) + " bytes"
-                    + (failure.isEmpty ? "" : ", failureType " + failure), .download)
-        if !failure.isEmpty {
-            throw StoreError.failureType(failure, plist["customerMessage"] as? String ?? "")
+        // Which credential ent/download wants is not settled by reading the
+        // source. Upstream sends PasswordToken plus both DSID headers
+        // (appstore_kbsync.go:112-131 layered on downloadProductRequest), but an
+        // earlier run here saw the DSID headers turn this into an empty 500 --
+        // with a body that was still missing kbsync, so the observation does not
+        // transfer. Rather than spend a build per variable, send the
+        // combinations once and let the log say which one was answered.
+        let variants: [(String, String, Bool)] = [
+            ("passwordToken+dsid", account.passwordToken, true),
+            ("passwordToken", account.passwordToken, false),
+            ("sessionToken+dsid", account.sessionToken, true),
+            ("sessionToken", account.sessionToken, false),
+        ]
+
+        var rejected: (failure: String, message: String) = ("", "")
+        var lastStatus = -1
+
+        for (name, token, sendDSID) in variants {
+            var attempt = request
+            attempt.httpBody = body
+            attempt.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+            if !token.isEmpty {
+                attempt.setValue(token, forHTTPHeaderField: "X-Token")
+            }
+            if sendDSID {
+                attempt.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+                attempt.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+            }
+            if !capturedCookieHeader.isEmpty {
+                attempt.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
+            }
+
+            // Upstream sets NoRedirects for ent/download: X-Token must not be
+            // forwarded to wherever a redirect points.
+            let (data, http) = try await signedRequest(attempt, signer: signer,
+                                                       redirects: 0)
+            lastStatus = http.statusCode
+            let plist = (try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+            let failure = plist["failureType"] as? String ?? ""
+            AppLog.info("ent/download[" + name + "] HTTP " + String(http.statusCode)
+                        + ", " + String(data.count) + " bytes"
+                        + (failure.isEmpty ? "" : ", failureType " + failure), .download)
+
+            if failure.isEmpty && !data.isEmpty {
+                return plist
+            }
+            if !failure.isEmpty {
+                rejected = (failure, plist["customerMessage"] as? String ?? "")
+            }
         }
-        return plist
+
+        if !rejected.failure.isEmpty {
+            throw StoreError.failureType(rejected.failure, rejected.message)
+        }
+        throw StoreError.httpError(lastStatus, "ent/download returned an empty body")
     }
 
     private func classicDownload(appId: String,
