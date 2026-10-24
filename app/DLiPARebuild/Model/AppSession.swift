@@ -203,13 +203,18 @@ final class AppSession: ObservableObject {
         // download answers 2042 "Sign In to the iTunes Store". Binding the device
         // to the account is the step that is missing, so it runs once per launch
         // before the first download.
-        if !didAuthorizeMachine {
-            didAuthorizeMachine = true
-            await client.authorizeMachine(account: account.asAccount(),
-                                          guid: hardware.guid,
-                                          bag: bag,
-                                          signer: signer)
-        }
+        // Printed before the call so the log says whether this build has the
+        // code at all and whether the bag carries the endpoint -- an absent line
+        // is otherwise indistinguishable from a build that predates it.
+        AppLog.info("ensureSession: authorizeMachine endpoint "
+                    + (bag.authorizeMachine ?? "MISSING")
+                    + ", already authorised: " + String(didAuthorizeMachine), .auth)
+
+        didAuthorizeMachine = true
+        await client.authorizeMachine(account: account.asAccount(),
+                                      guid: hardware.guid,
+                                      bag: bag,
+                                      signer: signer)
 
         guard let refreshed = activeAccount else { throw StoreError.noBagEndpoint }
         return (refreshed, bag, signer)
