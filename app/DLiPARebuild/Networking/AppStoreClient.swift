@@ -605,6 +605,17 @@ final class AppStoreClient {
                     + " chars, dsid " + (account.dsid.isEmpty ? "none" : account.dsid)
                     + ", pod " + (account.pod.isEmpty ? "none" : account.pod), .download)
 
+        // The classic endpoint authenticates a *session*, and a session is
+        // cookies. ipatool's download client has a cookie jar for exactly this
+        // reason. If nothing is stored for the store domain then no token will
+        // help, so the names are printed -- names only, never values.
+        let cookies = (session.configuration.httpCookieStorage?.cookies ?? [])
+            .filter { $0.domain.contains("itunes.apple.com") }
+        AppLog.info("store cookies: "
+                    + (cookies.isEmpty
+                       ? "none"
+                       : cookies.map { $0.name }.joined(separator: ", ")), .download)
+
         var licenceFailure: (String, String)?
         var lastError: Error = StoreError.failureType("download", "every attempt failed")
 
