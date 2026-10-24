@@ -18,6 +18,8 @@ struct StoreAccount: Codable, Identifiable, Equatable {
 
     /// The session token the download endpoint expects in `X-Token`.
     var passwordToken: String
+    /// The 32 character clearToken from the same response.
+    var clearToken: String
 
     /// What the row's title shows: the person's name, or the email when Apple
     /// did not return one.
@@ -34,12 +36,14 @@ struct StoreAccount: Codable, Identifiable, Equatable {
         storefront = account.storefront
         pod = account.pod
         passwordToken = account.passwordToken
+        clearToken = account.clearToken
     }
 
     /// Back to the shape the client works with.
     func asAccount() -> AppStoreClient.Account {
         AppStoreClient.Account(email: email,
                                passwordToken: passwordToken,
+                               clearToken: clearToken,
                                dsid: dsid,
                                storefront: storefront,
                                pod: pod,

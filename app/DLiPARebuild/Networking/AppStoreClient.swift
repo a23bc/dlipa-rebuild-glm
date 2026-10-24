@@ -95,6 +95,10 @@ final class AppStoreClient {
     struct Account {
         var email: String
         var passwordToken: String
+        /// authenticate also returns a 32 character clearToken. Its name says it
+        /// is the usable form, so it is carried alongside passwordToken and
+        /// tried as X-Token -- the 52 character one is refused with 2002.
+        var clearToken: String
         var dsid: String
         var storefront: String
         var pod: String
@@ -239,6 +243,7 @@ final class AppStoreClient {
         let accountInfo = plist["accountInfo"] as? [String: Any] ?? [:]
         let address = accountInfo["address"] as? [String: Any] ?? [:]
         let passwordToken = plist["passwordToken"] as? String ?? ""
+        let clearToken = plist["clearToken"] as? String ?? ""
         let dsid = plist["dsPersonId"] as? String ?? ""
 
         // Field names and sizes, never values. The store rejects the token this
@@ -285,6 +290,7 @@ final class AppStoreClient {
         return Account(
             email: accountInfo["appleId"] as? String ?? email,
             passwordToken: passwordToken,
+            clearToken: clearToken,
             dsid: dsid,
             storefront: headerValue(http, "X-Set-Apple-Store-Front") ?? "",
             pod: headerValue(http, "pod") ?? "",
@@ -465,16 +471,21 @@ final class AppStoreClient {
         let payload: [String: Any] = ["guid": guid, "serialNumber": guid,
                                       "machineName": name]
 
+        let tokens: [(String, String)] = [("passwordToken", account.passwordToken),
+                                          ("clearToken", account.clearToken)]
+
         for (hostLabel, hostURL) in urls {
+            for (tokenLabel, tokenValue) in tokens {
             for signed in [false, true] {
-                let label = hostLabel + "/" + (signed ? "signed" : "plain")
+                let label = hostLabel + "/" + tokenLabel
+                    + (signed ? "/signed" : "/plain")
                 var request = URLRequest(url: hostURL)
                 request.httpMethod = "POST"
                 request.setValue("application/x-apple-plist",
                                  forHTTPHeaderField: "Content-Type")
                 request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
                 request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
-                request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+                request.setValue(tokenValue, forHTTPHeaderField: "X-Token")
                 request.httpBody = try? PropertyListSerialization.data(
                     fromPropertyList: payload, format: .xml, options: 0)
 
@@ -501,6 +512,7 @@ final class AppStoreClient {
                 } catch {
                     AppLog.warn(tag + " failed: " + error.localizedDescription, .auth)
                 }
+            }
             }
         }
     }
@@ -693,18 +705,23 @@ final class AppStoreClient {
         // build, no way to tell which caused it -- so the whole matrix is tried
         // here and the log names the one Apple accepts. That is cheaper than one
         // build per guess, which is how the last several rounds went.
-        let attempts: [(label: String, token: Bool, storeFront: Bool, signed: Bool)] = [
-            ("token", true, false, false),
-            ("token+storefront", true, true, false),
-            ("storefront", false, true, false),
-            ("bare", false, false, false),
-            ("token+signed", true, false, true),
+        // Store-front is gone: it produced an empty 400 in every combination.
+        // What is left is which credential goes in X-Token. authenticate returns
+        // two, and the store calls the 52 character one a bad password token, so
+        // the 32 character clearToken gets a turn as well.
+        let attempts: [(label: String, token: String, signed: Bool)] = [
+            ("passwordToken", account.passwordToken, false),
+            ("clearToken", account.clearToken, false),
+            ("none", "", false),
+            ("passwordToken+signed", account.passwordToken, true),
+            ("clearToken+signed", account.clearToken, true),
         ]
 
         // Printed once, because a zero-length token silently turns every
         // "token" attempt into a bare one: the two then return byte-identical
         // bodies and the comparison says nothing.
-        AppLog.info("download session: token " + String(account.passwordToken.count)
+        AppLog.info("download session: passwordToken " + String(account.passwordToken.count)
+                    + " chars, clearToken " + String(account.clearToken.count)
                     + " chars, dsid " + (account.dsid.isEmpty ? "none" : account.dsid)
                     + ", pod " + (account.pod.isEmpty ? "none" : account.pod), .download)
 
@@ -728,11 +745,8 @@ final class AppStoreClient {
             request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
             request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
-            if attempt.token, !account.passwordToken.isEmpty {
-                request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
-            }
-            if attempt.storeFront, !account.storefront.isEmpty {
-                request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+            if !attempt.token.isEmpty {
+                request.setValue(attempt.token, forHTTPHeaderField: "X-Token")
             }
             request.httpBody = body
 
