@@ -1,13 +1,18 @@
 name: Fetch SAP assets
 
-# Downloads the four OS X 10.9 SAP binaries straight from Apple's update
-# package and publishes them as an artifact. This is the replacement for
-# pulling VendorAssets/ out of the upstream repository with git lfs, which
-# will disappear.
+# Produces the four Apple SAP binaries for the arm64 route (plan B).
 #
-# Only about 31 MB of the 1.27 GB package is transferred: the payload is one
-# long bzip2 stream, so the script resumes at a block boundary instead of
-# downloading the whole thing.
+# Source of truth is Apple, not a checked-in copy: the pinned macOS 27.0.1
+# (26A434) restore image. Upstream ipatool already implements the hard part --
+# zip-range reads over HTTP, AEA decryption, APFS, and dyld shared cache
+# extraction -- inside internal/sap/assets, where Load() falls back to
+# resolveRemoteImage() when its cache is empty. scripts/export-sap-assets.go
+# just calls Load() and copies the four files back out.
+#
+# This replaces the old job, which fetched the OS X 10.9 set used by route A.
+# Those two sets are not interchangeable: 10.9 CoreFP is 29,014,912 bytes and
+# 27 CoreFP is 94,842,464, and only the 27 set has the arm64
+# AppleMediaServices that kbsync needs.
 
 on:
   workflow_dispatch:
@@ -20,35 +25,71 @@ on:
 permissions:
   contents: write
 
+env:
+  # Pinned so the extraction logic cannot drift under us. This is the commit
+  # whose assets.go names 26A434 and whose asset cache layout this workflow
+  # reads.
+  IPATOOL_REPO: https://github.com/majd/ipatool
+  IPATOOL_REF: v2.7.0
+
 jobs:
   fetch:
+    # The extraction needs neither macOS nor iOS; it needs disk and bandwidth.
+    # The image set is ~14 GB compressed, so this is a long job on purpose.
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          python-version: "3.12"
+          go-version: "1.23"
 
-      - name: Fetch and extract
+      - name: Check out the pinned ipatool
         run: |
-          python3 scripts/fetch-osx109-assets.py --out VendorAssets
-          ls -la VendorAssets
+          git clone --depth 1 --branch "$IPATOOL_REF" "$IPATOOL_REPO" /tmp/ipatool
+          # The exporter imports internal/sap/assets, which Go only allows from
+          # inside the same module, so it is copied in rather than run from here.
+          mkdir -p /tmp/ipatool/cmd/export-sap-assets
+          cp scripts/export-sap-assets.go /tmp/ipatool/cmd/export-sap-assets/main.go
+          grep -n "macOSRestoreURL" /tmp/ipatool/internal/sap/assets/assets.go
+
+      - name: Fetch and extract the macOS 27 assets
+        run: |
+          cd /tmp/ipatool
+          go run ./cmd/export-sap-assets -out "$GITHUB_WORKSPACE/VendorAssets"
+          ls -la "$GITHUB_WORKSPACE/VendorAssets"
+
+      - name: Verify against the pinned digests
+        run: |
+          cd "$GITHUB_WORKSPACE/VendorAssets"
+          # These are the same four values sapbridge/internal/sap/assets/assets.go
+          # checks at load time. A mismatch here means the extraction picked up a
+          # different build, and failing now is far cheaper than failing on device.
+          check() {
+            got=$(sha256sum "$1" | cut -d" " -f1)
+            if [ "$got" != "$2" ]; then
+              echo "::error::$1 digest mismatch: expected $2, got $got"
+              exit 1
+            fi
+            echo "  ok $1 $got"
+          }
+          check AppleMediaServices 95f4558aa2c0ccd9f96ed479e336b630b46bf4b4e0baabc1c1ac8c7d55e21ab4
+          check commerce           76de40a4a32f691947cb926ce3b128d2fc446f7cac9755f831c406cf5a316ac9
+          check CoreFP             2c30fa2b5f695fd66c0360dce72f54757d03ddb7107549715c12cb359a003b46
+          check CoreFP.icxs        cb8f55330ec567da3e692dab5f5388bed0312dd9093340477c5759078cc2aa7b
 
       - name: Record digests
         run: |
           cd VendorAssets
           sha256sum ./* | tee ../asset-digests.txt
-          cd ..
-          cat asset-digests.txt
 
       - name: Upload assets
         uses: actions/upload-artifact@v4
         with:
-          name: sap-assets
+          name: sap-assets-macos27
           path: |
             VendorAssets
             asset-digests.txt
           if-no-files-found: error
-
