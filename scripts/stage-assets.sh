@@ -6,7 +6,7 @@ set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SRC=${1:-$ROOT/VendorAssets}
-DST=${2:-$ROOT/app/DLiPA/Resources/SapAssets}
+DST=${2:-$ROOT/app/DLiPARebuild/Resources/SapAssets}
 
 mkdir -p "$DST"
 

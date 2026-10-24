@@ -249,6 +249,31 @@ jobs:
           # assets, so the app job does not spend a minute downloading them.
           mv bridge/commerce.x64i app/DLiPARebuild/Resources/commerce.x64i
           ls -la app/DLiPARebuild/Resources/commerce.x64i
+      - name: Restore the Apple SAP binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/osx109
+          key: osx109-${{ hashFiles('scripts/fetch-osx109-assets.py') }}
+
+      - name: Stage the Apple SAP binaries into the app bundle
+        run: |
+          # kbsync needs these four binaries next to the app; the go-bridge job
+          # only builds the guest image from them and never copies them over.
+          # Without this step SapAssets/ holds nothing but .gitkeep and the
+          # kbsync gate fails with "assets are not present in the cache
+          # directory", which reads like a code problem and is not one.
+          mkdir -p "${{ github.workspace }}/osx109"
+          if [ ! -s "${{ github.workspace }}/osx109/CommerceKit" ]; then
+            echo "==> cache miss, fetching from Apple"
+            python3 "${{ github.workspace }}/scripts/fetch-osx109-assets.py" \
+              --out "${{ github.workspace }}/osx109"
+          else
+            echo "==> osx109 restored from cache"
+          fi
+          sh scripts/stage-assets.sh "${{ github.workspace }}/osx109" \
+            "${{ github.workspace }}/app/DLiPARebuild/Resources/SapAssets"
+          ls -la app/DLiPARebuild/Resources/SapAssets
+
       - name: Install build tools
         run: |
           # xcodegen turns project.yml into a real .xcodeproj, so there is no

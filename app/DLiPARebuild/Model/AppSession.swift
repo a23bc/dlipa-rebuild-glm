@@ -274,6 +274,22 @@ final class AppSession: ObservableObject {
                 return report.joined(separator: " · ")
             }
 
+            // The bridge reads the binaries from its own directory, so the
+            // bundle copies have to be staged and BundleDir set first. This is
+            // the same call the signer path uses; without it kbsync reports the
+            // assets as missing even when they are in the bundle.
+            if !AssetStaging.isReady {
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    AssetStaging.stageIfNeeded(progress: nil) { error in
+                        if let error {
+                            report.append("staging failed: " + error.localizedDescription)
+                        }
+                        cont.resume()
+                    }
+                }
+            }
+            report.append("assets staged: " + String(AssetStaging.isReady))
+
             AppLog.info("kbsync gate: generating, this may take a while", .sap)
             let started = Date()
             let blob = try signer.kbsync(dsid: account.dsid)
