@@ -96,6 +96,8 @@ final class AppSession: ObservableObject {
         upsert(StoreAccount(result))
         activeID = result.dsid
         persist()
+        // Kept so a later session can refresh the token without asking again.
+        Keychain.save(password, for: result.email)
         status = ""
         AppLog.info("authenticated, DSID " + result.dsid, .auth)
     }
@@ -192,7 +194,41 @@ final class AppSession: ObservableObject {
                                    version: bag.signSapVersion, hardware: hardware)
         }
         guard let signer else { throw StoreError.noBagEndpoint }
-        return (account, bag, signer)
+
+        // Apple's store token expires. This app keeps one per account across
+        // launches, so by the time a download runs it is often stale and the
+        // store answers 2042 "sign in required". One extra authenticate is
+        // cheaper than making the user sign in again.
+        await refreshStoreToken()
+
+        guard let refreshed = activeAccount else { throw StoreError.noBagEndpoint }
+        return (refreshed, bag, signer)
+    }
+
+    /// Re-runs the sign-in with the stored password to get a live token.
+    private func refreshStoreToken() async {
+        guard let account = activeAccount else { return }
+        guard let password = Keychain.password(for: account.email) else {
+            AppLog.info("no stored credentials, using the token from sign-in", .auth)
+            return
+        }
+        guard let bag, let signer, let endpoint = bag.authenticateAccount else {
+            AppLog.warn("cannot refresh the store token: bag not ready", .auth)
+            return
+        }
+        do {
+            let fresh = try await client.authenticate(
+                email: account.email, password: password, authCode: nil,
+                guid: hardware.guid, endpoint: endpoint, signer: signer, attempt: 1)
+            upsert(StoreAccount(fresh))
+            activeID = fresh.dsid
+            persist()
+            AppLog.info("store token refreshed, " + String(fresh.passwordToken.count)
+                        + " chars", .auth)
+        } catch {
+            // A failed refresh is not fatal: the old token may still work.
+            AppLog.warn("store token refresh failed: " + error.localizedDescription, .auth)
+        }
     }
 
     /// The versions Apple still lists for an app, newest first.
