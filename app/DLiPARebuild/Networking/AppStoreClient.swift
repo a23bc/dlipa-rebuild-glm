@@ -435,6 +435,13 @@ final class AppStoreClient {
         return url
     }
 
+    /// Enough of an identifier to tell two accounts apart in a log, not enough
+    /// to be an identifier. Logs get shared.
+    static func masked(_ value: String) -> String {
+        guard value.count > 4 else { return value.isEmpty ? "none" : "****" }
+        return "****" + String(value.suffix(3))
+    }
+
     // MARK: - Machine authorisation
 
     /// Binds this device to the account.
@@ -451,10 +458,10 @@ final class AppStoreClient {
     func authorizeMachine(account: Account,
                           guid: String,
                           bag: StoreBag,
-                          signer: SAPSigner) async {
+                          signer: SAPSigner) async -> Bool {
         guard let endpoint = bag.authorizeMachine, let url = URL(string: endpoint) else {
             AppLog.warn("bag has no authorizeMachine endpoint", .auth)
-            return
+            return false
         }
         // The token is minted on the pod host (p<n>-buy...authenticate/?Pod=n)
         // while the bag names the generic host for this call. A token issued by
@@ -481,8 +488,9 @@ final class AppStoreClient {
         // and by the time clearToken was tried the session had been invalidated,
         // so ordering may be the whole story. Signed is dropped too -- it never
         // changed a response here.
-        let tokens: [(String, String)] = [("clearToken", account.clearToken),
-                                          ("passwordToken", account.passwordToken)]
+        // clearToken only. passwordToken answers 2002 every time and adding it
+        // just spends attempts on a credential the store has never accepted.
+        let tokens: [(String, String)] = [("clearToken", account.clearToken)]
 
         for (hostLabel, hostURL) in urls {
             for (tokenLabel, tokenValue) in tokens {
@@ -521,7 +529,7 @@ final class AppStoreClient {
                     if (200..<300).contains(status) && code == nil
                         && (parsed["failureType"] as? String ?? "").isEmpty {
                         AppLog.info(tag + " accepted; the machine is authorised", .auth)
-                        return
+                        return true
                     }
                     if !preview.isEmpty {
                         AppLog.info("  body: " + preview, .auth)
@@ -532,6 +540,8 @@ final class AppStoreClient {
             }
             }
         }
+        AppLog.error("authorizeMachine: no attempt was accepted", .auth)
+        return false
     }
 
     // MARK: - Licence
@@ -739,7 +749,7 @@ final class AppStoreClient {
         // bodies and the comparison says nothing.
         AppLog.info("download session: passwordToken " + String(account.passwordToken.count)
                     + " chars, clearToken " + String(account.clearToken.count)
-                    + " chars, dsid " + (account.dsid.isEmpty ? "none" : account.dsid)
+                    + " chars, dsid " + Self.masked(account.dsid)
                     + ", pod " + (account.pod.isEmpty ? "none" : account.pod), .download)
 
         // The classic endpoint authenticates a *session*, and a session is

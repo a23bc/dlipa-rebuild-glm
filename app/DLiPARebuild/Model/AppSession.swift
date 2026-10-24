@@ -213,21 +213,34 @@ final class AppSession: ObservableObject {
                     + (bag.authorizeMachine ?? "MISSING")
                     + ", already authorised: " + String(alreadyAuthorised), .auth)
 
+        // Sign in again immediately before authorising.
+        //
+        // clearToken is short lived: it was reported expired twice, once twelve
+        // minutes after sign-in and once eleven seconds after it. The eleven
+        // second case had four passwordToken attempts ahead of it, so ordering
+        // may have spoilt it -- and the sequence that has never been tried is a
+        // token signed seconds ago and presented as the very next request.
+        await signInBeforeAuthorising()
+
         didAuthorizeMachine = true
-        await client.authorizeMachine(account: account.asAccount(),
-                                      guid: hardware.guid,
-                                      bag: bag,
-                                      signer: signer)
+        let authorised = await client.authorizeMachine(
+            account: (activeAccount ?? account).asAccount(),
+            guid: hardware.guid,
+            bag: bag,
+            signer: signer)
+        if !authorised {
+            AppLog.error("machine authorisation failed; downloads will answer 2042", .auth)
+        }
 
         guard let refreshed = activeAccount else { throw StoreError.noBagEndpoint }
         return (refreshed, bag, signer)
     }
 
-    /// Re-runs the sign-in with the stored password to get a live token.
-    private func refreshStoreToken() async {
+    /// Re-runs the sign-in with the stored password, just before authorising.
+    private func signInBeforeAuthorising() async {
         guard let account = activeAccount else { return }
         guard let password = Keychain.password(for: account.email) else {
-            AppLog.info("no stored credentials, using the token from sign-in", .auth)
+            AppLog.info("no stored credentials for a pre-authorisation sign-in", .auth)
             return
         }
         guard let bag, let signer, let endpoint = bag.authenticateAccount else {
@@ -238,14 +251,21 @@ final class AppSession: ObservableObject {
             let fresh = try await client.authenticate(
                 email: account.email, password: password, authCode: nil,
                 guid: hardware.guid, endpoint: endpoint, signer: signer, attempt: 1)
+            // A 2FA challenge can come back looking like a session, so the
+            // clearToken has to actually be there before it replaces a real one.
+            guard !fresh.clearToken.isEmpty else {
+                AppLog.warn("pre-authorisation sign-in returned no clearToken; "
+                            + "keeping the stored one", .auth)
+                return
+            }
             upsert(StoreAccount(fresh))
             activeID = fresh.dsid
             persist()
-            AppLog.info("store token refreshed, " + String(fresh.passwordToken.count)
-                        + " chars", .auth)
+            AppLog.info("pre-authorisation sign-in ok, clearToken "
+                        + String(fresh.clearToken.count) + " chars", .auth)
         } catch {
-            // A failed refresh is not fatal: the old token may still work.
-            AppLog.warn("store token refresh failed: " + error.localizedDescription, .auth)
+            AppLog.warn("pre-authorisation sign-in failed: "
+                        + error.localizedDescription, .auth)
         }
     }
 
