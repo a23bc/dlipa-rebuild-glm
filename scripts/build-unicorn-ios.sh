@@ -112,15 +112,19 @@ fi
 # symbol table is the only place the difference shows. tci.c is compiled into
 # the archive when UNICORN_INTERPRETER is on.
 # A JIT archive and a TCI archive have the same filename and the same uc_*
-# symbols; only the presence of tcg_tci tells them apart. This used to be a
-# warning, which is how a JIT build reached the device: it links, and then dies
-# at uc_open with "Could not allocate dynamic translator buffer" -- an exit(1)
-# inside QEMU, so there is no crash log to read either.
-if ! nm -g "$ARCHIVE" 2>/dev/null | grep -qi "tcg_tci"; then
-  echo "::error::no tcg_tci in $ARCHIVE; this is a JIT build, not the interpreter" >&2
-  echo "::error::UNICORN_INTERPRETER did not take effect" >&2
+# symbols, so the archive alone cannot tell them apart. The authority is what
+# qemu/configure wrote: CONFIG_TCG_INTERPRETER=y in config-host.mak. It matters
+# because the two differ in one line of alloc_code_gen_buffer -- the JIT branch
+# asks for PROT_EXEC anonymous memory, which iOS refuses, and then QEMU calls
+# exit(1) with no crash log. A JIT build therefore links fine and dies at
+# uc_open on device, which is exactly what happened.
+if ! grep -q "^CONFIG_TCG_INTERPRETER=y" "$BUILD_DIR/build/config-host.mak" 2>/dev/null; then
+  echo "::error::CONFIG_TCG_INTERPRETER is not set in config-host.mak" >&2
+  echo "::error::UNICORN_INTERPRETER did not reach qemu/configure" >&2
+  grep -i interpreter "$BUILD_DIR/build/config-host.mak" >&2 || true
   exit 1
 fi
+echo "==> interpreter confirmed: CONFIG_TCG_INTERPRETER=y"
 if ! nm -g "$ARCHIVE" 2>/dev/null | grep -q "uc_open"; then
   echo "::error::uc_open not found in $ARCHIVE; the archive is not a Unicorn library" >&2
   exit 1
