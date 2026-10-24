@@ -26,11 +26,19 @@ permissions:
   contents: write
 
 env:
-  # Pinned so the extraction logic cannot drift under us. This is the commit
-  # whose assets.go names 26A434 and whose asset cache layout this workflow
-  # reads.
+  # Pinned so the extraction logic cannot drift under us.
+  #
+  # This must be a commit that carries internal/sap/assets/remote.go. The
+  # v2.7.0 tag does not: its assets.go has Load() but no macOSRestoreURL, and
+  # the whole remote extraction set (remote.go, aea.go, apfs.go, dyld.go,
+  # http_range.go) is main-only. Pinning the tag made the job fail in its first
+  # step with nothing but a detached-HEAD notice, because the grep that follows
+  # found no macOSRestoreURL and exited 1.
+  #
+  # The sha is the main commit the extraction was verified against; the grep
+  # below still guards against a stale pin.
   IPATOOL_REPO: https://github.com/majd/ipatool
-  IPATOOL_REF: v2.7.0
+  IPATOOL_REF: 5dc4c8058db3a23e9de081ac766cc917713a65cf
 
 jobs:
   fetch:
@@ -48,11 +56,30 @@ jobs:
 
       - name: Check out the pinned ipatool
         run: |
-          git clone --depth 1 --branch "$IPATOOL_REF" "$IPATOOL_REPO" /tmp/ipatool
+          # No --branch: IPATOOL_REF is a sha, and --branch only takes a ref
+          # name. Fetch the single commit instead.
+          git init -q /tmp/ipatool
+          cd /tmp/ipatool
+          git remote add origin "$IPATOOL_REPO"
+          git fetch -q --depth 1 origin "$IPATOOL_REF"
+          git checkout -q FETCH_HEAD
+          cd - >/dev/null
           # The exporter imports internal/sap/assets, which Go only allows from
           # inside the same module, so it is copied in rather than run from here.
           mkdir -p /tmp/ipatool/cmd/export-sap-assets
           cp scripts/export-sap-assets.go /tmp/ipatool/cmd/export-sap-assets/main.go
+          # Fail loudly and early if the pin drifted to a tree without the
+          # remote extractor. The old failure was silent: grep exited 1 and the
+          # log only showed a detached-HEAD notice.
+          if ! grep -q "macOSRestoreURL" /tmp/ipatool/internal/sap/assets/assets.go; then
+            echo "::error::pinned ipatool commit has no macOSRestoreURL in assets.go;"
+            echo "::error::it predates the remote extractor (remote.go). Update IPATOOL_REF."
+            exit 1
+          fi
+          if [ ! -f /tmp/ipatool/internal/sap/assets/remote.go ]; then
+            echo "::error::pinned ipatool commit has no internal/sap/assets/remote.go"
+            exit 1
+          fi
           grep -n "macOSRestoreURL" /tmp/ipatool/internal/sap/assets/assets.go
 
       - name: Fetch and extract the macOS 27 assets

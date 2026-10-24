@@ -264,6 +264,34 @@ jobs:
           mv bridge/commerce.x64i app/DLiPARebuild/Resources/commerce.x64i
           ls -la app/DLiPARebuild/Resources/commerce.x64i
 
+      - name: Download the macOS 27 SAP binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # VendorAssets/ is gitignored, so CI has to get the four binaries from
+          # the Fetch SAP assets workflow rather than from the checkout.
+          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow="Fetch SAP assets" \
+            --status success --limit 1 --json databaseId --jq ".[0].databaseId")
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::no successful Fetch SAP assets run; run that workflow first"
+            exit 1
+          fi
+          echo "==> taking assets from Fetch SAP assets run $RUN_ID"
+          gh run download "$RUN_ID" --repo "${{ github.repository }}" --name sap-assets-macos27 \
+            --dir "${{ github.workspace }}/vendor-download"
+          mkdir -p "${{ github.workspace }}/VendorAssets"
+          cp "${{ github.workspace }}/vendor-download/VendorAssets/"* "${{ github.workspace }}/VendorAssets/"
+          ls -la "${{ github.workspace }}/VendorAssets"
+
+      - name: Stage the macOS 27 binaries into the app bundle
+        run: |
+          # Route B needs these four next to the app. They are the macOS 27 set,
+          # not the 10.9 set the go-bridge job uses for the guest image, so
+          # their digests differ from anything already in the build.
+          sh scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" \
+            "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/SapAssets"
+          ls -la app/DLiPARebuild/Resources/SapAssets
+
       - name: Install build tools
         run: |
           # xcodegen turns project.yml into a real .xcodeproj, so there is no
