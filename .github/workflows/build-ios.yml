@@ -176,6 +176,12 @@ jobs:
           echo "==> does it contain purego?"
           nm -A "$FRAMEWORK" 2>/dev/null | grep -c purego || echo 0
 
+      - name: Dump the generated bridge header
+        run: |
+          # gomobile decides the Swift signatures. Guessing them from the Go
+          # source is what produced a build that failed on close() and on an
+          # optional binding, so the header is printed and read instead.
+          find app/DLiPARebuild/Frameworks -name "Sapbridge.objc.h" -print -exec cat {} \;
       - name: Verify the framework contains Unicorn
         run: |
           # A missing Unicorn backend only shows up as uc_open failing at
