@@ -10,13 +10,23 @@
 #      anonymous memory, so a TCG code_gen_buffer cannot be allocated at all.
 #      The TCI build makes the JIT target a virtual machine that is interpreted,
 #      so no executable page is ever requested.
-#   2. x86-64 guest. The SAP guest is a macOS x86-64 dylib, and sap_guest.c
-#      opens the machine with uc_open(UC_ARCH_X86, UC_MODE_64). The arch baked
-#      into this archive has to match, so UNICORN_ARCH=x86.
+#   2. The guest arch must match the engine that calls uc_open. Route A runs
+#      sap_guest.c, a macOS x86-64 dylib opened with uc_open(UC_ARCH_X86, ...),
+#      so its archive is UNICORN_ARCH=x86. Route B (Archive/PLAN-B-arm64.md,
+#      Archive/PLAN-arm64-download.md) runs the macOS 27 machine package, whose
+#      AppleMediaServices asset is arm64 only, so its archive is
+#      UNICORN_ARCH=aarch64.
 #
-# Do not "fix" UNICORN_ARCH to aarch64. That was the wrong assumption in an
-# earlier plan (Archive/PLAN-B-arm64.md): it targets a different SAP stack
-# entirely. For this route the guest is x86-64 and the archive must say so.
+# The two must change together with the caller. Changing UNICORN_ARCH alone
+# produces a library that links and then fails at uc_open, which is why an
+# earlier attempt concluded aarch64 was wrong: it changed the archive while the
+# C engine still asked for x86.
+#
+# Environment:
+#   UNICORN_ARCH   x86 (default) or aarch64
+#   OUT_DIR        where to stage the archive and headers (default build/ios)
+#   HOST_BUILD     1 builds for the macOS host instead of iOS, so CI can run
+#                  the interpreter instead of only linking it
 #
 # The fork ships the QEMU tree with tci.c already restored, so unlike the
 # upstream 2.1.4 build there is no patch to apply. Pinned by commit so the
@@ -25,7 +35,10 @@ set -eu
 
 TCI_REPO=1rhino2/unicorn-tci
 TCI_COMMIT=e3f075a627
+UNICORN_ARCH=${UNICORN_ARCH:-x86}
+HOST_BUILD=${HOST_BUILD:-0}
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+OUT_DIR=${OUT_DIR:-$ROOT/build/ios}
 BUILD_DIR=$(mktemp -d)
 trap 'rm -rf "$BUILD_DIR"' EXIT HUP INT TERM
 
@@ -54,19 +67,30 @@ if ! grep -q "UNICORN_INTERPRETER" "$SRC_DIR/CMakeLists.txt"; then
   exit 1
 fi
 
-SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-cmake -S "$SRC_DIR" -B "$BUILD_DIR/build" \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_SYSROOT="$SDKROOT" \
-  -DCMAKE_OSX_ARCHITECTURES=arm64 \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
-  -DCMAKE_C_FLAGS="-target arm64-apple-ios15.0" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=OFF \
-  -DUNICORN_ARCH=x86 \
-  -DUNICORN_INTERPRETER=on \
-  -DUNICORN_BUILD_TESTS=OFF \
-  -DUNICORN_INSTALL=OFF
+if [ "$HOST_BUILD" = "1" ]; then
+  echo "==> host build for the macOS runner (so CI can execute, not just link)"
+  cmake -S "$SRC_DIR" -B "$BUILD_DIR/build" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DUNICORN_ARCH="$UNICORN_ARCH" \
+    -DUNICORN_INTERPRETER=on \
+    -DUNICORN_BUILD_TESTS=OFF \
+    -DUNICORN_INSTALL=OFF
+else
+  SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+  cmake -S "$SRC_DIR" -B "$BUILD_DIR/build" \
+    -DCMAKE_SYSTEM_NAME=iOS \
+    -DCMAKE_OSX_SYSROOT="$SDKROOT" \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+    -DCMAKE_C_FLAGS="-target arm64-apple-ios15.0" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DUNICORN_ARCH="$UNICORN_ARCH" \
+    -DUNICORN_INTERPRETER=on \
+    -DUNICORN_BUILD_TESTS=OFF \
+    -DUNICORN_INSTALL=OFF
+fi
 cmake --build "$BUILD_DIR/build" --parallel "$(sysctl -n hw.ncpu)"
 
 # CMake links two archives: libunicorn-static.a holds only the common target,
@@ -95,8 +119,8 @@ if ! nm -g "$ARCHIVE" 2>/dev/null | grep -q "uc_open"; then
   exit 1
 fi
 
-mkdir -p "$ROOT/build/ios"
-cp "$ARCHIVE" "$ROOT/build/ios/libunicorn.a"
+mkdir -p "$OUT_DIR"
+cp "$ARCHIVE" "$OUT_DIR/libunicorn.a"
 echo "==> using $ARCHIVE"
 
 # sap_guest.c compiles against the Unicorn headers, so the public include tree
@@ -110,22 +134,22 @@ if [ ! -f "$INCLUDE_SRC/unicorn/unicorn.h" ]; then
 fi
 # rm first: a stale tree from an older Unicorn would otherwise be merged into
 # the new one, and header drift is silent until the app fails to compile.
-rm -rf "$ROOT/build/ios/include"
-cp -R "$INCLUDE_SRC" "$ROOT/build/ios/include"
-if [ ! -f "$ROOT/build/ios/include/unicorn/unicorn.h" ]; then
-  echo "::error::include staging did not produce build/ios/include/unicorn/unicorn.h" >&2
+rm -rf "$OUT_DIR/include"
+cp -R "$INCLUDE_SRC" "$OUT_DIR/include"
+if [ ! -f "$OUT_DIR/include/unicorn/unicorn.h" ]; then
+  echo "::error::include staging did not produce $OUT_DIR/include/unicorn/unicorn.h" >&2
   exit 1
 fi
-echo "==> staged $ROOT/build/ios/include from $INCLUDE_SRC"
+echo "==> staged $OUT_DIR/include from $INCLUDE_SRC"
 
 # purego resolves the statically linked API through dlsym, so the symbols must
 # be exported. The Go build adds these flags via CGO_LDFLAGS.
-cat > "$ROOT/build/ios/unicorn.env" <<EOF
+cat > "$OUT_DIR/unicorn.env" <<EOF
 CGO_ENABLED=1
 GOOS=ios
 GOARCH=arm64
-CGO_LDFLAGS=-Wl,-force_load,$ROOT/build/ios/libunicorn.a -Wl,-export_dynamic
+CGO_LDFLAGS=-Wl,-force_load,$OUT_DIR/libunicorn.a -Wl,-export_dynamic
 EOF
 
-echo "==> staged build/ios/libunicorn.a (TCI, guest x86) and build/ios/include"
-ls -la "$ROOT/build/ios"
+echo "==> staged $OUT_DIR/libunicorn.a (TCI, guest $UNICORN_ARCH)"
+ls -la "$OUT_DIR"

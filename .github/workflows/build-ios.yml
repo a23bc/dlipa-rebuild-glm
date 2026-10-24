@@ -106,6 +106,20 @@ jobs:
       - name: Build Unicorn for iOS arm64 (TCI, guest x86)
         run: |
           sh scripts/build-unicorn-ios.sh
+
+      - name: B0 smoke - does the TCI interpreter execute aarch64
+        run: |
+          # Builds the same fork for the runner itself so the interpreter can
+          # be executed rather than only linked. The runner is arm64 macOS, so
+          # this answers the question that matters for the device: does the
+          # TCI fork handle aarch64 instructions at all.
+          UNICORN_ARCH=aarch64 HOST_BUILD=1 OUT_DIR="${{ github.workspace }}/build/tci-aarch64" \
+            sh scripts/build-unicorn-ios.sh
+          cc -O1 -I "${{ github.workspace }}/build/tci-aarch64/include" scripts/tci-smoke.c \
+            "${{ github.workspace }}/build/tci-aarch64/libunicorn.a" -lm -lpthread -lc++ \
+            -o /tmp/tci-smoke
+          /tmp/tci-smoke
+
           echo "==> staged headers"
           ls build/ios/include/unicorn/
           echo "==> interpreter marker"
