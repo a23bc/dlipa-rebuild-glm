@@ -206,9 +206,12 @@ final class AppSession: ObservableObject {
         // Printed before the call so the log says whether this build has the
         // code at all and whether the bag carries the endpoint -- an absent line
         // is otherwise indistinguishable from a build that predates it.
+        // A local because AppLog's message is an escaping autoclosure, and a
+        // bare property reference inside one needs explicit self.
+        let alreadyAuthorised = didAuthorizeMachine
         AppLog.info("ensureSession: authorizeMachine endpoint "
                     + (bag.authorizeMachine ?? "MISSING")
-                    + ", already authorised: " + String(didAuthorizeMachine), .auth)
+                    + ", already authorised: " + String(alreadyAuthorised), .auth)
 
         didAuthorizeMachine = true
         await client.authorizeMachine(account: account.asAccount(),
