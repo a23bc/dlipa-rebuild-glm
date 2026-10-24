@@ -435,6 +435,44 @@ final class AppStoreClient {
         return url
     }
 
+    /// Cookies the store hands out, collected by hand and replayed explicitly.
+    ///
+    /// URLSession is configured to keep cookies, yet the store still ends up
+    /// with none after a sign-in, so nothing downstream can prove a session.
+    /// Reading them straight off the response headers and sending them back
+    /// removes the storage question from the picture, and the log names them so
+    /// an empty set is visible rather than inferred.
+    private var capturedCookieHeader = ""
+
+    private func captureCookies(from http: HTTPURLResponse) {
+        var raw: [String] = []
+        for (key, value) in http.allHeaderFields {
+            if String(describing: key).lowercased() == "set-cookie" {
+                raw.append(String(describing: value))
+            }
+        }
+        guard !raw.isEmpty else { return }
+
+        var pairs = capturedCookieHeader.isEmpty
+            ? [String]()
+            : capturedCookieHeader.components(separatedBy: "; ")
+        for header in raw {
+            for piece in header.components(separatedBy: ",") {
+                let first = piece.components(separatedBy: ";").first ?? ""
+                let trimmed = first.trimmingCharacters(in: .whitespaces)
+                guard let eq = trimmed.firstIndex(of: "=") else { continue }
+                let name = String(trimmed[trimmed.startIndex..<eq])
+                guard !name.isEmpty else { continue }
+                pairs.removeAll { $0.hasPrefix(name + "=") }
+                pairs.append(trimmed)
+            }
+        }
+        capturedCookieHeader = pairs.joined(separator: "; ")
+        let names = pairs.map { $0.components(separatedBy: "=").first ?? "?" }
+        AppLog.info("Set-Cookie from " + (http.url?.host ?? "?") + ": "
+                    + names.joined(separator: ", "), .network)
+    }
+
     /// Enough of an identifier to tell two accounts apart in a log, not enough
     /// to be an identifier. Logs get shared.
     static func masked(_ value: String) -> String {
@@ -747,6 +785,9 @@ final class AppStoreClient {
         request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
         request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+        if !capturedCookieHeader.isEmpty {
+            request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
+        }
 
         var payload: [String: Any] = [
             "creditDisplay": "",
@@ -949,6 +990,7 @@ final class AppStoreClient {
             AppLog.info("signed request to " + (signed.url?.absoluteString ?? "?")
                         + " returned " + String(http.statusCode)
                         + ", body " + String(body.count) + " bytes", .network)
+            captureCookies(from: http)
             if http.statusCode == 403 {
                 let hadSignature = signed.value(forHTTPHeaderField: "X-Apple-ActionSignature")
                 AppLog.error("403 from " + (signed.url?.host ?? "?")
