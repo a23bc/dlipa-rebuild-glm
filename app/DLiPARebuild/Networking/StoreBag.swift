@@ -12,6 +12,9 @@ struct StoreBag {
     var volumeStoreDownloadProduct: String?
     var redownloadProduct: String?
     var updateProduct: String?
+    /// The endpoint that binds this device to the account. authenticate only
+    /// proves the password; the store session is what this one establishes.
+    var authorizeMachine: String?
     /// The store endpoint that grants a licence. The bag carries it, and using
     /// it beats assembling a host from the pod id: the assembled one answered
     /// 400 with an empty body.
@@ -113,6 +116,7 @@ struct StoreBag {
         result.redownloadProduct = lookup(bag, bagDict, "redownloadProduct")
         result.updateProduct = lookup(bag, bagDict, "updateProduct")
         result.buyProduct = lookup(bag, bagDict, "buyProduct")
+        result.authorizeMachine = lookup(bag, bagDict, "authorizeMachine")
         result.signSapVersion = Int32(lookup(bag, bagDict, "sign-sap-version") ?? "") ?? 0
         return result
     }

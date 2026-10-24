@@ -174,6 +174,9 @@ final class AppSession: ObservableObject {
         Storefront.countryCode(activeAccount?.storefront) ?? "US"
     }
 
+    /// One machine authorisation per launch; see ensureSession.
+    private var didAuthorizeMachine = false
+
     /// Makes sure the bag and the SAP session exist, then hands back what the
     /// download path needs. Throws when nobody is signed in.
     private func ensureSession() async throws -> (StoreAccount, StoreBag, SAPSigner) {
@@ -195,13 +198,18 @@ final class AppSession: ObservableObject {
         }
         guard let signer else { throw StoreError.noBagEndpoint }
 
-        // No automatic token refresh here.
-        //
-        // It was tried, and the refresh posted the same unverified authenticate
-        // that Apple answers with a 2FA challenge, took the 461 byte challenge as
-        // a session, and overwrote the real token with the challenge's. A fresh
-        // token made no difference anyway -- the download was refused with 2042
-        // in the same second. The session is the problem, not the token's age.
+        // authenticate proves the password and hands back a token, but it leaves
+        // the store with no session: the cookie store comes back empty and every
+        // download answers 2042 "Sign In to the iTunes Store". Binding the device
+        // to the account is the step that is missing, so it runs once per launch
+        // before the first download.
+        if !didAuthorizeMachine {
+            didAuthorizeMachine = true
+            await client.authorizeMachine(account: account.asAccount(),
+                                          guid: hardware.guid,
+                                          bag: bag,
+                                          signer: signer)
+        }
 
         guard let refreshed = activeAccount else { throw StoreError.noBagEndpoint }
         return (refreshed, bag, signer)

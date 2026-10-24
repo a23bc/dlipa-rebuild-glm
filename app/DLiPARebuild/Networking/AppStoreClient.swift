@@ -413,6 +413,77 @@ final class AppStoreClient {
         return url
     }
 
+    // MARK: - Machine authorisation
+
+    /// Binds this device to the account.
+    ///
+    /// authenticate proves the password and returns a token, but it leaves the
+    /// store with no session: HTTPCookieStorage ends up with zero itunes.apple.com
+    /// cookies, and every download answers 2042 "Sign In to the iTunes Store".
+    /// The real client's next step is this call.
+    ///
+    /// There is no reference implementation to copy -- ipatool gets this from
+    /// the emulated Store framework, and probeapp the same way -- so the body
+    /// shapes are tried in one pass and each result is logged, rather than one
+    /// build per guess.
+    func authorizeMachine(account: Account,
+                          guid: String,
+                          bag: StoreBag,
+                          signer: SAPSigner) async {
+        guard let endpoint = bag.authorizeMachine, let url = URL(string: endpoint) else {
+            AppLog.warn("bag has no authorizeMachine endpoint", .auth)
+            return
+        }
+        AppLog.info("authorizeMachine: " + url.absoluteString, .auth)
+
+        let name = "DLiPA Rebuild"
+        let variants: [(String, [String: Any])] = [
+            ("guid+serial+name", ["guid": guid, "serialNumber": guid, "machineName": name]),
+            ("guid+serial", ["guid": guid, "serialNumber": guid]),
+            ("guid", ["guid": guid]),
+            ("guid+dsid+serial+name", ["guid": guid, "dsid": account.dsid,
+                                       "serialNumber": guid, "machineName": name]),
+        ]
+
+        for (label, payload) in variants {
+            for signed in [false, true] {
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("application/x-apple-plist",
+                                 forHTTPHeaderField: "Content-Type")
+                request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+                request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+                request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+                request.httpBody = try? PropertyListSerialization.data(
+                    fromPropertyList: payload, format: .xml, options: 0)
+
+                let tag = "authorizeMachine [" + label + (signed ? "+signed]" : "]")
+                do {
+                    let data: Data
+                    let status: Int
+                    if signed {
+                        let (d, http) = try await signedRequest(
+                            request, signer: signer, redirects: 3)
+                        data = d
+                        status = http.statusCode
+                    } else {
+                        let (d, r) = try await session.data(for: request)
+                        data = d
+                        status = (r as? HTTPURLResponse)?.statusCode ?? -1
+                    }
+                    let preview = String(data: data.prefix(400), encoding: .utf8) ?? "<binary>"
+                    AppLog.info(tag + " HTTP " + String(status) + ", "
+                                + String(data.count) + " bytes", .auth)
+                    if !preview.isEmpty {
+                        AppLog.info("  body: " + preview, .auth)
+                    }
+                } catch {
+                    AppLog.warn(tag + " failed: " + error.localizedDescription, .auth)
+                }
+            }
+        }
+    }
+
     // MARK: - Licence
 
     /// Attaches a free licence for an app to the account.
