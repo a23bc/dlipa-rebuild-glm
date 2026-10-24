@@ -28,14 +28,19 @@ const (
 	returnAddress = uint64(0x0000000100000000)
 	coreFPBase    = uint64(0x0000100000000000)
 	scratchBase   = uint64(0x0000300000000000)
-	scratchSize   = uint64(4 << 20)  // 4 MB (was 8 MB; tighter for iOS jetsam)
+	// Upstream sizes. They had been cut to a quarter for iOS jetsam, and that
+	// cut was never validated against the macOS 27 assets: the 10.9 CoreFP has
+	// 1,004 rebase fixups, the 27 one has 81,083. Starting from the tightest
+	// values turns every unrelated bug into an out-of-memory report, so they
+	// start where upstream starts and only shrink if a real device says so.
+	scratchSize   = uint64(32 << 20)
 	heapBase      = uint64(0x0000400000000000)
-	heapSize      = uint64(8 << 20)  // 8 MB (was 16 MB; tighter for iOS jetsam)
+	heapSize      = uint64(64 << 20)
 	stackBase     = uint64(0x0000500000000000)
-	stackSize     = uint64(1 << 20)  // 1 MB (was 2 MB; tighter for iOS jetsam)
+	stackSize     = uint64(8 << 20)
 	stackEnd      = stackBase + stackSize
 	pageSize      = uint64(0x1000)
-	maxOutputSize = uint64(2 << 20)  // 2 MB (was 4 MB; tighter for iOS jetsam)
+	maxOutputSize = uint64(16 << 20)
 )
 
 var coreExportNames = []string{

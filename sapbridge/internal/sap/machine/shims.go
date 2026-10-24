@@ -184,11 +184,11 @@ func (s *shims) dispatch(address uint64, _ uint32) {
 		return
 	}
 
-	// Count every entry before running the handler: a handler that faults
-	// still tells us the guest wanted this symbol, which is the whole point
-	// of the measurement.
-	recordExternalCall(entry.name)
-
+	// Counting every entry used to happen here. It was measurement code: a
+	// mutex and a map write on the hottest path in an interpreted guest, kept
+	// in the build long after the question it answered had been answered.
+	// externalCalls is still maintained by ExternalCalls/ResetExternalCalls for
+	// the callreport test, which drives the machine directly.
 	if err := entry.handler(); err != nil {
 		s.fail(fmt.Errorf("%s: %w", entry.name, err))
 	}

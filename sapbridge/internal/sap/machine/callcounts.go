@@ -17,8 +17,13 @@ var (
 	externalCalls   = map[string]uint64{}
 )
 
-// recordExternalCall is called from the service dispatcher every time the
-// guest enters an external symbol.
+// recordExternalCall used to be called from the service dispatcher on every
+// external symbol the guest entered. That is the hottest path in an interpreted
+// guest, and the mutex plus map write cost was paid on every call long after the
+// question it answered had been settled.
+//
+// It is kept, and still wired into the callreport test, but nothing on the
+// production path calls it any more.
 func recordExternalCall(name string) {
 	externalCallsMu.Lock()
 	defer externalCallsMu.Unlock()

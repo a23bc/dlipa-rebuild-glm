@@ -10,6 +10,16 @@ import (
 
 const hookCode = 1 << 2
 
+// MemoryFaultHook is deliberately absent.
+//
+// The audit flagged its removal as a risk, on the theory that the arm64 path
+// might depend on fault-then-map. It does not: upstream defines
+// AddMemoryFaultHook, but the only caller is internal/store/profilegen, a
+// host-side bootstrap VM that demand maps cache pages. internal/sap/machine --
+// the arm64 path this app runs -- registers only a code hook and maps every
+// region up front in machine.Open. Restoring it would add dead code that looks
+// load-bearing, which is worse than its absence.
+
 type CodeHook func(address uint64, size uint32)
 
 type hookState struct {
