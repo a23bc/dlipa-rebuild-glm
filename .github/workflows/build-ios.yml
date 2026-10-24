@@ -221,10 +221,15 @@ jobs:
           fi
           cp -R build/ios/include stage/ios/include
           cp app/DLiPARebuild/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/SapBridge stage/SapBridge.a
+          # The generated header ships too, so the app job can check the
+          # hand-written bridging header against it. That header is the only way
+          # Swift learns this API, and a declaration missing from it costs a whole
+          # build-and-install cycle to discover.
+          cp app/DLiPARebuild/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/Headers/Sapbridge.objc.h stage/Sapbridge.objc.h
           cp "$GITHUB_WORKSPACE/commerce.x64i" stage/commerce.x64i
           # commerce.x64i has to be in the archive list, not just copied into
           # the staging directory.
-          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a commerce.x64i
+          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a Sapbridge.objc.h commerce.x64i
           echo "artifact=sapbridge-ios.tar.gz" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
@@ -261,6 +266,15 @@ jobs:
           # project.yml; sap_guest.c does not compile without it.
           mv bridge/ios/include app/build/ios/include
           mv bridge/SapBridge.a app/build/ios/
+
+          # The bridging header is maintained by hand; gomobile's output is the
+          # authority. Compare the two and fail here rather than at compile time
+          # several minutes later with "has no member", which says nothing about
+          # why.
+          python3 scripts/check-bridging-header.py \
+            "$GITHUB_WORKSPACE/bridge/Sapbridge.objc.h" \
+            app/DLiPARebuild/DLiPA-Bridging-Header.h
+
           if [ ! -f app/build/ios/include/unicorn/unicorn.h ]; then
             echo "::error::app/build/ios/include/unicorn/unicorn.h missing after unpacking the bridge"
             exit 1

@@ -11,12 +11,16 @@
 #import <Foundation/Foundation.h>
 #include <sys/types.h>
 
-// The SAP guest: the probeapp chain turned into a library. This replaces the
-// Go bridge for signing, the handshake and the serial number. The only thing
-// still on the Go side is KBSync, which is a separate FairPlay path.
-// Implementations live in Sap/sap_guest.c and Sap/sap_objc.c, which XcodeGen
-// compiles as part of the target's sources.
-#include "Sap/sap_guest.h"
+// Everything SAP now goes through the Go bridge: handshake, signing, kbsync and
+// the serial number. Sap/sap_guest.c is no longer compiled, so nothing here
+// includes its header.
+//
+// The declarations below mirror Sapbridge.objc.h, which gomobile generates.
+// They are copied by hand because the app links the c-archive rather than
+// embedding the framework, so there is no header to import. A declaration
+// missing here is invisible to Swift no matter what the archive exports, which is
+// how generateKBSync first failed to build: the Go side and the archive were
+// both correct. The workflow now checks the two lists against each other.
 
 // ptrace is not in the public iOS SDK headers but exists in libSystem.
 // PT_TRACE_ME = 0; used to set CS_DEBUGGED for JIT support.
@@ -27,6 +31,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface SapbridgeSigner : NSObject
 - (nullable NSData *)sign:(NSData *)body error:(NSError **)error;
 - (NSString *)signatureHeaderValue:(NSData *)body error:(NSError **)error;
+- (nullable NSData *)generateKBSync:(NSString *)dsid error:(NSError **)error;
 - (nullable NSData *)hardware;
 - (BOOL)close:(NSError **)error;
 @end
