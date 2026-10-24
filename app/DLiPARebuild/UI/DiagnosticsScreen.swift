@@ -30,6 +30,8 @@ struct DiagnosticsScreen: View {
                             .disabled(running)
                         Button("Run framework probe") { runFrameworkProbe() }
                             .disabled(running)
+                        Button("Generate kbsync (Gate 0)") { runKBSync() }
+                            .disabled(running)
                     }
 
                     Section {
@@ -88,6 +90,16 @@ struct DiagnosticsScreen: View {
         DispatchQueue.main.async {
             FrameworkProbe.run()
             AppLog.info("framework probe finished", .app)
+            running = false
+        }
+    }
+
+    /// Gate 0: can this device produce a kbsync blob at all. The answer decides
+    /// whether the download plan continues.
+    private func runKBSync() {
+        running = true
+        Task {
+            _ = await AppSession.shared.diagnosticKBSync()
             running = false
         }
     }

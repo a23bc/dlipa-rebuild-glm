@@ -236,6 +236,64 @@ final class AppSession: ObservableObject {
         return (refreshed, bag, signer)
     }
 
+    /// Gate 0 of the kbsync plan.
+    ///
+    /// Nothing depends on this yet. It exists to answer one question: can this
+    /// device, running the x86-64 guest under TCI, produce a kbsync blob at all?
+    /// If it cannot, the whole download plan stops here and that is a cheap
+    /// answer. It reports the asset files it found, the byte count, the time it
+    /// took and the first eight bytes, which for a real blob start 00 04.
+    func diagnosticKBSync() async -> String {
+        var report: [String] = []
+
+        let assets = Bundle.main.bundleURL.appendingPathComponent("SapAssets")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: assets.path)) ?? []
+        report.append("assets in bundle: "
+                      + (names.isEmpty ? "MISSING" : names.sorted().joined(separator: ", ")))
+
+        do {
+            if bag == nil { bag = try await client.fetchBag(guid: hardware.guid) }
+            guard let bag else {
+                report.append("no bag")
+                return report.joined(separator: "
+")
+            }
+            if signer == nil {
+                guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
+                    report.append("bag carries no SAP configuration")
+                    return report.joined(separator: "
+")
+                }
+                signer = try SAPSigner(setupURL: setup, certURL: cert,
+                                       version: bag.signSapVersion, hardware: hardware)
+            }
+            guard let signer else {
+                report.append("no signer")
+                return report.joined(separator: "
+")
+            }
+            guard let account = activeAccount else {
+                report.append("not signed in")
+                return report.joined(separator: "
+")
+            }
+
+            AppLog.info("kbsync gate: generating, this may take a while", .sap)
+            let started = Date()
+            let blob = try signer.kbsync(dsid: account.dsid)
+            let seconds = Date().timeIntervalSince(started)
+            let head = blob.prefix(8).map { String(format: "%02x", $0) }.joined()
+            report.append("kbsync OK: " + String(blob.count) + " bytes in "
+                          + String(format: "%.1f", seconds) + "s, head " + head)
+        } catch {
+            report.append("kbsync FAILED: " + error.localizedDescription)
+        }
+
+        for line in report { AppLog.info("kbsync gate: " + line, .sap) }
+        return report.joined(separator: "
+")
+    }
+
     /// Re-runs the sign-in with the stored password, just before authorising.
     private func signInBeforeAuthorising() async {
         guard let account = activeAccount else { return }
