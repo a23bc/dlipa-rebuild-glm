@@ -195,11 +195,13 @@ final class AppSession: ObservableObject {
         }
         guard let signer else { throw StoreError.noBagEndpoint }
 
-        // Apple's store token expires. This app keeps one per account across
-        // launches, so by the time a download runs it is often stale and the
-        // store answers 2042 "sign in required". One extra authenticate is
-        // cheaper than making the user sign in again.
-        await refreshStoreToken()
+        // No automatic token refresh here.
+        //
+        // It was tried, and the refresh posted the same unverified authenticate
+        // that Apple answers with a 2FA challenge, took the 461 byte challenge as
+        // a session, and overwrote the real token with the challenge's. A fresh
+        // token made no difference anyway -- the download was refused with 2042
+        // in the same second. The session is the problem, not the token's age.
 
         guard let refreshed = activeAccount else { throw StoreError.noBagEndpoint }
         return (refreshed, bag, signer)

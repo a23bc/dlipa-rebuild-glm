@@ -252,6 +252,17 @@ final class AppStoreClient {
                                          "apple returned no usable authentication response")
         }
 
+        // What the store session is actually made of. If Apple sets no cookie
+        // here, nothing downstream can be authenticated with a token alone, and
+        // the classic download endpoint's "sign in required" makes sense.
+        if let storage = session.configuration.httpCookieStorage {
+            let names = (storage.cookies ?? [])
+                .filter { $0.domain.contains("itunes.apple.com") }
+                .map { $0.name }
+            AppLog.info("after authenticate, store cookies: "
+                        + (names.isEmpty ? "none" : names.joined(separator: ", ")), .auth)
+        }
+
         // The sign-in is finished; the pod address belongs to it alone.
         authenticationPod = nil
 
