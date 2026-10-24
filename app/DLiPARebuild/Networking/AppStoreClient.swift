@@ -411,16 +411,22 @@ final class AppStoreClient {
     /// works before this. It is a `buyProduct` at price 0 -- what ipatool-rs
     /// does before every download attempt.
     ///
-    /// Not signed: ipatool-rs posts this one plain, with the token and DSID in
-    /// headers instead.
-    func acquireLicense(appId: String, guid: String, account: Account) async throws {
+    /// Signed, and addressed to the endpoint the bag names. An unsigned version
+    /// aimed at a host assembled from the pod id came back 400 with an empty
+    /// body, which is what a URL the store does not serve looks like.
+    func acquireLicense(appId: String,
+                        guid: String,
+                        account: Account,
+                        bag: StoreBag,
+                        signer: SAPSigner) async throws {
         let host = account.pod.isEmpty
             ? "buy.itunes.apple.com"
             : "p" + account.pod + "-buy.itunes.apple.com"
-        guard let url = URL(string: "https://" + host
-                             + "/WebObjects/MZFinance.woa/wa/buyProduct") else {
+        let fallback = "https://" + host + "/WebObjects/MZFinance.woa/wa/buyProduct"
+        guard let url = URL(string: bag.buyProduct ?? fallback) else {
             throw StoreError.noBagEndpoint
         }
+        AppLog.info("buyProduct endpoint: " + url.absoluteString, .download)
 
         // STDQ is the normal pricing parameter; GAME is the fallback Apple uses
         // for app purchases when STDQ is temporarily unavailable.
@@ -452,10 +458,12 @@ final class AppStoreClient {
             request.httpBody = try PropertyListSerialization.data(
                 fromPropertyList: payload, format: .xml, options: 0)
 
-            let (data, response) = try await session.data(for: request)
-            let http = response as? HTTPURLResponse
-            AppLog.info("buyProduct " + pricing + " returned "
-                        + String(http?.statusCode ?? -1), .download)
+            // Signed like every other store request.
+            let (data, http) = try await signedRequest(
+                request, signer: signer, redirects: 3)
+            AppLog.info("buyProduct " + pricing + " returned HTTP "
+                        + String(http.statusCode) + ", " + String(data.count) + " bytes",
+                        .download)
 
             let plist = (try? PropertyListSerialization.propertyList(
                 from: data, options: [], format: nil)) as? [String: Any] ?? [:]
@@ -509,7 +517,8 @@ final class AppStoreClient {
                 throw error
             }
             AppLog.info("download asked for a licence; acquiring one", .download)
-            try await acquireLicense(appId: appId, guid: guid, account: account)
+            try await acquireLicense(appId: appId, guid: guid, account: account,
+                                     bag: bag, signer: signer)
             return try await downloadProductOnce(
                 appId: appId, externalVersionId: externalVersionId,
                 guid: guid, account: account, bag: bag, signer: signer)

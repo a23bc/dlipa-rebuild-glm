@@ -12,6 +12,10 @@ struct StoreBag {
     var volumeStoreDownloadProduct: String?
     var redownloadProduct: String?
     var updateProduct: String?
+    /// The store endpoint that grants a licence. The bag carries it, and using
+    /// it beats assembling a host from the pod id: the assembled one answered
+    /// 400 with an empty body.
+    var buyProduct: String?
 
     var hasSAPConfiguration: Bool {
         guard let setup = signSapSetup, let cert = signSapSetupCert else { return false }
@@ -108,6 +112,7 @@ struct StoreBag {
         result.volumeStoreDownloadProduct = lookup(bag, bagDict, "volumeStoreDownloadProduct")
         result.redownloadProduct = lookup(bag, bagDict, "redownloadProduct")
         result.updateProduct = lookup(bag, bagDict, "updateProduct")
+        result.buyProduct = lookup(bag, bagDict, "buyProduct")
         result.signSapVersion = Int32(lookup(bag, bagDict, "sign-sap-version") ?? "") ?? 0
         return result
     }
