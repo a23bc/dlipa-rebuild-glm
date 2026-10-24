@@ -576,6 +576,14 @@ final class AppStoreClient {
         request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
         request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
         request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+        // ipatool sends only the two DSID headers here because its download
+        // client carries a cookie jar; this one has no store session cookies, so
+        // the token has to be stated. Without it the classic endpoint answers
+        // "sign in required" rather than a licence error.
+        if !account.storefront.isEmpty {
+            request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+        }
+        request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
 
         // Four fields, exactly as ipatool-rs builds this request
         // (download_request_body in src/api/download.rs):
@@ -612,6 +620,10 @@ final class AppStoreClient {
 
         if let failure = plist["failureType"] as? String, !failure.isEmpty {
             let message = plist["customerMessage"] as? String ?? ""
+            AppLog.error("download failed: failureType " + failure + " " + message, .download)
+            AppLog.error("download body: "
+                         + (String(data: data.prefix(1200), encoding: .utf8) ?? "<binary>"),
+                         .download)
             throw StoreError.failureType(failure, message)
         }
 
