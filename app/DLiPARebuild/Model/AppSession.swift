@@ -255,27 +255,23 @@ final class AppSession: ObservableObject {
             if bag == nil { bag = try await client.fetchBag(guid: hardware.guid) }
             guard let bag else {
                 report.append("no bag")
-                return report.joined(separator: "
-")
+                return report.joined(separator: " · ")
             }
             if signer == nil {
                 guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
                     report.append("bag carries no SAP configuration")
-                    return report.joined(separator: "
-")
+                    return report.joined(separator: " · ")
                 }
                 signer = try SAPSigner(setupURL: setup, certURL: cert,
                                        version: bag.signSapVersion, hardware: hardware)
             }
             guard let signer else {
                 report.append("no signer")
-                return report.joined(separator: "
-")
+                return report.joined(separator: " · ")
             }
             guard let account = activeAccount else {
                 report.append("not signed in")
-                return report.joined(separator: "
-")
+                return report.joined(separator: " · ")
             }
 
             AppLog.info("kbsync gate: generating, this may take a while", .sap)
@@ -290,8 +286,7 @@ final class AppSession: ObservableObject {
         }
 
         for line in report { AppLog.info("kbsync gate: " + line, .sap) }
-        return report.joined(separator: "
-")
+        return report.joined(separator: " · ")
     }
 
     /// Re-runs the sign-in with the stored password, just before authorising.
