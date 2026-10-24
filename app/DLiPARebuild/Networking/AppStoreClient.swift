@@ -691,7 +691,83 @@ final class AppStoreClient {
         }
     }
 
+    /// ent/download first, classic second -- the order ipatool uses.
+    ///
+    /// The two endpoints fail differently and that difference is the point:
+    /// ent/download answers 9610, a business-level "licence required", while
+    /// the classic endpoint answers 2042, "sign in". A 9610 therefore proves
+    /// the request was authenticated and only the licence is missing, so it must
+    /// not be swallowed by a fallback.
     private func downloadProductOnce(appId: String,
+                                     externalVersionId: String?,
+                                     guid: String,
+                                     account: Account,
+                                     bag: StoreBag,
+                                     signer: SAPSigner) async throws -> [String: Any] {
+        if let ent = bag.volumeStoreDownloadProduct {
+            do {
+                return try await entDownload(appId: appId,
+                                             externalVersionId: externalVersionId,
+                                             guid: guid, account: account,
+                                             endpoint: ent, signer: signer)
+            } catch let error as StoreError {
+                // A licence error is an answer, not a transport problem.
+                if case .failureType(let type, _) = error, type == "9610" {
+                    throw error
+                }
+                AppLog.warn("ent/download did not serve this app ("
+                            + error.localizedDescription
+                            + "); trying the classic endpoint", .download)
+            }
+        }
+        return try await classicDownload(appId: appId,
+                                         externalVersionId: externalVersionId,
+                                         guid: guid, account: account,
+                                         bag: bag, signer: signer)
+    }
+
+    /// The signed ent/download call.
+    private func entDownload(appId: String,
+                             externalVersionId: String?,
+                             guid: String,
+                             account: Account,
+                             endpoint: String,
+                             signer: SAPSigner) async throws -> [String: Any] {
+        var components = URLComponents(string: endpoint)!
+        components.queryItems = [URLQueryItem(name: "guid", value: guid)]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+        request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+        request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+        request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+
+        var payload: [String: Any] = [
+            "creditDisplay": "",
+            "guid": guid,
+            "salableAdamId": Int64(appId) ?? 0,
+            "serialNumber": "0",
+        ]
+        if let externalVersionId { payload["externalVersionId"] = externalVersionId }
+        request.httpBody = try PropertyListSerialization.data(
+            fromPropertyList: payload, format: .xml, options: 0)
+
+        let (data, http) = try await signedRequest(request, signer: signer, redirects: 4)
+        let plist = (try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+        let failure = plist["failureType"] as? String ?? ""
+        AppLog.info("ent/download HTTP " + String(http.statusCode) + ", "
+                    + String(data.count) + " bytes"
+                    + (failure.isEmpty ? "" : ", failureType " + failure), .download)
+        if !failure.isEmpty {
+            throw StoreError.failureType(failure, plist["customerMessage"] as? String ?? "")
+        }
+        return plist
+    }
+
+    private func classicDownload(appId: String,
                                      externalVersionId: String?,
                                      guid: String,
                                      account: Account,
