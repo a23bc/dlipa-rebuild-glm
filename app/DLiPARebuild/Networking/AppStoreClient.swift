@@ -571,63 +571,94 @@ final class AppStoreClient {
         var components = URLComponents(string: endpoint)!
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
 
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
-        request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
-        request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
-        // ipatool sends only the two DSID headers here because its download
-        // client carries a cookie jar; this one has no store session cookies, so
-        // the token has to be stated. Without it the classic endpoint answers
-        // "sign in required" rather than a licence error.
-        if !account.storefront.isEmpty {
-            request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-        }
-        request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
-
-        // Four fields, exactly as ipatool-rs builds this request
-        // (download_request_body in src/api/download.rs):
-        //
-        //   salableAdamId   integer, not a string
-        //   guid            the device identity
-        //   creditDisplay   empty
-        //   serialNumber    the literal "0"
-        //
-        // There is no kbsync. The Go ipatool sends one, but the Rust fork does
-        // not, and it works: kbsync is the FairPlay blob a decryption session
-        // wants, not something ent/download requires. That removes the whole
-        // macOS 27 asset path from downloading.
         var payload: [String: Any] = [
             "creditDisplay": "",
             "guid": guid,
-            // Integer, not a string: ipatool-rs sends an integer and its
-            // tests pin the payload types.
             "salableAdamId": Int64(appId) ?? 0,
             "serialNumber": "0",
         ]
         if let externalVersionId {
             payload["externalVersionId"] = externalVersionId
         }
-        request.httpBody = try PropertyListSerialization.data(
+        let body = try PropertyListSerialization.data(
             fromPropertyList: payload, format: .xml, options: 0)
 
-        // Unsigned, like ipatool: this request carries no action signature.
-        let (data, response) = try await session.data(for: request)
-        try validate(response, data: data)
+        // Five header combinations, all tried in one pass.
+        //
+        // DSID alone answered "sign in required", and adding both X-Token and
+        // X-Apple-Store-Front at once answered an empty 400. Two variables, one
+        // build, no way to tell which caused it -- so the whole matrix is tried
+        // here and the log names the one Apple accepts. That is cheaper than one
+        // build per guess, which is how the last several rounds went.
+        let attempts: [(label: String, token: Bool, storeFront: Bool, signed: Bool)] = [
+            ("token", true, false, false),
+            ("token+storefront", true, true, false),
+            ("storefront", false, true, false),
+            ("bare", false, false, false),
+            ("token+signed", true, false, true),
+        ]
 
-        let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
-            as? [String: Any] ?? [:]
+        var licenceFailure: (String, String)?
+        var lastError: Error = StoreError.failureType("download", "every attempt failed")
 
-        if let failure = plist["failureType"] as? String, !failure.isEmpty {
+        for attempt in attempts {
+            var request = URLRequest(url: components.url!)
+            request.httpMethod = "POST"
+            request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+            request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+            request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+            if attempt.token, !account.passwordToken.isEmpty {
+                request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+            }
+            if attempt.storeFront, !account.storefront.isEmpty {
+                request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+            }
+            request.httpBody = body
+
+            let responseData: Data
+            let status: Int
+            if attempt.signed {
+                let (d, http) = try await signedRequest(request, signer: signer, redirects: 4)
+                responseData = d
+                status = http.statusCode
+            } else {
+                let (d, r) = try await session.data(for: request)
+                responseData = d
+                status = (r as? HTTPURLResponse)?.statusCode ?? -1
+            }
+
+            let preview = String(data: responseData.prefix(500), encoding: .utf8) ?? "<binary>"
+            AppLog.info("download attempt [" + attempt.label + "] HTTP " + String(status)
+                        + ", " + String(responseData.count) + " bytes", .download)
+            if !preview.isEmpty {
+                AppLog.info("  body: " + preview, .download)
+            }
+
+            guard status == 200 else {
+                lastError = StoreError.failureType("http", "HTTP " + String(status))
+                continue
+            }
+
+            let plist = (try? PropertyListSerialization.propertyList(
+                from: responseData, options: [], format: nil)) as? [String: Any] ?? [:]
+            let failure = plist["failureType"] as? String ?? ""
             let message = plist["customerMessage"] as? String ?? ""
-            AppLog.error("download failed: failureType " + failure + " " + message, .download)
-            AppLog.error("download body: "
-                         + (String(data: data.prefix(1200), encoding: .utf8) ?? "<binary>"),
-                         .download)
-            throw StoreError.failureType(failure, message)
+
+            if failure.isEmpty && plist["songList"] != nil {
+                AppLog.info("download attempt [" + attempt.label + "] returned a songList",
+                            .download)
+                return plist
+            }
+            if failure == "9610" { licenceFailure = (failure, message) }
+            lastError = StoreError.failureType(failure.isEmpty ? "download" : failure, message)
         }
 
-        return plist
+        // A licence error from the endpoint Apple actually serves is worth
+        // acting on; anything else is just the last thing that went wrong.
+        if let (failure, message) = licenceFailure {
+            throw StoreError.failureType(failure, message)
+        }
+        throw lastError
     }
 
     // MARK: - Signed transport
