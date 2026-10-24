@@ -417,8 +417,13 @@ final class AppStoreClient {
     /// a failure is why this loop kept reporting "licence required" after a
     /// purchase that had actually worked.
     ///
-    /// The URL follows ipatool too: MZFinance.woa, not the MZBuy.woa the bag
-    /// names, with the pod prefix when the account has one. The body sends
+    /// The URL is the one the bag names, not the MZFinance.woa path hardcoded
+    /// in ipatool. Both were tried on the device, signed:
+    ///
+    ///     bag's MZBuy.woa      -> 500
+    ///     ipatool's MZFinance  -> 400
+    ///
+    /// and 500 is the code that means "licence exists". The body sends
     /// salableAdamId as an integer, which is what ipatool passes.
     func acquireLicense(appId: String,
                         guid: String,
@@ -426,8 +431,9 @@ final class AppStoreClient {
                         bag: StoreBag,
                         signer: SAPSigner) async throws {
         let podPrefix = account.pod.isEmpty ? "" : "p" + account.pod + "-"
-        guard let url = URL(string: "https://" + podPrefix
-                             + "buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/buyProduct") else {
+        let fallback = "https://" + podPrefix
+            + "buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"
+        guard let url = URL(string: bag.buyProduct ?? fallback) else {
             throw StoreError.noBagEndpoint
         }
         AppLog.info("buyProduct " + url.absoluteString + " for " + appId
