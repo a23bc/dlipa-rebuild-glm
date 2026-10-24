@@ -465,9 +465,13 @@ final class AppStoreClient {
             request.httpBody = try PropertyListSerialization.data(
                 fromPropertyList: payload, format: .xml, options: 0)
 
-            // Unsigned, like ipatool: purchaseRequest sets no action signer.
-            let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            // Signed. ipatool does not sign this, but its XMLPayload is encoded
+            // and sent by the emulated Store framework, which brings its own
+            // session. Posted raw, the same request gets 400 unsigned and 500
+            // signed, and 500 is the code ipatool reads as "licence exists".
+            let (data, signedResponse) = try await signedRequest(
+                request, signer: signer, redirects: 3)
+            let status = signedResponse.statusCode
             let bodyText = String(data: data, encoding: .utf8) ?? ""
             AppLog.info("buyProduct " + pricing + " returned HTTP " + String(status)
                         + ", " + String(data.count) + " bytes", .download)
