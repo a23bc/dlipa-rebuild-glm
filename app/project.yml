@@ -28,6 +28,13 @@ targets:
           # folder preserves the SapAssets/ path that AssetStaging.swift
           # relies on (Bundle.main.url(forResource:) searches recursively).
           - "Resources/SapAssets"
+          # The C SAP engine is retired. It ran an OS X 10.9 x86-64 guest and
+          # opened uc_open(UC_ARCH_X86), and it includes <unicorn/x86.h>. The
+          # aarch64 Unicorn archive does not generate that header, so leaving
+          # these in the build fails to compile. Signing now goes through the Go
+          # bridge's arm64 machine.
+          - "Sap/sap_guest.c"
+          - "Sap/sap_objc.c"
       # The four Apple binaries are staged here by scripts/stage-assets.sh
       # and copied into the app bundle. type: folder preserves the SapAssets/
       # subdirectory in the bundle root.

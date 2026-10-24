@@ -99,20 +99,24 @@ jobs:
       # What still needs the Go side is KBSync, which is a separate FairPlay
       # path, so SapBridge.a is still built and linked.
 
-      # TCI (interpreter) build of the 1rhino2 fork, guest arch x86-64. The
-      # upstream 2.1.4 release is a JIT build and cannot run on a non-jailed
-      # device, and its aarch64-only arch would not match the x86-64 SAP guest
-      # either. Both are decided in the script; see its header for why.
-      - name: Build Unicorn for iOS arm64 (TCI, guest x86)
+      # TCI (interpreter) build of the 1rhino2 fork, guest arch aarch64.
+      #
+      # The guest arch is decided here, not in the script, and it has to match
+      # whoever calls uc_open. Signing now goes through the Go bridge's arm64
+      # machine (sapbridge/internal/sap/machine), which opens UC_ARCH_ARM64, so
+      # the archive must be built for aarch64. It used to be x86 for the C
+      # engine, and building one without the other is what produced
+      # "unicorn error 2: Invalid/unsupported architecture" at sign-in.
+      - name: Build Unicorn for iOS arm64 (TCI, guest aarch64)
         run: |
-          sh scripts/build-unicorn-ios.sh
+          UNICORN_ARCH=aarch64 sh scripts/build-unicorn-ios.sh
 
       - name: B0 smoke - does the TCI interpreter execute aarch64
         run: |
-          # Builds the same fork for the runner itself so the interpreter can
-          # be executed rather than only linked. The runner is arm64 macOS, so
-          # this answers the question that matters for the device: does the
-          # TCI fork handle aarch64 instructions at all.
+          # A separate host build, purely to execute the interpreter. It does
+          # not feed the app: the iOS archive above is what ships, and it is
+          # built for aarch64 in its own step. This one only answers whether the
+          # fork handles aarch64 instructions at all.
           UNICORN_ARCH=aarch64 HOST_BUILD=1 OUT_DIR="${{ github.workspace }}/build/tci-aarch64" \
             sh scripts/build-unicorn-ios.sh
           cc -O1 -I "${{ github.workspace }}/build/tci-aarch64/include" scripts/tci-smoke.c \
