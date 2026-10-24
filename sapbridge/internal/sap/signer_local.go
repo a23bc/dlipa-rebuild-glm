@@ -179,6 +179,35 @@ func (s *Signer) Sign(input []byte) ([]byte, error) {
 	return signature, nil
 }
 
+// KBSync produces the FairPlay blob required by ent/download.
+//
+// It runs on this signer's machine rather than opening another one. Two
+// emulators cannot coexist in an iOS process: each costs about 173 MB resident,
+// and the second uc_open dies inside QEMU's code_gen_alloc with exit(1), which
+// leaves no crash report and no stderr line after the last one printed.
+//
+// The machine is the same one that signs, so the caller has to hold the lock
+// across the call: the scratch area and the guest heap are shared state.
+func (s *Signer) KBSync(ctx context.Context, dsid uint64) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil, errSignerClosed
+	}
+
+	blob, err := machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(blob) == 0 {
+		return nil, errors.New("kbsync: blob is empty")
+	}
+
+	return blob, nil
+}
+
 func (s *Signer) Close() error {
 	if s == nil {
 		return nil

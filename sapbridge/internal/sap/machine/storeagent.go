@@ -116,27 +116,36 @@ func openStoreAgentGlobal(ctx context.Context, bundle assets.Bundle, hardwareID 
 }
 
 func (s *StoreAgent) initializeGlobal(hardware []byte) (uint32, error) {
-	s.guest.beginCall()
-	defer s.guest.clearScratch()
+	return s.guest.initializeStoreAgentGlobal(hardware)
+}
 
-	hardwareAddress, err := s.guest.scratch(hardware, uint64(len(hardware)))
+// initializeStoreAgentGlobal runs commerce's global constructor and returns the
+// context handle it produced.
+//
+// It lives on Machine, not StoreAgent, so a machine that is already open can be
+// used for kbsync without a second emulator being created.
+func (m *Machine) initializeStoreAgentGlobal(hardware []byte) (uint32, error) {
+	m.beginCall()
+	defer m.clearScratch()
+
+	hardwareAddress, err := m.scratch(hardware, uint64(len(hardware)))
 	if err != nil {
 		return 0, err
 	}
 
 	path := append([]byte(storeAgentSCInfoPath), 0)
-	pathAddress, err := s.guest.scratch(path, uint64(len(path)))
+	pathAddress, err := m.scratch(path, uint64(len(path)))
 
 	if err != nil {
 		return 0, err
 	}
 
-	contextField, err := s.guest.scratch(nil, 4)
+	contextField, err := m.scratch(nil, 4)
 	if err != nil {
 		return 0, err
 	}
 
-	status, err := s.guest.invoke(storeAgentGlobalInit, 0, hardwareAddress, pathAddress, contextField)
+	status, err := m.invoke(m.storeAgent.globalInit, 0, hardwareAddress, pathAddress, contextField)
 	if err != nil {
 		return 0, fmt.Errorf("initialize StoreAgent global context: %w", err)
 	}
@@ -145,7 +154,7 @@ func (s *StoreAgent) initializeGlobal(hardware []byte) (uint32, error) {
 		return 0, fmt.Errorf("StoreAgent global initialization returned %d", int32(status))
 	}
 
-	value, err := s.guest.readUint32(contextField)
+	value, err := m.readUint32(contextField)
 	if err != nil {
 		return 0, err
 	}
@@ -155,6 +164,61 @@ func (s *StoreAgent) initializeGlobal(hardware []byte) (uint32, error) {
 	}
 
 	return value, nil
+}
+
+// closeStoreAgentGlobal releases a context from initializeStoreAgentGlobal.
+func (m *Machine) closeStoreAgentGlobal(global uint32) error {
+	if global == 0 {
+		return nil
+	}
+
+	status, err := m.invoke(m.storeAgent.globalClose, uint64(global))
+	if err != nil {
+		return fmt.Errorf("close StoreAgent global context: %w", err)
+	}
+
+	if int32(status) != 0 {
+		return fmt.Errorf("StoreAgent global context close returned %d", int32(status))
+	}
+
+	return nil
+}
+
+// GenerateKBSyncOn produces the FairPlay blob on an already-open machine.
+//
+// This is the form the app uses. It used to call GenerateKBSync, which opened a
+// whole second emulator; on iOS the second one cannot be created at all while
+// the first is resident, and the failure is an exit(1) inside QEMU that leaves no
+// trace but the last stderr line.
+func GenerateKBSyncOn(ctx context.Context, m *Machine, hardwareID []byte, dsid uint64) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("StoreAgent context is nil")
+	}
+
+	if m == nil {
+		return nil, errors.New("StoreAgent machine is nil")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("generate kbsync: %w", err)
+	}
+
+	if dsid == 0 {
+		return nil, errors.New("kbsync requires a nonzero account DSID")
+	}
+
+	hardware, err := hardwareBlock(hardwareID)
+	if err != nil {
+		return nil, err
+	}
+
+	global, err := m.initializeStoreAgentGlobal(hardware)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = m.closeStoreAgentGlobal(global) }()
+
+	return m.generateKBSync(m.storeAgent.kbsync, global, dsid)
 }
 
 func (s *StoreAgent) initializeSession(globalContext uint32, dpInfo []byte) (uint64, error) {

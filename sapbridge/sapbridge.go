@@ -120,6 +120,47 @@ func (s *Signer) signatureHeaderValue(body []byte) (string, error) {
         return base64.StdEncoding.EncodeToString(sig), nil
 }
 
+// KBSync produces the FairPlay blob required by the bag's ent/download
+// endpoint, on this signer's own machine.
+//
+// dsid must be the account's decimal Directory Services ID. The blob is stable
+// per account and device, so callers should cache it: generating one runs the
+// emulated Apple binaries and takes seconds.
+func (s *Signer) GenerateKBSync(dsid string) (blob []byte, err error) {
+        err = runRecovered("KBSync", func() error {
+                var innerErr error
+                blob, innerErr = s.kbsync(dsid)
+                return innerErr
+        })
+        return blob, err
+}
+
+func (s *Signer) kbsync(dsid string) ([]byte, error) {
+        if s == nil || s.inner == nil {
+                return nil, errors.New("SAP signer is closed")
+        }
+
+        numeric, err := parseDSID(dsid)
+        if err != nil {
+                return nil, err
+        }
+
+        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+        defer cancel()
+
+        fmt.Fprintf(os.Stderr, "[SAP] kbsync: running on the signer's machine...\n")
+        sap.ReportRSS("before kbsync")
+
+        blob, err := s.inner.KBSync(ctx, numeric)
+        if err != nil {
+                return nil, err
+        }
+
+        sap.ReportRSS("after kbsync")
+
+        return blob, nil
+}
+
 // Hardware returns a copy of the device identity bytes.
 func (s *Signer) Hardware() []byte {
         if s == nil {
@@ -156,16 +197,26 @@ func KBSync(hardwareID []byte, dsid string) (blob []byte, err error) {
         return blob, err
 }
 
-func kbsync(hardwareID []byte, dsid string) ([]byte, error) {
-        // The DSID arrives as a string because gobind cannot map uint64 across
-        // the language boundary. Parsing it here keeps the Swift side free of
-        // numeric conversions.
+// parseDSID converts the account DSID.
+//
+// It arrives as a string because gobind cannot map uint64 across the language
+// boundary, and parsing it here keeps the Swift side free of numeric
+// conversions.
+func parseDSID(dsid string) (uint64, error) {
         numeric, err := strconv.ParseUint(strings.TrimSpace(dsid), 10, 64)
         if err != nil {
-                return nil, fmt.Errorf("dsid must be a decimal number: %w", err)
+                return 0, fmt.Errorf("dsid must be a decimal number: %w", err)
         }
         if numeric == 0 {
-                return nil, errors.New("dsid must be nonzero")
+                return 0, errors.New("dsid must be nonzero")
+        }
+        return numeric, nil
+}
+
+func kbsync(hardwareID []byte, dsid string) ([]byte, error) {
+        numeric, err := parseDSID(dsid)
+        if err != nil {
+                return nil, err
         }
 
         ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

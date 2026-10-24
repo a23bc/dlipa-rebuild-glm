@@ -1,6 +1,7 @@
 package sap
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -19,6 +20,10 @@ type Config struct {
 
 type ActionSigner interface {
 	Sign(input []byte) ([]byte, error)
+	// KBSync produces the ent/download blob on the signer's own machine. It is
+	// part of the interface because the caller must reach the same emulator that
+	// holds the session; opening a second one does not fit on iOS.
+	KBSync(ctx context.Context, dsid uint64) ([]byte, error)
 	Close() error
 }
 

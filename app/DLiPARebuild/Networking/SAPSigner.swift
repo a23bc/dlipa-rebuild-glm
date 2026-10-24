@@ -144,8 +144,12 @@ final class SAPSigner {
         if let cached = Self.kbsyncCache.object(forKey: key) {
             return cached as Data
         }
+        // Generated on the session's own machine, not a fresh one. Two
+        // emulators do not fit: each is ~173 MB resident, and the second
+        // uc_open dies inside QEMU with exit(1), which iOS records as a silent
+        // kill with no crash report.
         var error: NSError?
-        guard let fresh = SapbridgeKBSync(hardware.bytes, dsid, &error) else {
+        guard let fresh = bridge.generateKBSync(dsid, error: &error) else {
             let detail = error?.localizedDescription ?? "unknown"
             AppLog.error("kbsync generation failed: " + detail, .sap)
             fputs("[DLiPA] kbsync generation failed: " + detail + "\n", stderr)

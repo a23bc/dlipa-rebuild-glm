@@ -65,8 +65,19 @@ type Machine struct {
 	arm64         *arm64Compatibility
 	services      *shims
 	entry         entryPoints
+	storeAgent    storeAgentEntries
 	scratchCursor uint64
 	closed        bool
+}
+
+// storeAgentEntries are commerce's entry points, carried by every machine so
+// kbsync and decryption can run without a second emulator.
+type storeAgentEntries struct {
+	globalInit  uint64
+	kbsync      uint64
+	sessionInit uint64
+	decrypt     uint64
+	globalClose uint64
 }
 
 type imageSpec struct {
@@ -83,8 +94,23 @@ type runtimeOptions struct {
 	shims       shimOptions
 }
 
+// Open starts the emulated runtime a session uses for everything.
+//
+// It maps the commerce image alongside the signing images. There is room for
+// exactly one emulator on iOS: each costs about 173 MB resident, so a second
+// uc_open fails inside QEMU's code_gen_alloc with "Could not allocate dynamic
+// translator buffer" and exit(1) -- no exception, no crash report -- at the
+// 216 MB the first one already holds. kbsync and decryption both need commerce,
+// so it is mapped here rather than in a machine of its own.
+//
+// The four zero-return aliases are the pthread primitives commerce reaches for.
+// Registering them unconditionally is harmless for signing, which never calls
+// them, and it is what lets one machine serve both.
 func Open(ctx context.Context, bundle assets.Bundle) (*Machine, error) {
-	machine, exports, err := openRuntime(ctx, bundle, runtimeOptions{})
+	machine, exports, err := openRuntime(ctx, bundle, runtimeOptions{
+		extraImages: []imageSpec{{name: "commerce", data: bundle.Commerce, base: storeAgentBase}},
+		shims:       shimOptions{zeroReturnAliases: storeAgentZeroReturnAliases},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +122,6 @@ func Open(ctx context.Context, bundle assets.Bundle) (*Machine, error) {
 		teardown:   exports["_IPaI1oem5iL"],
 		dispose:    exports["_jEHf8Xzsv8K"],
 	}
-
 	return machine, nil
 }
 
@@ -173,6 +198,16 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 	}
 
 	machine := &Machine{engine: engine, arm64: newARM64Compatibility(engine)}
+	// Every machine carries these, because both callers need them: Open serves a
+	// whole session, and openStoreAgentGlobal serves decryption. A machine that
+	// left them zero would invoke address 0 the first time it ran commerce.
+	machine.storeAgent = storeAgentEntries{
+		globalInit:  storeAgentGlobalInit,
+		kbsync:      storeAgentKBSyncEntry,
+		sessionInit: storeAgentSessionInit,
+		decrypt:     storeAgentDecryptEntry,
+		globalClose: storeAgentGlobalClose,
+	}
 	ready := false
 
 	defer func() {
