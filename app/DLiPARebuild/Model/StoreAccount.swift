@@ -46,8 +46,8 @@ struct StoreAccount: Codable, Identifiable, Equatable {
     func asAccount() -> AppStoreClient.Account {
         AppStoreClient.Account(email: email,
                                passwordToken: passwordToken,
-                               clearToken: clearToken,
                                sessionToken: sessionToken,
+                               clearToken: clearToken,
                                dsid: dsid,
                                storefront: storefront,
                                pod: pod,
