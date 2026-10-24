@@ -406,124 +406,109 @@ final class AppStoreClient {
 
     /// Attaches a free licence for an app to the account.
     ///
-    /// `ent/download` answers 9610 while the account does not own the app, so
-    /// nothing download-shaped works before this. It is a `buyProduct` at price
-    /// 0 -- what ipatool-rs does before every download attempt.
+    /// Copied from ipatool (pkg/appstore/appstore_purchase.go), including the
+    /// part that is easy to get wrong:
     ///
-    /// The host matters. The bag answers with the generic
-    /// `buy.itunes.apple.com`, and an account signed in through a pod is served
-    /// by `p<n>-buy.itunes.apple.com`; posting to the generic host came back 500
-    /// with an empty body. Both hosts are tried, pod first.
+    ///     if res.StatusCode == http.StatusInternalServerError {
+    ///         return ErrLicenseAlreadyExists
+    ///     }
+    ///
+    /// A 500 from buyProduct means the licence is already there. Treating it as
+    /// a failure is why this loop kept reporting "licence required" after a
+    /// purchase that had actually worked.
+    ///
+    /// The URL follows ipatool too: MZFinance.woa, not the MZBuy.woa the bag
+    /// names, with the pod prefix when the account has one. The body sends
+    /// salableAdamId as an integer, which is what ipatool passes.
     func acquireLicense(appId: String,
                         guid: String,
                         account: Account,
                         bag: StoreBag,
                         signer: SAPSigner) async throws {
-        AppLog.info("buyProduct for " + appId
-                    + " (pod " + (account.pod.isEmpty ? "none" : account.pod)
-                    + ", storefront "
+        let podPrefix = account.pod.isEmpty ? "" : "p" + account.pod + "-"
+        guard let url = URL(string: "https://" + podPrefix
+                             + "buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/buyProduct") else {
+            throw StoreError.noBagEndpoint
+        }
+        AppLog.info("buyProduct " + url.absoluteString + " for " + appId
+                    + " (storefront "
                     + (account.storefront.isEmpty ? "none" : account.storefront) + ")", .download)
 
-        let candidates = AppStoreClient.buyProductURLs(account: account, bag: bag)
-        guard !candidates.isEmpty else { throw StoreError.noBagEndpoint }
+        var lastError: Error?
+        // STDQ is the normal pricing parameter; GAME is the Apple Arcade one
+        // ipatool falls back to when the item reports as temporarily
+        // unavailable.
+        for pricing in ["STDQ", "GAME"] {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+            request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+            request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+            request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+            request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
 
-        var lastFailure = ("2059", "no buy endpoint answered")
+            let payload: [String: Any] = [
+                "appExtVrsId": "0",
+                "hasAskedToFulfillPreorder": "true",
+                "buyWithoutAuthorization": "true",
+                "hasDoneAgeCheck": "true",
+                "guid": guid,
+                "needDiv": "0",
+                "origPage": "Software-" + appId,
+                "origPageLocation": "Buy",
+                "price": "0",
+                "pricingParameters": pricing,
+                "productType": "C",
+                // Integer, as ipatool sends it.
+                "salableAdamId": Int64(appId) ?? 0,
+            ]
+            request.httpBody = try PropertyListSerialization.data(
+                fromPropertyList: payload, format: .xml, options: 0)
 
-        for url in candidates {
-            AppLog.info("buyProduct endpoint: " + url.absoluteString, .download)
-            for pricing in ["STDQ", "GAME"] {
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue("application/x-apple-plist",
-                                 forHTTPHeaderField: "Content-Type")
-                request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
-                request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
-                if !account.storefront.isEmpty {
-                    request.setValue(account.storefront,
-                                     forHTTPHeaderField: "X-Apple-Store-Front")
-                }
-                request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
-
-                let payload: [String: Any] = [
-                    "appExtVrsId": "0",
-                    "hasAskedToFulfillPreorder": "true",
-                    "hasDoneAgeCheck": "true",
-                    "buyWithoutAuthorization": "true",
-                    "hasBeenAuthedForBuy": "true",
-                    "guid": guid,
-                    "needDiv": "0",
-                    "origPage": "Software-" + appId,
-                    "origPageLocation": "Buy",
-                    "price": "0",
-                    "pricingParameters": pricing,
-                    "productType": "C",
-                    // A string here, unlike the integer in the download body.
-                    "salableAdamId": appId,
-                ]
-                guard let body = try? PropertyListSerialization.data(
-                    fromPropertyList: payload, format: .xml, options: 0) else {
-                    continue
-                }
-                request.httpBody = body
-
-                guard let (data, http) = try? await signedRequest(
-                    request, signer: signer, redirects: 3) else {
-                    AppLog.warn("buyProduct " + pricing + " did not complete", .download)
-                    continue
-                }
-                AppLog.info("buyProduct " + pricing + " returned HTTP "
-                            + String(http.statusCode) + ", " + String(data.count) + " bytes",
-                            .download)
+            // Unsigned, like ipatool: purchaseRequest sets no action signer.
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            AppLog.info("buyProduct " + pricing + " returned HTTP " + String(status)
+                        + ", " + String(data.count) + " bytes", .download)
+            if !bodyText.isEmpty {
                 AppLog.info("buyProduct " + pricing + " body: "
-                            + (String(data: data.prefix(800), encoding: .utf8) ?? "<binary>"),
-                            .download)
+                            + String(bodyText.prefix(800)), .download)
+            }
 
-                let plist = (try? PropertyListSerialization.propertyList(
-                    from: data, options: [], format: nil)) as? [String: Any] ?? [:]
-                let failure = plist["failureType"] as? String ?? ""
-                let message = plist["customerMessage"] as? String ?? ""
+            let plist = (try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+            let failure = plist["failureType"] as? String ?? ""
+            let message = plist["customerMessage"] as? String ?? ""
+            let docType = plist["jingleDocType"] as? String ?? ""
 
-                if (200..<300).contains(http.statusCode) && failure.isEmpty {
-                    AppLog.info("licence granted", .download)
-                    return
-                }
-                // Already owned is the outcome we want.
-                if failure == "5002"
-                    || message.lowercased().contains("license already exists") {
+            // The mapping ipatool relies on.
+            if status == 500 {
+                AppLog.info("buyProduct answered 500; per ipatool that means the "
+                            + "licence already exists", .download)
+                return
+            }
+            if failure == "5002" || failure == "2059" {
+                if failure == "5002" {
                     AppLog.info("licence already present", .download)
                     return
                 }
-                if !failure.isEmpty {
-                    lastFailure = (failure, message)
-                    AppLog.error("buyProduct failed: " + failure + " " + message, .download)
-                    // A business refusal will not change with another host.
-                    if failure != "2059" { throw StoreError.failureType(failure, message) }
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                }
+                lastError = StoreError.failureType(failure, message)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                continue
             }
+            if !failure.isEmpty {
+                AppLog.error("buyProduct failed: " + failure + " " + message, .download)
+                throw StoreError.failureType(failure, message)
+            }
+            if (200..<300).contains(status) && (docType == "purchaseSuccess" || docType.isEmpty) {
+                AppLog.info("licence granted", .download)
+                return
+            }
+            lastError = StoreError.failureType("purchase", "apple did not confirm the purchase")
         }
 
-        throw StoreError.failureType(lastFailure.0, lastFailure.1)
-    }
-
-    /// Candidate buyProduct URLs, pod host first.
-    private static func buyProductURLs(account: Account, bag: StoreBag) -> [URL] {
-        let generic = "https://buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"
-        let fromBag = bag.buyProduct ?? generic
-        var urls: [URL] = []
-
-        // Rewrite whatever the bag gave us onto the pod host when there is one.
-        if !account.pod.isEmpty,
-           var components = URLComponents(string: fromBag) {
-            components.host = "p" + account.pod + "-buy.itunes.apple.com"
-            if let podURL = components.url { urls.append(podURL) }
-        }
-        if let bagURL = URL(string: fromBag) { urls.append(bagURL) }
-        if let fallback = URL(string: generic) { urls.append(fallback) }
-
-        // De-duplicate while keeping order.
-        var seen = Set<String>()
-        return urls.filter { seen.insert($0.absoluteString).inserted }
+        throw lastError ?? StoreError.failureType("purchase", "no purchase response")
     }
 
     /// The `ent/download` round trip, acquring a licence first if Apple says
