@@ -800,7 +800,10 @@ final class AppStoreClient {
         request.setValue("application/x-www-form-urlencoded; charset=utf-8",
                          forHTTPHeaderField: "Content-Type")
         request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+        // No X-Apple-Store-Front here: ipatool's download request does not send
+        // one, and this app has been sending the login store-front to a
+        // different service all along. Its absence is the last structural
+        // difference from the reference request.
         // The store's own X-Token cookie, not the passwordToken.
         request.setValue(account.sessionToken.isEmpty ? account.passwordToken
                                                       : account.sessionToken,
