@@ -3,6 +3,7 @@ package sapbridge
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
@@ -13,7 +14,32 @@ import (
 // because the upstream loader uses os.UserCacheDir().
 var BundleDir string
 
-// loadBundle resolves the pinned Apple SAP asset profile.
+// The bundle is ~125 MB and never changes once written, but every load reads it
+// into fresh memory. Signing and kbsync are two separate entry points that each
+// want it, and loading it twice costs a second 125 MB.
+//
+// That is not a theoretical waste on iOS. A handshake leaves the process around
+// 215 MB resident; the second copy took it past the per-process ceiling and
+// jetsam killed it between "handshake complete!" and the next step, leaving no
+// stderr line and no crash report. One copy, shared by every caller, is the
+// difference between fitting and not fitting.
+var (
+	bundleMu     sync.Mutex
+	bundleCache  *assets.Bundle
+	bundleCached string
+)
+
+// invalidateBundleCache drops the memoised bundle. Called when the directory
+// changes, because a bundle from the old path would be the wrong bytes.
+func invalidateBundleCache() {
+	bundleMu.Lock()
+	bundleCache = nil
+	bundleCached = ""
+	bundleMu.Unlock()
+}
+
+// loadBundle resolves the pinned Apple SAP asset profile, reading it at most
+// once per configured directory.
 //
 // It returns an error rather than panicking, so a machine without the assets
 // (CI, a fresh install) gets a clear message instead of a crash.
@@ -22,8 +48,22 @@ func loadBundle() (assets.Bundle, error) {
 	if dir == "" {
 		dir = bundleDir
 	}
+
+	bundleMu.Lock()
+	defer bundleMu.Unlock()
+
+	if bundleCache != nil && bundleCached == dir {
+		return *bundleCache, nil
+	}
+
 	if dir != "" {
-		return readBundleDir(dir)
+		bundle, err := readBundleDir(dir)
+		if err != nil {
+			return assets.Bundle{}, err
+		}
+		bundleCache = &bundle
+		bundleCached = dir
+		return bundle, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -35,6 +75,9 @@ func loadBundle() (assets.Bundle, error) {
 		msg += "copy the four pinned binaries there or call SetBundleDir: "
 		return assets.Bundle{}, fmt.Errorf("%s%w", msg, err)
 	}
+
+	bundleCache = &bundle
+	bundleCached = dir
 	return bundle, nil
 }
 

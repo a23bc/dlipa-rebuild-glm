@@ -28,6 +28,14 @@ import (
 // lookup). On macOS/Linux we fall back to reading /proc or vmmap.
 //
 // `step` is a label like "before initialize" / "after initialize".
+// ReportRSS exposes the resident-size probe to the bridge package. kbsync runs
+// its own multi-step sequence with a second emulator, so it needs the same
+// per-step numbers the signer prints; without them a jetsam kill shows up as the
+// last line simply stopping.
+func ReportRSS(step string) {
+	reportRSS(step)
+}
+
 func reportRSS(step string) {
         var m runtime.MemStats
         runtime.ReadMemStats(&m)

@@ -11,6 +11,7 @@ import (
         "encoding/hex"
         "errors"
         "fmt"
+        "os"
         "strconv"
         "strings"
         "time"
@@ -170,10 +171,20 @@ func kbsync(hardwareID []byte, dsid string) ([]byte, error) {
         ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
         defer cancel()
 
+        // kbsync runs a second emulator alongside the one the signer already
+        // holds, so it is the most memory-hungry thing the app does. Print the
+        // trajectory: jetsam kills the process outright, and the only evidence
+        // left behind is which line came last.
+        fmt.Fprintf(os.Stderr, "[SAP] kbsync: resolving Apple binaries...\n")
+        sap.ReportRSS("before kbsync bundle")
+
         bundle, err := loadBundle()
         if err != nil {
                 return nil, fmt.Errorf("load Apple SAP assets: %w", err)
         }
+
+        sap.ReportRSS("after kbsync bundle")
+        fmt.Fprintf(os.Stderr, "[SAP] kbsync: opening store agent...\n")
 
         return machine.GenerateKBSync(ctx, bundle, hardwareID, numeric)
 }

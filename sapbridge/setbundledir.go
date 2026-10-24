@@ -10,6 +10,7 @@ var bundleDir string
 // this once.
 func SetBundleDir(path string) {
 	bundleDir = path
+	invalidateBundleCache()
 }
 
 // BundleDirValue returns the directory currently configured, or "" if unset.
