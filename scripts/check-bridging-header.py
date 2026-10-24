@@ -13,6 +13,16 @@ Usage: check-bridging-header.py <generated Sapbridge.objc.h> <bridging header>
 import re
 import sys
 
+# Declarations gomobile emits that no caller reaches, so the bridging header
+# deliberately does not mirror them:
+#
+#   initWithRef:  <goSeqRefInterface> plumbing; gobind's own bookkeeping, never
+#                 called by app code
+#   setBundleDir: class-level setter for the exported BundleDir variable. The app
+#                 calls SapbridgeSetBundleDir(), the C entry point, which is
+#                 declared in the bridging header
+IGNORED = {"initWithRef", "setBundleDir"}
+
 
 def main() -> int:
     if len(sys.argv) != 3:
@@ -29,6 +39,8 @@ def main() -> int:
     # ObjC methods: - (NSData*)generateKBSync:(NSString*)dsid error:...
     for match in re.finditer(r"^[-+]\s*\([^)]*\)\s*(\w+):", generated, re.M):
         selector = match.group(1)
+        if selector in IGNORED:
+            continue
         if not re.search(r"\b" + re.escape(selector) + r":", bridging):
             missing.append(selector)
 
