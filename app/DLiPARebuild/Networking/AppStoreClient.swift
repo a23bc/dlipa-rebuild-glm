@@ -460,25 +460,34 @@ final class AppStoreClient {
         // while the bag names the generic host for this call. A token issued by
         // one and presented to the other is exactly the kind of mismatch that
         // reads back as "your password has changed", so both hosts are tried.
-        var urls: [(String, URL)] = [("bag", url)]
+        // Pod host first: the token was minted there.
+        var urls: [(String, URL)] = []
         if !account.pod.isEmpty,
            var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             components.host = "p" + account.pod + "-buy.itunes.apple.com"
             if let podURL = components.url { urls.append(("pod", podURL)) }
         }
+        urls.append(("bag", url))
 
         let name = "DLiPA Rebuild"
         let payload: [String: Any] = ["guid": guid, "serialNumber": guid,
                                       "machineName": name]
 
-        let tokens: [(String, String)] = [("passwordToken", account.passwordToken),
-                                          ("clearToken", account.clearToken)]
+        // clearToken first, and alone until it has been given a clean shot.
+        //
+        // It is the credential the store actually recognises: offered as X-Token
+        // it answers 2034 ExpiredPasswordToken, while passwordToken answers 2002
+        // BadPasswordToken. In the last run the passwordToken attempts ran first
+        // and by the time clearToken was tried the session had been invalidated,
+        // so ordering may be the whole story. Signed is dropped too -- it never
+        // changed a response here.
+        let tokens: [(String, String)] = [("clearToken", account.clearToken),
+                                          ("passwordToken", account.passwordToken)]
 
         for (hostLabel, hostURL) in urls {
             for (tokenLabel, tokenValue) in tokens {
-            for signed in [false, true] {
+            for signed in [false] {
                 let label = hostLabel + "/" + tokenLabel
-                    + (signed ? "/signed" : "/plain")
                 var request = URLRequest(url: hostURL)
                 request.httpMethod = "POST"
                 request.setValue("application/x-apple-plist",
@@ -506,6 +515,14 @@ final class AppStoreClient {
                     let preview = String(data: data.prefix(400), encoding: .utf8) ?? "<binary>"
                     AppLog.info(tag + " HTTP " + String(status) + ", "
                                 + String(data.count) + " bytes", .auth)
+                    let parsed = (try? PropertyListSerialization.propertyList(
+                        from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+                    let code = (parsed["metrics"] as? [String: Any])?["messageCode"] as? String
+                    if (200..<300).contains(status) && code == nil
+                        && (parsed["failureType"] as? String ?? "").isEmpty {
+                        AppLog.info(tag + " accepted; the machine is authorised", .auth)
+                        return
+                    }
                     if !preview.isEmpty {
                         AppLog.info("  body: " + preview, .auth)
                     }
