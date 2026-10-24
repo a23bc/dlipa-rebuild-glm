@@ -154,9 +154,13 @@ final class SAPSigner {
         // its return is non-nullable, which is why the two look different here.
         let fresh: Data
         do {
-            guard let blob = try bridge.generateKBSync(dsid) else {
+            // Swift imports this as a throwing call returning Data, not Data?:
+            // the nullable return is folded into the throw, so an empty blob is
+            // the only thing left to check here.
+            let blob = try bridge.generateKBSync(dsid)
+            guard !blob.isEmpty else {
                 throw NSError(domain: "SAPSigner", code: 3, userInfo: [
-                    NSLocalizedDescriptionKey: "the bridge returned no kbsync blob",
+                    NSLocalizedDescriptionKey: "the bridge returned an empty kbsync blob",
                 ])
             }
             fresh = blob
