@@ -241,6 +241,22 @@ final class AppStoreClient {
         let passwordToken = plist["passwordToken"] as? String ?? ""
         let dsid = plist["dsPersonId"] as? String ?? ""
 
+        // Field names and sizes, never values. The store rejects the token this
+        // parses with 2002 "Your password has changed", immediately after a
+        // fresh 2FA sign-in, so the question is whether the real session token
+        // lives under a different key -- and only a key map can answer that.
+        let summary = plist.keys.sorted().map { key -> String in
+            switch plist[key] {
+            case let value as String: return key + "(" + String(value.count) + ")"
+            case let value as [String: Any]: return key + "{" + String(value.count) + "}"
+            case let value as [Any]: return key + "[" + String(value.count) + "]"
+            default: return key + "(?)"
+            }
+        }.joined(separator: ", ")
+        AppLog.info("authenticate keys: " + summary, .auth)
+        AppLog.info("authenticate accountInfo keys: "
+                    + accountInfo.keys.sorted().joined(separator: ", "), .auth)
+
         // The success gate. Without both of these there is no session, and
         // treating the response as an account is what made a 2FA challenge
         // look like a completed sign-in.
