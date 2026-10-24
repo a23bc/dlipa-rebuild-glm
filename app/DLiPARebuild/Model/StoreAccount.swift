@@ -20,6 +20,8 @@ struct StoreAccount: Codable, Identifiable, Equatable {
     var passwordToken: String
     /// The 32 character clearToken from the same response.
     var clearToken: String
+    /// The session credential: the value of the store's own X-Token cookie.
+    var sessionToken: String
 
     /// What the row's title shows: the person's name, or the email when Apple
     /// did not return one.
@@ -37,6 +39,7 @@ struct StoreAccount: Codable, Identifiable, Equatable {
         pod = account.pod
         passwordToken = account.passwordToken
         clearToken = account.clearToken
+        sessionToken = account.sessionToken
     }
 
     /// Back to the shape the client works with.
@@ -44,6 +47,7 @@ struct StoreAccount: Codable, Identifiable, Equatable {
         AppStoreClient.Account(email: email,
                                passwordToken: passwordToken,
                                clearToken: clearToken,
+                               sessionToken: sessionToken,
                                dsid: dsid,
                                storefront: storefront,
                                pod: pod,

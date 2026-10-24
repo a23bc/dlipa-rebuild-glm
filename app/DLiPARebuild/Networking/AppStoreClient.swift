@@ -95,6 +95,10 @@ final class AppStoreClient {
     struct Account {
         var email: String
         var passwordToken: String
+        /// The store sets an X-Token cookie at sign-in. That value is the session
+        /// credential -- the 52 character passwordToken is refused by the store
+        /// with 2002 and the 32 character clearToken with 2034.
+        var sessionToken: String
         /// authenticate also returns a 32 character clearToken. Its name says it
         /// is the usable form, so it is carried alongside passwordToken and
         /// tried as X-Token -- the 52 character one is refused with 2002.
@@ -290,6 +294,7 @@ final class AppStoreClient {
         return Account(
             email: accountInfo["appleId"] as? String ?? email,
             passwordToken: passwordToken,
+            sessionToken: capturedCookieValues["X-Token"] ?? passwordToken,
             clearToken: clearToken,
             dsid: dsid,
             storefront: headerValue(http, "X-Set-Apple-Store-Front") ?? "",
@@ -443,6 +448,7 @@ final class AppStoreClient {
     /// removes the storage question from the picture, and the log names them so
     /// an empty set is visible rather than inferred.
     private var capturedCookieHeader = ""
+    private var capturedCookieValues: [String: String] = [:]
 
     private func captureCookies(from http: HTTPURLResponse) {
         var raw: [String] = []
@@ -468,6 +474,11 @@ final class AppStoreClient {
             }
         }
         capturedCookieHeader = pairs.joined(separator: "; ")
+        for pair in pairs {
+            let parts = pair.components(separatedBy: "=")
+            guard parts.count >= 2 else { continue }
+            capturedCookieValues[parts[0]] = parts.dropFirst().joined(separator: "=")
+        }
         let names = pairs.map { $0.components(separatedBy: "=").first ?? "?" }
         AppLog.info("Set-Cookie from " + (http.url?.host ?? "?") + ": "
                     + names.joined(separator: ", "), .network)
@@ -528,7 +539,8 @@ final class AppStoreClient {
         // changed a response here.
         // clearToken only. passwordToken answers 2002 every time and adding it
         // just spends attempts on a credential the store has never accepted.
-        let tokens: [(String, String)] = [("clearToken", account.clearToken)]
+        let tokens: [(String, String)] = [("session", account.sessionToken),
+                                          ("clearToken", account.clearToken)]
 
         for (hostLabel, hostURL) in urls {
             for (tokenLabel, tokenValue) in tokens {
@@ -631,7 +643,12 @@ final class AppStoreClient {
             request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
             request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-            request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+            request.setValue(account.sessionToken.isEmpty ? account.passwordToken
+                                                          : account.sessionToken,
+                             forHTTPHeaderField: "X-Token")
+            if !capturedCookieHeader.isEmpty {
+                request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
+            }
 
             let payload: [String: Any] = [
                 "appExtVrsId": "0",
@@ -784,7 +801,10 @@ final class AppStoreClient {
                          forHTTPHeaderField: "Content-Type")
         request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-        request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+        // The store's own X-Token cookie, not the passwordToken.
+        request.setValue(account.sessionToken.isEmpty ? account.passwordToken
+                                                      : account.sessionToken,
+                         forHTTPHeaderField: "X-Token")
         if !capturedCookieHeader.isEmpty {
             request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
         }
