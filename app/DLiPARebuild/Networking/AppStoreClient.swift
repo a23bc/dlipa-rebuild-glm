@@ -555,10 +555,17 @@ final class AppStoreClient {
                                      account: Account,
                                      bag: StoreBag,
                                      signer: SAPSigner) async throws -> [String: Any] {
-        guard let endpoint = bag.volumeStoreDownloadProduct else {
-            AppLog.error("no download endpoint in the bag", .download)
-            throw StoreError.noBagEndpoint
-        }
+        // The classic store endpoint, not the ent/download one in the bag.
+        //
+        // ipatool's downloadProductRequest (appstore_download_product.go:268)
+        // posts to buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/
+        // volumeStoreDownloadProduct with only iCloud-DSID and X-Dsid, no
+        // X-Token, no store-front, and no signature. ent/download is a separate
+        // newer path that ipatool only takes when it has a kbsync generator.
+        // This app has no kbsync, so it should be on the classic path.
+        let podPrefix = account.pod.isEmpty ? "" : "p" + account.pod + "-"
+        let endpoint = "https://" + podPrefix
+            + "buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct"
         AppLog.info("requesting download for " + appId + " from " + endpoint, .download)
 
         var components = URLComponents(string: endpoint)!
@@ -566,11 +573,9 @@ final class AppStoreClient {
 
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8",
-                         forHTTPHeaderField: "Content-Type")
-        request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-        request.setValue(account.passwordToken, forHTTPHeaderField: "X-Token")
+        request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+        request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+        request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
 
         // Four fields, exactly as ipatool-rs builds this request
         // (download_request_body in src/api/download.rs):
@@ -598,8 +603,8 @@ final class AppStoreClient {
         request.httpBody = try PropertyListSerialization.data(
             fromPropertyList: payload, format: .xml, options: 0)
 
-        let (data, response) = try await signedRequest(
-            request, signer: signer, redirects: 4)
+        // Unsigned, like ipatool: this request carries no action signature.
+        let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
 
         let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
