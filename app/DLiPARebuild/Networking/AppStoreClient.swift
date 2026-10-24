@@ -598,6 +598,13 @@ final class AppStoreClient {
             ("token+signed", true, false, true),
         ]
 
+        // Printed once, because a zero-length token silently turns every
+        // "token" attempt into a bare one: the two then return byte-identical
+        // bodies and the comparison says nothing.
+        AppLog.info("download session: token " + String(account.passwordToken.count)
+                    + " chars, dsid " + (account.dsid.isEmpty ? "none" : account.dsid)
+                    + ", pod " + (account.pod.isEmpty ? "none" : account.pod), .download)
+
         var licenceFailure: (String, String)?
         var lastError: Error = StoreError.failureType("download", "every attempt failed")
 
@@ -648,6 +655,15 @@ final class AppStoreClient {
                 AppLog.info("download attempt [" + attempt.label + "] returned a songList",
                             .download)
                 return plist
+            }
+            // 2042 is "sign in required": Apple wants a live session, not a
+            // licence. The two look alike in the UI, so name it in the log.
+            let metrics = plist["metrics"] as? [String: Any] ?? [:]
+            let code = metrics["messageCode"] as? String ?? ""
+            if code == "2042" {
+                AppLog.error("attempt [" + attempt.label + "] needs a fresh sign-in ("
+                             + code + ", "
+                             + (metrics["dialogId"] as? String ?? "") + ")", .download)
             }
             if failure == "9610" { licenceFailure = (failure, message) }
             lastError = StoreError.failureType(failure.isEmpty ? "download" : failure, message)
