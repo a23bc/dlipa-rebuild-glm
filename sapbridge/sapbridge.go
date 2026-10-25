@@ -199,7 +199,7 @@ func (s *Signer) kbsync(dsid string) ([]byte, error) {
 // because a second emulator cannot be allocated on this platform.
 func (s *Signer) StoreSmoke() (report string, err error) {
 	if s == nil || s.inner == nil {
-		return "", errClosed
+		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
 
 	// inner is the ActionSigner interface; the smoke test lives on the concrete
