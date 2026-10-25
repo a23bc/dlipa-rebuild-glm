@@ -1,0 +1,130 @@
+# Dumps the pinned dyld shared cache to disk.
+#
+# Nothing in this repo or in ipatool ever wrote it out: OpenRemoteStoreCache
+# streams the members through an AEA reader and an APFS extractor and closes over
+# the stream. profilegen's -cache wants them as real files, so this job produces
+# them once and caches the result.
+#
+# Deliberately stops before profilegen. Dumping is deterministic work; running
+# profilegen is the experiment. Keeping them in separate jobs means a failure
+# says which one broke.
+name: Dump dyld shared cache
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Same pin as fetch-assets.yml. Both workflows extract from the same restore
+  # image, so the version is pinned in one place conceptually and must be moved
+  # in both when it changes.
+  IPATOOL_REPO: https://github.com/majd/ipatool
+  IPATOOL_REF: 5dc4c8058db3a23e9de081ac766cc917713a65cf
+  CACHE_PREFIX: dyld_shared_cache_arm64e
+
+jobs:
+  dump:
+    # Extraction needs neither macOS nor iOS; it needs disk and bandwidth.
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Restore the dumped cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/dyld
+          key: dyld-cache-26A434-arm64e-v1
+
+      - name: Check out the pinned ipatool and install the exporter
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          git init -q /tmp/ipatool
+          cd /tmp/ipatool
+          git remote add origin "$IPATOOL_REPO"
+          git fetch -q --depth 1 origin "$IPATOOL_REF"
+          git checkout -q FETCH_HEAD
+          cd - >/dev/null
+
+          # Guard the pin the same way fetch-assets does: the exporter uses the
+          # remote extraction set, which is main-only.
+          if [ ! -f /tmp/ipatool/internal/sap/assets/remote.go ]; then
+            echo "::error::pinned ipatool commit has no internal/sap/assets/remote.go"
+            exit 1
+          fi
+          if [ ! -f /tmp/ipatool/internal/sap/assets/apfs.go ]; then
+            echo "::error::pinned ipatool commit has no internal/sap/assets/apfs.go"
+            exit 1
+          fi
+
+          # The exporter needs unexported symbols from the assets package, so one
+          # half goes inside the package and the other half is the command.
+          cp scripts/export-dyld-cache/assets_export.go \
+             /tmp/ipatool/internal/sap/assets/export_dyld_cache.go
+          mkdir -p /tmp/ipatool/cmd/export-dyld-cache
+          cp scripts/export-dyld-cache/main.go \
+             /tmp/ipatool/cmd/export-dyld-cache/main.go
+
+      - name: Dump the cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ runner.temp }}/dyld"
+          cd /tmp/ipatool
+          go run ./cmd/export-dyld-cache \
+            -prefix "${{ runner.temp }}/dyld/${{ env.CACHE_PREFIX }}"
+          cd - >/dev/null
+
+      - name: List what was produced
+        run: |
+          dir="${{ runner.temp }}/dyld"
+          echo "==> members"
+          ls -la "$dir"
+          echo "==> count and size"
+          count=$(find "$dir" -type f | wc -l | tr -d ' ')
+          total=$(du -sh "$dir" | cut -f1)
+          echo "members: $count, total: $total"
+
+          # The main cache must exist and be substantial. A zero-length or absent
+          # file here means the dump silently produced nothing, which would only
+          # surface much later as an unreadable cache in profilegen.
+          main="$dir/${{ env.CACHE_PREFIX }}"
+          if [ ! -f "$main" ]; then
+            echo "::error::$main is missing"
+            exit 1
+          fi
+          size=$(stat -c %s "$main")
+          echo "main member: $size bytes"
+          if [ "$size" -lt 100000000 ]; then
+            echo "::error::$main is $size bytes, far smaller than a real shared cache"
+            exit 1
+          fi
+
+          if [ "$count" -lt 2 ]; then
+            echo "::error::only $count member(s); a shared cache has subcache members too"
+            exit 1
+          fi
+
+      - name: Record the manifest
+        run: |
+          dir="${{ runner.temp }}/dyld"
+          {
+            echo "ipatool ref: $IPATOOL_REF"
+            echo "prefix: $CACHE_PREFIX"
+            echo
+            find "$dir" -type f -printf '%f %s bytes\n' | sort
+          } > "${{ runner.temp }}/dyld-manifest.txt"
+          cat "${{ runner.temp }}/dyld-manifest.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dyld-cache-manifest
+          path: ${{ runner.temp }}/dyld-manifest.txt
+          retention-days: 30
