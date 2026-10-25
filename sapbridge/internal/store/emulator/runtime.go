@@ -16,6 +16,7 @@ import (
 	"github.com/blacktop/go-macho"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machimage"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/cachepages"
 	storeprofile "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 	profileformat "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile/format"
 )
@@ -209,6 +210,29 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		if e = image.Load(r); e != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
+	}
+
+	// The profile's prepared pages point into the dyld shared cache, which the host
+	// had mapped and the guest does not. Bring in the pages those pointers
+	// reference before writing the profile's own pages, or every absolute pointer
+	// into the cache lands on nothing.
+	cachePages, err := cachepages.Load()
+	if err != nil {
+		return nil, fmt.Errorf("prepare store runtime: %w", err)
+	}
+
+	for _, cp := range cachePages {
+		if err = r.MemMap(cp.Address, uint64(len(cp.Data))); err != nil {
+			return nil, fmt.Errorf("prepare store runtime: map cache page %#x: %w", cp.Address, err)
+		}
+
+		if err = r.MemWrite(cp.Address, cp.Data); err != nil {
+			return nil, fmt.Errorf("prepare store runtime: write cache page %#x: %w", cp.Address, err)
+		}
+	}
+
+	if len(cachePages) > 0 {
+		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages\n", len(cachePages))
 	}
 
 	pageData := prepared.Pages

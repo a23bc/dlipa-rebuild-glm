@@ -165,6 +165,22 @@ jobs:
             echo "::warning::the regenerated profile differs from the committed one"
             diff <(head -c 200000 "$file") <(head -c 200000 "$upstream") | head -40 || true
           fi
+      - name: Extract the shared-cache pages the profile points at
+        run: |
+          cp "$RUNNER_TEMP/data_generated.go" \
+             sapbridge/internal/store/profile/data_generated.go
+          cd sapbridge
+          go run ./cmd/export-cache-pages \
+            -system-dir "$RUNNER_TEMP/dyld" \
+            -output internal/store/cachepages/pages.bin.zst
+          ls -l internal/store/cachepages/pages.bin.zst
+
+      - name: Upload the page blob
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-pages
+          path: sapbridge/internal/store/cachepages/pages.bin.zst
+
       - uses: actions/upload-artifact@v4
         with:
           name: store-profile
