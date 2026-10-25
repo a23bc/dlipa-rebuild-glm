@@ -13,7 +13,10 @@ import "fmt"
 // This is a diagnostic entry point for the E1-b milestone. It is not used by the
 // production request path, which goes through Execute.
 func (r *Runtime) EncodeProbe(endpoint string, parameters map[string]any) (uint64, error) {
-	account, err := r.ephemeralAccount(map[string]any{})
+	// nil, not an empty map: ephemeralAccount returns a fresh account straight
+	// away for nil, but treats a map as a saved account and parses its DSID.
+	// An empty map therefore fails with "invalid saved account identifier".
+	account, err := r.ephemeralAccount(nil)
 	if err != nil {
 		return 0, fmt.Errorf("ephemeral account: %w", err)
 	}
