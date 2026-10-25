@@ -72,6 +72,30 @@ func (r *Runtime) dumpFaultState() {
 	const faultAddr = 0x1a2a0621c
 	const faultPC = 0x1a2b4cdac
 
+	// UC_ARM64_REG_* ordinals from include/unicorn/arm64.h at the pinned commit.
+	const (
+		regX0     = 199
+		regPC     = 260
+		regESR    = 277
+		regFAR    = 281
+		regTTBR0  = 274
+	)
+
+	read := func(name string, reg int) {
+		if v, err := r.engine.RegRead(reg); err != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] reg %s: unreadable: %v\n", name, err)
+			return
+		} else {
+			fmt.Fprintf(os.Stderr, "[SAP] reg %s = %#x\n", name, v)
+		}
+	}
+
+	read("x0", regX0)
+	read("pc", regPC)
+	read("far_el1", regFAR)
+	read("esr_el1", regESR)
+	read("ttbr0_el1", regTTBR0)
+
 	if after, err := r.engine.MemRead(faultAddr, 16); err != nil {
 		fmt.Fprintf(os.Stderr, "[SAP] after fault: %#x unreadable: %v\n", faultAddr, err)
 	} else {
