@@ -83,7 +83,7 @@ else
     -DCMAKE_OSX_SYSROOT="$SDKROOT" \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
-    -DCMAKE_C_FLAGS="-target arm64-apple-ios15.0" \
+    -DCMAKE_C_FLAGS="-target arm64-apple-ios15.0 -DCONFIG_TCG_INTERPRETER=1" \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF \
     -DUNICORN_ARCH="$UNICORN_ARCH" \
@@ -91,6 +91,25 @@ else
     -DUNICORN_BUILD_TESTS=OFF \
     -DUNICORN_INSTALL=OFF
 fi
+
+# CONFIG_TCG_INTERPRETER decides one line of alloc_code_gen_buffer:
+#
+#   #if CONFIG_TCG_INTERPRETER
+#       int prot = PROT_WRITE | PROT_READ;
+#   #else
+#       int prot = PROT_WRITE | PROT_READ | PROT_EXEC;
+#   #endif
+#
+# iOS refuses the executable anonymous mapping, and QEMU turns that into
+# exit(1) from code_gen_alloc, so the app dies at the first uc_mem_map with
+# nothing in the log. It is worth stating the flag explicitly rather than
+# trusting that UNICORN_INTERPRETER reached every translation unit: the device
+# failed at an 8 MiB mmap with 63 MB resident, which is not a size problem and
+# is exactly what a PROT_EXEC request looks like.
+if ! grep -q "CONFIG_TCG_INTERPRETER" "$BUILD_DIR/build/config-host.h" 2>/dev/null; then
+  echo "::warning::CONFIG_TCG_INTERPRETER is not in config-host.h; relying on the explicit -D" >&2
+fi
+
 cmake --build "$BUILD_DIR/build" --parallel "$(sysctl -n hw.ncpu)"
 
 # CMake links two archives: libunicorn-static.a holds only the common target,
