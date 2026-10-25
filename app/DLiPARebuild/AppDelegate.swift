@@ -69,8 +69,16 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         AssetStaging.stageIfNeeded(progress: nil) { error in
             if let error {
                 AppLog.error("asset staging failed: " + error.localizedDescription, .assets)
-            } else {
-                AppLog.info("SAP assets staged for the arm64 bridge", .assets)
+                return
+            }
+
+            AppLog.info("SAP assets staged for the arm64 bridge", .assets)
+
+            // Open the emulator now, while the process is smallest. Doing it
+            // lazily, at whatever the user taps first, is what made the version
+            // list die inside machine.Open.
+            Task { @MainActor in
+                await AppSession.shared.prewarmSAPRuntime()
             }
         }
         print("[DLiPA] AppDelegate.didFinishLaunchingWithOptions returning true")

@@ -181,6 +181,43 @@ final class AppSession: ObservableObject {
 
     /// Makes sure the bag and the SAP session exist, then hands back what the
     /// download path needs. Throws when nobody is signed in.
+    /// Opens the SAP runtime before anything else needs it.
+    ///
+    /// Where in the process lifetime the emulator gets created turns out to
+    /// decide whether it can be created at all. Going straight from sign-in to
+    /// the version list dies inside machine.Open with "Could not allocate
+    /// dynamic translator buffer"; running kbsync first, which opens the same
+    /// machine minutes earlier, makes every later step work. The machine is the
+    /// same, the sizes are the same -- only the order differs.
+    ///
+    /// So it is created at launch, right after the assets finish staging, while
+    /// the process is as small as it will ever be. Nothing here needs an
+    /// account: a signer is bag plus hardware identity.
+    func prewarmSAPRuntime() async {
+        guard signer == nil else { return }
+
+        do {
+            if bag == nil {
+                bag = try await client.fetchBag(guid: hardware.guid)
+            }
+            guard let bag,
+                  let setup = bag.signSapSetup,
+                  let cert = bag.signSapSetupCert else {
+                AppLog.info("SAP pre-warm skipped: bag carries no SAP configuration", .sap)
+                return
+            }
+
+            AppLog.info("pre-warming the SAP runtime", .sap)
+            signer = try SAPSigner(setupURL: setup, certURL: cert,
+                                   version: bag.signSapVersion, hardware: hardware)
+            AppLog.info("SAP runtime pre-warmed", .sap)
+        } catch {
+            // Not fatal: whichever path needs it later will try again and report
+            // the failure where it matters.
+            AppLog.warn("SAP pre-warm failed: " + error.localizedDescription, .sap)
+        }
+    }
+
     /// In-flight session build.
     ///
     /// ensureSession is called from several places that can overlap -- opening a
