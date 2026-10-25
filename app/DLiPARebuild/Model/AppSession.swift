@@ -238,29 +238,26 @@ final class AppSession: ObservableObject {
         // is otherwise indistinguishable from a build that predates it.
         // A local because AppLog's message is an escaping autoclosure, and a
         // bare property reference inside one needs explicit self.
-        let alreadyAuthorised = didAuthorizeMachine
-        AppLog.info("ensureSession: authorizeMachine endpoint "
-                    + (bag.authorizeMachine ?? "MISSING")
-                    + ", already authorised: " + String(alreadyAuthorised), .auth)
-
-        // Sign in again immediately before authorising.
+        // authorizeMachine is not called, on purpose.
         //
-        // clearToken is short lived: it was reported expired twice, once twelve
-        // minutes after sign-in and once eleven seconds after it. The eleven
-        // second case had four passwordToken attempts ahead of it, so ordering
-        // may have spoilt it -- and the sequence that has never been tried is a
-        // token signed seconds ago and presented as the very next request.
-        await signInBeforeAuthorising()
-
-        didAuthorizeMachine = true
-        let authorised = await client.authorizeMachine(
-            account: (activeAccount ?? account).asAccount(),
-            guid: hardware.guid,
-            bag: bag,
-            signer: signer)
-        if !authorised {
-            AppLog.error("machine authorisation failed; downloads will answer 2042", .auth)
-        }
+        // The idea was that authenticate proves the password but leaves no store
+        // session, so binding the device would supply the missing step. It has
+        // now been tried with four token combinations on three different
+        // identities and answered 2034 ExpiredPasswordToken every single time,
+        // after a sign-in that had just succeeded. Upstream ipatool never calls
+        // it at all.
+        //
+        // Worse, it may be the reason the download answers 2042. Each attempt
+        // spends a token that authenticate just minted, and the sequence in the
+        // log is always: sign-in 200, four authorise 2034, download 2042. The
+        // download is then told to sign in again by a store that was signed in
+        // seconds earlier.
+        //
+        // So this round simply does not call it, and the log says so, which is
+        // also the control for the comparison: if 2042 persists without it, the
+        // call was innocent and the missing piece is elsewhere.
+        AppLog.info("ensureSession: skipping authorizeMachine (never accepted by "
+                    + "Apple; endpoint " + (bag.authorizeMachine ?? "MISSING") + ")", .auth)
 
         guard let refreshed = activeAccount else { throw StoreError.noBagEndpoint }
         return (refreshed, bag, signer)
