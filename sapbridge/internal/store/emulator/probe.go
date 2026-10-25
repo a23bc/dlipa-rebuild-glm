@@ -1,6 +1,9 @@
 package emulator
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // EncodeProbe drives the real StoreKit request encoder far enough to know whether
 // it will produce a request at all.
