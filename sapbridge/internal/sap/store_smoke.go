@@ -15,7 +15,9 @@ package sap
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
@@ -45,6 +47,14 @@ func (s *Signer) StoreSmoke() (string, error) {
 	}
 
 	loaded := time.Since(started)
+
+	// Print what is actually being handed to the runtime, not what we believe is
+	// there. The pinned digest lives in runtime.go and the loader has its own copy
+	// in assets.go; if the two disagree the only way to tell which slice is wrong
+	// is to look at the bytes in the app.
+	image := s.s.bundle.AppleMediaServices
+	imageSum := sha256.Sum256(image)
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: AMS %d bytes sha256 %x\n", len(image), imageSum)
 
 	opened := time.Now()
 
