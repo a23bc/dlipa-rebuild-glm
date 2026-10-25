@@ -96,6 +96,20 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: length=%d equal=%d\n", length, equal)
 
+	// E1-b: drive the real StoreKit encoder far enough to know whether it will
+	// produce a request at all. The helpers it needs live in the emulator package,
+	// so the sequence is behind EncodeProbe rather than inlined here.
+	address, err := runtime.EncodeProbe(
+		"https://p52-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct",
+		map[string]any{"salableAdamId": "389801252"})
+	if err != nil {
+		return "", fmt.Errorf("store smoke: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: encoder produced request at %#x\n", address)
+
+
+
 
 	closeStart := time.Now()
 
@@ -106,11 +120,11 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 	closed := time.Since(closeStart)
 
 	return fmt.Sprintf(
-		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d",
+		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d; request=%#x",
 		(len(data.Metadata)+len(data.Pages)+len(data.Plugin))/(1<<20),
 		loaded.Round(time.Millisecond),
 		openDuration.Round(time.Millisecond),
 		closed.Round(time.Millisecond),
-		length, equal,
+		length, equal, address,
 	), nil
 }
