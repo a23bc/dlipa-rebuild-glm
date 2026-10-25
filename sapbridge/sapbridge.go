@@ -12,6 +12,7 @@ import (
         "errors"
         "fmt"
         "os"
+        "path/filepath"
         "strconv"
         "strings"
         "sync"
@@ -19,7 +20,6 @@ import (
         "time"
 
         "github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap"
-        "github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
 )
 
