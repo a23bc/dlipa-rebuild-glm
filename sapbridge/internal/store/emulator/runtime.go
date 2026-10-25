@@ -369,6 +369,13 @@ func (r *Runtime) MemMap(address, size uint64) error {
 		overlap = overlap || r.pages[page]
 	}
 
+	// Watch the range that faults during encoder initWithBag: every map that
+	// touches it is logged, because no MemUnmap exists anywhere in this package
+	// and the page is readable immediately before the call that faults on it.
+	if address < 0x1a2b0000 && address+size > 0x1a2a0000 {
+		fmt.Fprintf(os.Stderr, "[SAP] watch: MemMap %#x+%#x (fault page range)\n", address, size)
+	}
+
 	if !overlap {
 		if err := r.engine.MemMap(address, size); err == nil {
 			for page := address; page < address+size; page += 4096 {
