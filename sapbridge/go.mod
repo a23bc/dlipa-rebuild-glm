@@ -7,6 +7,7 @@ require (
 	github.com/ebitengine/purego v0.10.2
 	github.com/klauspost/compress v1.18.6
 	github.com/majd/ipatool/v2 v2.7.0
+	golang.org/x/text v0.37.0
 	howett.net/plist v1.0.1
 )
 
