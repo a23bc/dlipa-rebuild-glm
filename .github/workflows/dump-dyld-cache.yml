@@ -92,23 +92,35 @@ jobs:
           total=$(du -sh "$dir" | cut -f1)
           echo "members: $count, total: $total"
 
-          # The main cache must exist and be substantial. A zero-length or absent
-          # file here means the dump silently produced nothing, which would only
-          # surface much later as an unreadable cache in profilegen.
+          # The main member is a header and index, not the payload: on this image
+          # it is 736 KB while the members together are 6.6 GB, because the data
+          # lives in the .01 ... .79 subcaches. Checking its size for a hundred
+          # megabytes was the wrong test and failed a perfectly good dump.
+          #
+          # So the checks are: the header exists and is not empty, there are many
+          # members, and the set together is large enough to be a real cache.
           main="$dir/${{ env.CACHE_PREFIX }}"
           if [ ! -f "$main" ]; then
             echo "::error::$main is missing"
             exit 1
           fi
           size=$(stat -c %s "$main")
-          echo "main member: $size bytes"
-          if [ "$size" -lt 100000000 ]; then
-            echo "::error::$main is $size bytes, far smaller than a real shared cache"
+          echo "main member (header): $size bytes"
+
+          if [ "$size" -lt 4096 ]; then
+            echo "::error::$main is $size bytes; a shared-cache header is at least a few KB"
             exit 1
           fi
 
-          if [ "$count" -lt 2 ]; then
-            echo "::error::only $count member(s); a shared cache has subcache members too"
+          if [ "$count" -lt 10 ]; then
+            echo "::error::only $count member(s); the header walk should list dozens"
+            exit 1
+          fi
+
+          bytes=$(du -sb "$dir" | cut -f1)
+          echo "total: $bytes bytes"
+          if [ "$bytes" -lt 1000000000 ]; then
+            echo "::error::the whole dump is $bytes bytes, under 1 GB"
             exit 1
           fi
 
