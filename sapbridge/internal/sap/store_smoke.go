@@ -58,7 +58,16 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 
 	opened := time.Now()
 
-	runtime, err := emulator.Open(ctx, image, data)
+	// Share the SAP machine's engine. A second engine cannot be created in this
+	// process at all: TCG's translator buffer is initialised once per process,
+	// so the second uc_open fails with "Could not allocate dynamic translator
+	// buffer". Sharing is not a memory optimisation here, it is the only option.
+	engine := s.machine.Engine()
+	if engine == nil {
+		return "", fmt.Errorf("store smoke: machine has no engine")
+	}
+
+	runtime, err := emulator.OpenWithEngine(ctx, engine, image, data)
 	if err != nil {
 		return "", fmt.Errorf("store smoke: open runtime after %s: %w (image=%d bytes, plugin=%d bytes)",
 			time.Since(opened).Round(time.Millisecond), err, len(image), len(data.Plugin))

@@ -370,18 +370,23 @@ func (r *Runtime) MemMap(address, size uint64) error {
 	}
 
 	if !overlap {
-		if err := r.engine.MemMap(address, size); err != nil {
-			// r.pages only knows the pages this Runtime mapped. On iOS the SAP
-			// machine has already mapped the return stub, the stack and the
-			// framework segments, so the first uc_mem_map of those fails with
-			// UC_ERR_MAP. A range that is already readable is reused rather than
-			// treated as fatal; upstream never sees this because it always builds
-			// its own engine on an empty address space.
-			if _, readErr := r.engine.MemRead(address, 1); readErr != nil {
-				return fmt.Errorf("map guest memory: %w", err)
+		if err := r.engine.MemMap(address, size); err == nil {
+			for page := address; page < address+size; page += 4096 {
+				r.pages[page] = true
 			}
 
-			fmt.Fprintf(os.Stderr, "[SAP]   region %#x reused from the SAP machine\n", address)
+			return nil
+		}
+
+		// A whole-range map fails if any part of the range already exists, and
+		// r.pages only knows what this Runtime mapped. On iOS the SAP machine has
+		// the same AppleMediaServices image mapped at the same base, so a range
+		// that crosses one of its segments cannot be mapped in a single call even
+		// when the rest is free. Fall back to page granularity: keep what is
+		// already there, map the gaps. Upstream never meets this because it always
+		// builds its own engine on an empty address space.
+		if err := r.mapPerPage(address, size); err != nil {
+			return fmt.Errorf("map guest memory: %w", err)
 		}
 
 		for page := address; page < address+size; page += 4096 {
@@ -404,13 +409,40 @@ func (r *Runtime) MemMap(address, size uint64) error {
 		}
 
 		if err := r.engine.MemMap(page, end-page); err != nil {
-			return fmt.Errorf("map guest memory: %w", err)
+			if perPage := r.mapPerPage(page, end-page); perPage != nil {
+				return fmt.Errorf("map guest memory: %w", perPage)
+			}
 		}
 
 		for ; page < end; page += 4096 {
 			r.pages[page] = true
 		}
 	}
+
+	return nil
+}
+
+// mapPerPage maps what is missing inside a range, one 4 KiB page at a time.
+//
+// A page that is already readable is left alone: on iOS it belongs to the SAP
+// machine, which mapped the same image from the same bytes. Only the gaps are
+// mapped fresh.
+func (r *Runtime) mapPerPage(address, size uint64) error {
+	var fresh int
+
+	for page := address; page < address+size; page += 4096 {
+		if _, err := r.engine.MemRead(page, 1); err == nil {
+			continue
+		}
+
+		if err := r.engine.MemMap(page, 4096); err != nil {
+			return fmt.Errorf("page %#x: %w", page, err)
+		}
+
+		fresh++
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x mapped per page (%d new)\n", address, size, fresh)
 
 	return nil
 }
