@@ -52,7 +52,7 @@ func (s *Signer) StoreSmoke() (string, error) {
 	// there. The pinned digest lives in runtime.go and the loader has its own copy
 	// in assets.go; if the two disagree the only way to tell which slice is wrong
 	// is to look at the bytes in the app.
-	image := s.s.bundle.AppleMediaServices
+	image := s.bundle.AppleMediaServices
 	imageSum := sha256.Sum256(image)
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: AMS %d bytes sha256 %x\n", len(image), imageSum)
 
