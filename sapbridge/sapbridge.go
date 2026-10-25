@@ -205,17 +205,22 @@ func (s *Signer) StoreSmoke() (report string, err error) {
 
 	// inner is the ActionSigner interface; the smoke test lives on the concrete
 	// signer, so ask for it rather than widening the interface for one caller.
-	bundle, err := loadBundle()
+	// Read the file the app staged rather than a cached Bundle. On device the
+	// bundle handed to this call was empty even though the same loader, called
+	// during pre-warm, had the real bytes -- so the file is the only source that
+	// has been observed to be correct at both moments.
+	imagePath := filepath.Join(BundleDirValue(), "AppleMediaServices")
+	image, err := os.ReadFile(imagePath)
 	if err != nil {
-		return "", fmt.Errorf("sapbridge: load bundle: %w", err)
+		return "", fmt.Errorf("sapbridge: read %s: %w", imagePath, err)
 	}
 
-	smoker, ok := s.inner.(interface{ StoreSmoke(assets.Bundle) (string, error) })
+	smoker, ok := s.inner.(interface{ StoreSmoke([]byte) (string, error) })
 	if !ok {
 		return "", fmt.Errorf("sapbridge: signer does not support the store smoke test")
 	}
 
-	return smoker.StoreSmoke(bundle)
+	return smoker.StoreSmoke(image)
 }
 
 func (s *Signer) Hardware() []byte {

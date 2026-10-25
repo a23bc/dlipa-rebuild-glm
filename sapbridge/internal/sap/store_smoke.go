@@ -26,7 +26,7 @@ import (
 )
 
 // StoreSmoke opens the Store runtime on the signer's machine and reports timings.
-func (s *Signer) StoreSmoke(bundle assets.Bundle) (string, error) {
+func (s *Signer) StoreSmoke(image []byte) (string, error) {
 	if s == nil || s.machine == nil {
 		return "", fmt.Errorf("store smoke: no machine")
 	}
@@ -54,14 +54,13 @@ func (s *Signer) StoreSmoke(bundle assets.Bundle) (string, error) {
 	// there. The pinned digest lives in runtime.go and the loader has its own copy
 	// in assets.go; if the two disagree the only way to tell which slice is wrong
 	// is to look at the bytes in the app.
-	image := bundle.AppleMediaServices
 
 	// Fail with the number in the message. The slicer's own error says only
 	// "too short to hold a Mach-O magic", which leaves open whether the bundle
 	// was empty or the file was tiny; naming the length removes that doubt.
 	if len(image) < 4 {
-		return "", fmt.Errorf("store smoke: bundle gave %d bytes for AppleMediaServices (commerce %d, CoreFP %d, icxs %d)",
-			len(image), len(bundle.Commerce), len(bundle.CoreFP), len(bundle.CoreFPICXS))
+		return "", fmt.Errorf("store smoke: got %d bytes for AppleMediaServices",
+			len(image))
 	}
 	imageSum := sha256.Sum256(image)
 	magic := image
