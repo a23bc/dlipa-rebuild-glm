@@ -204,12 +204,17 @@ func (s *Signer) StoreSmoke() (report string, err error) {
 
 	// inner is the ActionSigner interface; the smoke test lives on the concrete
 	// signer, so ask for it rather than widening the interface for one caller.
-	smoker, ok := s.inner.(interface{ StoreSmoke() (string, error) })
+	bundle, err := loadBundle()
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: load bundle: %w", err)
+	}
+
+	smoker, ok := s.inner.(interface{ StoreSmoke(assets.Bundle) (string, error) })
 	if !ok {
 		return "", fmt.Errorf("sapbridge: signer does not support the store smoke test")
 	}
 
-	return smoker.StoreSmoke()
+	return smoker.StoreSmoke(bundle)
 }
 
 func (s *Signer) Hardware() []byte {

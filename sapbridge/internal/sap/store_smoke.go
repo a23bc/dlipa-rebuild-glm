@@ -26,7 +26,7 @@ import (
 )
 
 // StoreSmoke opens the Store runtime on the signer's machine and reports timings.
-func (s *Signer) StoreSmoke() (string, error) {
+func (s *Signer) StoreSmoke(bundle assets.Bundle) (string, error) {
 	if s == nil || s.machine == nil {
 		return "", fmt.Errorf("store smoke: no machine")
 	}
@@ -40,14 +40,6 @@ func (s *Signer) StoreSmoke() (string, error) {
 	// (a uint64), not a Go context, and the name collision is easy to miss.
 	ctx := context.Background()
 
-	// Read the bundle here rather than through the signer copy. On device the
-	// signer field was empty while the machine built from the same load mapped
-	// the frameworks fine, so the field is the wrong thing to trust.
-	// assets.Load is memoised, so this costs a map lookup.
-	bundle, err := assets.Load(ctx)
-	if err != nil {
-		return "", fmt.Errorf("store smoke: load assets: %w", err)
-	}
 
 	started := time.Now()
 
