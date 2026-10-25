@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -145,11 +146,19 @@ func newEngine(ctx context.Context, loadLibrary func(context.Context) (library, 
 		return nil, fmt.Errorf("unsupported Unicorn API version %d.%d", major, minor)
 	}
 
+	// Print around each step that can fail silently. The failure this guards
+	// against happens inside QEMU, which calls exit(1) from code_gen_alloc, so
+	// the process dies mid-function and the only evidence is which of these
+	// lines came last.
+	fmt.Fprintf(os.Stderr, "[SAP]   uc_open(arch=%d mode=%d)...\n", archARM64, modeARM)
+
 	if err := engine.err(engine.api.open(archARM64, modeARM, &engine.handle)); err != nil {
 		_ = library.close()
 
 		return nil, fmt.Errorf("create arm64 emulator: %w", err)
 	}
+
+	fmt.Fprintf(os.Stderr, "[SAP]   uc_open ok\n")
 
 	// Shrink the TCG JIT translation buffer from the 1 GiB default to
 	// 16 MiB. MUST happen before any UC_INIT-triggering call (uc_mem_map,
@@ -158,6 +167,8 @@ func newEngine(ctx context.Context, loadLibrary func(context.Context) (library, 
 	// UC_CTL_TCG_BUFFER_SIZE just stores the value; it does not init.
 	// Without this, iOS refuses the 1 GiB mmap and Unicorn exits with
 	// "Could not allocate dynamic translator buffer".
+	fmt.Fprintf(os.Stderr, "[SAP]   uc_ctl tcg_buffer_size=%d\n", tcgBufferSizeIOS)
+
 	if err := engine.err(engine.api.ctl(engine.handle, controlTCGBufferSize, tcgBufferSizeIOS)); err != nil {
 		_ = engine.api.close(engine.handle)
 		_ = library.close()

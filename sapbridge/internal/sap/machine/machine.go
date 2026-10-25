@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"time"
 
@@ -225,6 +226,13 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 		{heapBase, heapSize},
 		{stackBase, stackSize},
 	} {
+		// The first of these triggers UC_INIT, and with it QEMU's
+		// code_gen_alloc. That function calls exit(1) when its mmap fails, so the
+		// process dies inside this loop and the last line printed is the only
+		// clue to which region was in flight.
+		fmt.Fprintf(os.Stderr, "[SAP]   mem_map %#x size=%d (triggers UC_INIT on the first)\n",
+			region.address, region.size)
+
 		if err := engine.MemMap(region.address, region.size); err != nil {
 			return nil, nil, fmt.Errorf("map SAP guest memory at %#x: %w", region.address, err)
 		}
