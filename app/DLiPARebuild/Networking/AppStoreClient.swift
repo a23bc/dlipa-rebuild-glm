@@ -826,11 +826,11 @@ final class AppStoreClient {
         // with a body that was still missing kbsync, so the observation does not
         // transfer. Rather than spend a build per variable, send the
         // combinations once and let the log say which one was answered.
+        // One attempt: upstream's shape, plus the replayed cookies. The
+        // four-way credential matrix is gone -- every combination returned the
+        // same 500 with an empty body, so the credential was never the variable.
         let variants: [(String, String, Bool)] = [
-            ("passwordToken+dsid", account.passwordToken, true),
-            ("passwordToken", account.passwordToken, false),
-            ("sessionToken+dsid", account.sessionToken, true),
-            ("sessionToken", account.sessionToken, false),
+            ("cookie+passwordToken+dsid", account.passwordToken, true),
         ]
 
         var rejected: (failure: String, message: String) = ("", "")
@@ -932,12 +932,13 @@ final class AppStoreClient {
         // What is left is which credential goes in X-Token. authenticate returns
         // two, and the store calls the 52 character one a bad password token, so
         // the 32 character clearToken gets a turn as well.
+        // One attempt. The five-way credential matrix is gone: every
+        // combination returned the same 2042, so the credential was never the
+        // variable. The variable this round is the Cookie header, which this
+        // request has never sent -- only iCloud-DSID, X-Dsid and X-Token, none of
+        // which carry a session.
         let attempts: [(label: String, token: String, signed: Bool)] = [
-            ("passwordToken", account.passwordToken, false),
-            ("clearToken", account.clearToken, false),
-            ("none", "", false),
-            ("passwordToken+signed", account.passwordToken, true),
-            ("clearToken+signed", account.clearToken, true),
+            ("cookie+passwordToken", account.passwordToken, false),
         ]
 
         // Printed once, because a zero-length token silently turns every
@@ -958,6 +959,11 @@ final class AppStoreClient {
                     + (cookies.isEmpty
                        ? "none"
                        : cookies.map { $0.name }.joined(separator: ", ")), .download)
+        // The cookie jar is empty either way, so the number that matters is the
+        // replay header captured from Set-Cookie by hand.
+        AppLog.info("replayed cookie header: "
+                    + String(capturedCookieHeader.count) + " chars, "
+                    + String(capturedCookieValues.count) + " values", .download)
 
         var licenceFailure: (String, String)?
         var lastError: Error = StoreError.failureType("download", "every attempt failed")
@@ -970,6 +976,15 @@ final class AppStoreClient {
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
             if !attempt.token.isEmpty {
                 request.setValue(attempt.token, forHTTPHeaderField: "X-Token")
+            }
+            // The session Apple actually checks. authenticate hands back
+            // mz_at_ssl-<dsid>, X-Dsid, X-Token, wosid and session-store-id as
+            // Set-Cookie; URLSession stores none of them for this domain, so
+            // they are captured by hand and replayed here. Without this the
+            // request carries three identifiers and no session, which is what
+            // 2042 AuthTokenResumeFreeBuy describes.
+            if !capturedCookieHeader.isEmpty {
+                request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
             }
             request.httpBody = body
 
