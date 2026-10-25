@@ -139,7 +139,14 @@ final class SAPSigner {
     /// and the blob is stable for a given account and device. So it is cached
     /// and reused. A blob Apple rejected is discarded so the next call
     /// regenerates it; a fresh blob is never retried.
-    func kbsync(dsid: String) throws -> Data {
+    /// E1-a: opens the Store runtime on the machine this signer already runs on,
+/// and reports how long it took. The runtime shares the guest rather than
+/// creating one, because a second emulator cannot be allocated here.
+func storeSmoke() throws -> String {
+    try bridge.storeSmoke()
+}
+
+func kbsync(dsid: String) throws -> Data {
         let key = Self.cacheKey(dsid: dsid, guid: hardware.guid)
         if let cached = Self.kbsyncCache.object(forKey: key) {
             return cached as Data
