@@ -42,7 +42,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/dyld
-          key: dyld-cache-26A434-arm64e-v1
+          # v2: v1 held only the shared cache. The job now also needs the
+          # FeatureFlags plists, and a restored v1 has no dyld-system directory,
+          # so the checks below fail on a cache hit. Bump this whenever the shape
+          # of what must be present changes, not only when the image does.
+          key: dyld-cache-26A434-arm64e-v2
 
       - name: Check out the pinned ipatool and install the exporter
         if: steps.cache.outputs.cache-hit != 'true'
