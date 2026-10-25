@@ -180,6 +180,17 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	for _, region := range [][2]uint64{{heapBase, heapSize}, {stackBase, stackSize}, {returnPC, 4096}} {
 		if err = r.MemMap(region[0], region[1]); err != nil {
+			// On iOS the SAP machine and the Store runtime share one guest, and
+			// both put the return stub and the stack at the same fixed
+			// addresses. Mapping a live region again fails with UC_ERR_MAP, so a
+			// region that is already readable is reused instead of aborting.
+			// Upstream never meets this: it always builds a fresh engine.
+			if _, readErr := r.engine.MemRead(region[0], 1); readErr == nil {
+				fmt.Fprintf(os.Stderr, "[SAP]   region %#x already mapped, reusing\n", region[0])
+
+				continue
+			}
+
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 	}
@@ -359,7 +370,17 @@ func (r *Runtime) MemMap(address, size uint64) error {
 
 	if !overlap {
 		if err := r.engine.MemMap(address, size); err != nil {
-			return fmt.Errorf("map guest memory: %w", err)
+			// r.pages only knows the pages this Runtime mapped. On iOS the SAP
+			// machine has already mapped the return stub, the stack and the
+			// framework segments, so the first uc_mem_map of those fails with
+			// UC_ERR_MAP. A range that is already readable is reused rather than
+			// treated as fatal; upstream never sees this because it always builds
+			// its own engine on an empty address space.
+			if _, readErr := r.engine.MemRead(address, 1); readErr != nil {
+				return fmt.Errorf("map guest memory: %w", err)
+			}
+
+			fmt.Fprintf(os.Stderr, "[SAP]   region %#x reused from the SAP machine\n", address)
 		}
 
 		for page := address; page < address+size; page += 4096 {
