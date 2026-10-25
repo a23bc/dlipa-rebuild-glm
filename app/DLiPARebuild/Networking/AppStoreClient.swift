@@ -34,8 +34,20 @@ final class AppStoreClient {
 
     init() {
         let configuration = URLSessionConfiguration.default
+        // Automatic cookie handling is off on purpose.
+        //
+        // With it on, URLSession consumes Set-Cookie into HTTPCookieStorage and
+        // removes it from the response headers. On this platform the storage then
+        // reports nothing for itunes.apple.com, so the cookies end up nowhere:
+        // gone from the headers we can read, absent from the jar we can query.
+        // That is why every download logged "store cookies: none" and replayed a
+        // single 17-character cookie while the authenticate response had just
+        // handed over seventeen.
+        //
+        // With it off, Set-Cookie stays in allHeaderFields, captureCookies sees
+        // all of them, and the replay header carries the real session.
+        configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = HTTPCookieStorage.shared
-        configuration.httpShouldSetCookies = true
         // The authenticate endpoint redirects to a Store pod; the body must be
         // re-signed at the destination rather than forwarded, so redirects are
         // handled manually.
@@ -480,8 +492,14 @@ final class AppStoreClient {
             capturedCookieValues[parts[0]] = parts.dropFirst().joined(separator: "=")
         }
         let names = pairs.map { $0.components(separatedBy: "=").first ?? "?" }
+        // Both numbers matter: what this response exposed, and what has
+        // accumulated. A response that exposes nothing is the difference between
+        // "Apple sent no cookies" and "we could not see them".
+        let exposed = raw.count
+        let total = capturedCookieValues.count
         AppLog.info("Set-Cookie from " + (http.url?.host ?? "?") + ": "
-                    + names.joined(separator: ", "), .network)
+                    + String(exposed) + " header(s), total " + String(total)
+                    + " cookies: " + names.joined(separator: ", "), .network)
     }
 
     /// Enough of an identifier to tell two accounts apart in a log, not enough
