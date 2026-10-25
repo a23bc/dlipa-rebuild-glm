@@ -83,10 +83,9 @@ jobs:
           mkdir -p "${{ runner.temp }}/dyld"
           cd /tmp/ipatool
           go run ./cmd/export-dyld-cache \
-            -prefix "${{ runner.temp }}/dyld/${{ env.CACHE_PREFIX }}" 
+            -prefix "${{ runner.temp }}/dyld/${{ env.CACHE_PREFIX }}" \
             -system-dir "${{ runner.temp }}/dyld-system"
           cd - >/dev/null
-
       - name: List what was produced
         run: |
           dir="${{ runner.temp }}/dyld"
