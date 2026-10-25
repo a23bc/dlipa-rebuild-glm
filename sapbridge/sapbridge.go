@@ -194,6 +194,24 @@ func (s *Signer) kbsync(dsid string) ([]byte, error) {
 }
 
 // Hardware returns a copy of the device identity bytes.
+// StoreSmoke opens the Store runtime on this signer's machine and reports how
+// long each half took. It runs on the existing guest rather than creating one,
+// because a second emulator cannot be allocated on this platform.
+func (s *Signer) StoreSmoke() (report string, err error) {
+	if s == nil || s.inner == nil {
+		return "", errClosed
+	}
+
+	// inner is the ActionSigner interface; the smoke test lives on the concrete
+	// signer, so ask for it rather than widening the interface for one caller.
+	smoker, ok := s.inner.(interface{ StoreSmoke() (string, error) })
+	if !ok {
+		return "", fmt.Errorf("sapbridge: signer does not support the store smoke test")
+	}
+
+	return smoker.StoreSmoke()
+}
+
 func (s *Signer) Hardware() []byte {
         if s == nil {
                 return nil

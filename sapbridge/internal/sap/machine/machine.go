@@ -372,6 +372,19 @@ func loadPrelinkedSlots(engine *unicorn.Engine, slots map[uint64]string, resolve
 	return nil
 }
 
+// Engine returns the guest this machine runs on.
+//
+// Exposed because the Store runtime must run on the same guest rather than
+// create one: iOS allows roughly one emulator per process, so a second one
+// fails outright.
+func (m *Machine) Engine() *unicorn.Engine {
+	if m == nil {
+		return nil
+	}
+
+	return m.engine
+}
+
 func (m *Machine) Initialize(hardwareID []byte) (uint64, error) {
 	hardware, err := hardwareBlock(hardwareID)
 	if err != nil {

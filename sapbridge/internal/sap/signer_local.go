@@ -20,6 +20,10 @@ type Signer struct {
 	context  uint64
 	hardware []byte
 	closed   bool
+
+	// Kept so the Store smoke test can reach AppleMediaServices without
+	// re-reading the bundle from disk.
+	bundle assets.Bundle
 }
 
 // stepRecovered wraps one handshake step so a panic inside the guest
@@ -81,6 +85,7 @@ func NewSigner(ctx context.Context, config Config, bundle assets.Bundle) (Action
 
 	signer := &Signer{
 		machine:  guest,
+		bundle:   bundle,
 		hardware: append([]byte(nil), config.HardwareID...),
 	}
 	complete := false
