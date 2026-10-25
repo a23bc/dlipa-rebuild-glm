@@ -68,6 +68,7 @@ type Runtime struct {
 	pending                     []uint64
 	hardwareID                  []byte
 	engine                      *unicorn.Engine
+	ownsEngine                  bool
 	profile                     Profile
 	classes                     map[string]*Class
 	classNames                  map[uint64]string
@@ -86,12 +87,26 @@ type Runtime struct {
 }
 
 func Open(ctx context.Context, imageData []byte, prepared storeprofile.Data) (*Runtime, error) {
-	return open(ctx, imageData, prepared, false)
+	return open(ctx, nil, imageData, prepared, false)
+}
+
+// OpenWithEngine builds the runtime on top of an engine that already exists.
+//
+// The runtime does not own an injected engine and will not close it: on iOS there
+// is one guest per process (roughly 173 MB, and a second cannot be created), so
+// the engine is shared with the SAP path and outlives any single request. Close
+// therefore releases the guest-side objects but leaves the machine running.
+func OpenWithEngine(ctx context.Context, engine *unicorn.Engine, imageData []byte, prepared storeprofile.Data) (*Runtime, error) {
+	if engine == nil {
+		return nil, errors.New("emulator engine is nil")
+	}
+
+	return open(ctx, engine, imageData, prepared, false)
 }
 
 // open optionally guards accesses against the exported page set. Validation and
 // production use the same grouped mappings to stay within Unicorn section limits.
-func open(ctx context.Context, imageData []byte, prepared storeprofile.Data, strict bool) (*Runtime, error) {
+func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, strict bool) (*Runtime, error) {
 	if ctx == nil {
 		return nil, errors.New("emulator context is nil")
 	}
@@ -126,13 +141,20 @@ func open(ctx context.Context, imageData []byte, prepared storeprofile.Data, str
 		imageInputs["AMSAccountAuthenticationPlugin"] = plugin
 	}
 
-	engine, err := unicorn.New(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("prepare store runtime: %w", err)
+	engine := provided
+	ownsEngine := provided == nil
+
+	if engine == nil {
+		var err error
+		engine, err = unicorn.New(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("prepare store runtime: %w", err)
+		}
 	}
 
 	r := metadata.newRuntime()
 	r.engine = engine
+	r.ownsEngine = ownsEngine
 	r.ctx = ctx
 	r.callbacks = map[uint64]func(){}
 	ready := false
@@ -302,7 +324,12 @@ func (r *Runtime) Close() error {
 	clear(r.tasks)
 	r.pending = nil
 	r.timers = nil
-	err := r.engine.Close()
+	// An injected engine belongs to the caller and must stay running.
+	var err error
+	if r.ownsEngine {
+		err = r.engine.Close()
+	}
+
 	r.engine = nil
 
 	if err != nil {
