@@ -16,6 +16,15 @@ func (r *Runtime) EncodeProbe(endpoint string, parameters map[string]any) (uint6
 	// nil, not an empty map: ephemeralAccount returns a fresh account straight
 	// away for nil, but treats a map as a saved account and parses its DSID.
 	// An empty map therefore fails with "invalid saved account identifier".
+	// Reported by initWithBag: on device. Checked here so the log says whether
+	// the page is mapped *before* the encoder is built, which separates "we
+	// never mapped it" from "something unmapped it afterwards".
+	if probe, readErr := r.engine.MemRead(0x1a2a0621c, 4); readErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] probe: 0x1a2a0621c UNREADABLE: %v\n", readErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "[SAP] probe: 0x1a2a0621c readable %x\n", probe)
+	}
+
 	account, err := r.ephemeralAccount(nil)
 	if err != nil {
 		return 0, fmt.Errorf("ephemeral account: %w", err)
