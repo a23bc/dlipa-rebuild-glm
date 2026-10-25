@@ -1,5 +1,5 @@
-// Command export-dyld-cache dumps the pinned dyld shared cache to disk so
-// profilegen can be run with -cache.
+// Command export-dyld-cache dumps the pinned shared cache and the feature-flag
+// plists profilegen reads, so profilegen can run with -cache.
 package main
 
 import (
@@ -21,14 +21,19 @@ func main() {
 
 func run() error {
 	prefix := flag.String("prefix", "", "output path prefix for the shared-cache members")
+	systemDir := flag.String("system-dir", "", "directory for the FeatureFlags plists")
 	flag.Parse()
 
 	if *prefix == "" {
 		return fmt.Errorf("-prefix is required")
 	}
 
+	if *systemDir == "" {
+		return fmt.Errorf("-system-dir is required")
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	return assets.WriteSharedCache(ctx, *prefix)
+	return assets.WriteCache(ctx, *prefix, *systemDir)
 }

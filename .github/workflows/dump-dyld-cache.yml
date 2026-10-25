@@ -79,7 +79,8 @@ jobs:
           mkdir -p "${{ runner.temp }}/dyld"
           cd /tmp/ipatool
           go run ./cmd/export-dyld-cache \
-            -prefix "${{ runner.temp }}/dyld/${{ env.CACHE_PREFIX }}"
+            -prefix "${{ runner.temp }}/dyld/${{ env.CACHE_PREFIX }}" 
+            -system-dir "${{ runner.temp }}/dyld-system"
           cd - >/dev/null
 
       - name: List what was produced
@@ -124,6 +125,16 @@ jobs:
             exit 1
           fi
 
+          echo "==> feature flags"
+          sys="${{ runner.temp }}/dyld-system"
+          ls -la "$sys"
+          for domain in AppleMediaServices CFNetwork Foundation; do
+            if [ ! -s "$sys/$domain.plist" ]; then
+              echo "::error::$sys/$domain.plist is missing or empty"
+              exit 1
+            fi
+          done
+
       - name: Record the manifest
         run: |
           dir="${{ runner.temp }}/dyld"
@@ -131,7 +142,10 @@ jobs:
             echo "ipatool ref: $IPATOOL_REF"
             echo "prefix: $CACHE_PREFIX"
             echo
+            echo "--- shared cache"
             find "$dir" -type f -printf '%f %s bytes\n' | sort
+            echo "--- feature flags"
+            find "${{ runner.temp }}/dyld-system" -type f -printf '%f %s bytes\n' | sort
           } > "${{ runner.temp }}/dyld-manifest.txt"
           cat "${{ runner.temp }}/dyld-manifest.txt"
 
