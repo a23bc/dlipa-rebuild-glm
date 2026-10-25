@@ -75,6 +75,28 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 
 	openDuration := time.Since(opened)
 
+	// Two message sends that cannot involve StoreKit state, to learn the calling
+	// convention before attempting requestWithMethod:URL:parameters:. NSString
+	// length is 5 for "hello"; isEqualToString: against "world" is false. If
+	// those come back as 5 and 0, Invoke returns raw scalars and message dispatch
+	// works -- which is the whole premise of the emulator.
+	hello := runtime.New("NSString", "hello")
+
+	length, err := runtime.Invoke(hello, "length")
+	if err != nil {
+		return "", fmt.Errorf("store smoke: invoke length: %w", err)
+	}
+
+	world := runtime.New("NSString", "world")
+
+	equal, err := runtime.Invoke(hello, "isEqualToString:", world)
+	if err != nil {
+		return "", fmt.Errorf("store smoke: invoke isEqualToString: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: length=%d equal=%d\n", length, equal)
+
+
 	closeStart := time.Now()
 
 	if err := runtime.Close(); err != nil {
@@ -84,10 +106,11 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 	closed := time.Since(closeStart)
 
 	return fmt.Sprintf(
-		"profile %d MB in %s; runtime opened in %s; closed in %s",
+		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d",
 		(len(data.Metadata)+len(data.Pages)+len(data.Plugin))/(1<<20),
 		loaded.Round(time.Millisecond),
 		openDuration.Round(time.Millisecond),
 		closed.Round(time.Millisecond),
+		length, equal,
 	), nil
 }
