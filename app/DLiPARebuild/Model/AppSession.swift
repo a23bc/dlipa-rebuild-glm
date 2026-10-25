@@ -307,7 +307,38 @@ final class AppSession: ObservableObject {
     /// If it cannot, the whole download plan stops here and that is a cheap
     /// answer. It reports the asset files it found, the byte count, the time it
     /// took and the first eight bytes, which for a real blob start 00 04.
-    func diagnosticKBSync() async -> String {
+    /// E1-a: whether the Store runtime can be built on the machine this session
+/// already has, and how long each half takes.
+///
+/// Only runs when the Diagnostics button is pressed. It maps around 20 MB of
+/// profile pages into the guest that kbsync also uses, so a session that has
+/// already produced a blob should be restarted before trusting either number.
+func diagnosticStoreSmoke() async -> String {
+    do {
+        if bag == nil { bag = try await client.fetchBag(guid: hardware.guid) }
+        if signer == nil {
+            guard let bag,
+                  let setup = bag.signSapSetup,
+                  let cert = bag.signSapSetupCert else {
+                return "bag carries no SAP configuration"
+            }
+            signer = try SAPSigner(setupURL: setup, certURL: cert,
+                                   version: bag.signSapVersion, hardware: hardware)
+        }
+        guard let signer else { return "no signer" }
+
+        AppLog.info("store smoke: opening the Store runtime", .sap)
+        let result = try signer.storeSmoke()
+        AppLog.info("store smoke: " + result, .sap)
+
+        return result
+    } catch {
+        AppLog.error("store smoke failed: " + error.localizedDescription, .sap)
+        return "failed: " + error.localizedDescription
+    }
+}
+
+func diagnosticKBSync() async -> String {
         var report: [String] = []
 
         let assets = Bundle.main.bundleURL.appendingPathComponent("SapAssets")

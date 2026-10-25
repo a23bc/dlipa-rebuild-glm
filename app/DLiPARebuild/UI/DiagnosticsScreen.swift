@@ -32,6 +32,9 @@ struct DiagnosticsScreen: View {
                             .disabled(running)
                         Button("Generate kbsync (Gate 0)") { runKBSync() }
                             .disabled(running)
+                        Button("Open Store runtime (E1-a)") { runStoreSmoke() }
+                            .disabled(running)
+                            .disabled(running)
                     }
 
                     Section {
@@ -103,6 +106,22 @@ struct DiagnosticsScreen: View {
             running = false
         }
     }
+
+    private func runStoreSmoke() {
+
+        running = true
+
+        Task {
+
+            _ = await AppSession.shared.diagnosticStoreSmoke()
+
+            running = false
+
+        }
+
+    }
+
+    
 
     private func shareLog() {
         let text = AppLog.exportText()
