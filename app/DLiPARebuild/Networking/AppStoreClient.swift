@@ -961,9 +961,13 @@ final class AppStoreClient {
                        : cookies.map { $0.name }.joined(separator: ", ")), .download)
         // The cookie jar is empty either way, so the number that matters is the
         // replay header captured from Set-Cookie by hand.
+        // Copied to locals: AppLog's message is an escaping autoclosure, and a
+        // bare property reference inside one needs explicit self.
+        let replayHeaderLength = capturedCookieHeader.count
+        let replayValueCount = capturedCookieValues.count
         AppLog.info("replayed cookie header: "
-                    + String(capturedCookieHeader.count) + " chars, "
-                    + String(capturedCookieValues.count) + " values", .download)
+                    + String(replayHeaderLength) + " chars, "
+                    + String(replayValueCount) + " values", .download)
 
         var licenceFailure: (String, String)?
         var lastError: Error = StoreError.failureType("download", "every attempt failed")
