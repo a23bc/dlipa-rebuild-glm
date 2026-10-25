@@ -454,8 +454,8 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 	// reads physical memory directly and succeeds on a page the guest then faults
 	// on, which means the translations still say "not present"; reapplying the
 	// same protection is what makes Unicorn drop them.
-	if err := r.engine.MemProtect(address, size, 7); err != nil {
-		return fmt.Errorf("flush translations for %#x+%#x: %w", address, size, err)
+	if err := r.engine.FlushTranslations(); err != nil {
+		return fmt.Errorf("flush translations after %#x+%#x: %w", address, size, err)
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x mapped per page (%d new)\n", address, size, fresh)

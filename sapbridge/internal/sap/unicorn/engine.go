@@ -231,6 +231,27 @@ func (e *Engine) MemMap(address, size uint64) error {
 	return e.err(e.api.memMap(handle, address, size, protAll))
 }
 
+// FlushTranslations drops every TLB entry and translation block.
+//
+// uc_mem_map registers the region but does not invalidate the translations cached
+// for it, so on the TCI build a page can read back fine through uc_mem_read --
+// which goes straight to physical memory -- while the guest still faults on it.
+// uc_ctl(UC_CTL_TLB_FLUSH) is the only entry point that forces the cache out;
+// uc_mem_protect does not touch it.
+func (e *Engine) FlushTranslations() error {
+	handle, done, err := e.beginOperation()
+	if err != nil {
+		return err
+	}
+
+	defer done()
+
+	// UC_CTL_WRITE(UC_CTL_TLB_FLUSH, 0) = 12 | (1 << 30).
+	const tlbFlush = 12 | (1 << 30)
+
+	return e.err(e.api.ctl(handle, tlbFlush, 0))
+}
+
 // MemProtect reapplies protection over a range. Even when the protection is
 // unchanged this flushes the translation caches for that range, which is the
 // only way to force a stale softmmu entry out on the TCI build.
