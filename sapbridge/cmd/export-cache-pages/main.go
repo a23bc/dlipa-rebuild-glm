@@ -15,7 +15,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"debug/macho"
 	"encoding/binary"
 	"flag"
@@ -25,7 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	profileformat "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile/format"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	storeprofile "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 	"github.com/klauspost/compress/zstd"
 )
@@ -140,35 +139,14 @@ func referencedPages(ctx context.Context) ([]uint64, error) {
 		return nil, err
 	}
 
-	raw := data.Metadata
-
-	// The metadata blob is zstd-compressed JSON; fall back to raw JSON so the
-	// command keeps working if the encoding ever changes.
-	if decoder, derr := zstd.NewReader(bytes.NewReader(raw)); derr == nil {
-		if decoded, decodeErr := decoder.DecodeAll(nil, nil); decodeErr == nil && len(decoded) > 0 {
-			raw = decoded
-		}
-
-		decoder.Close()
-	}
-
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("profile metadata is empty")
-	}
-
-	var prof profileformat.Profile
-	if err = json.Unmarshal(raw, &prof); err != nil {
-		header := raw
-		if len(header) > 32 {
-			header = header[:32]
-		}
-
-		return nil, fmt.Errorf("decode profile metadata (%d bytes, starts %x): %w", len(raw), header, err)
+	pages, err := emulator.PreparedPages(ctx, data.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("decode profile metadata: %w", err)
 	}
 
 	seen := map[uint64]struct{}{}
 
-	for _, pg := range prof.Pages {
+	for _, pg := range pages {
 		if pg.Offset+pageSize > uint64(len(data.Pages)) {
 			continue
 		}
