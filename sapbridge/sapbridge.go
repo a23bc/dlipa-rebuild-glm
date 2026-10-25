@@ -19,7 +19,8 @@ import (
         "time"
 
         "github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap"
-        "github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
+        "github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
 )
 
 // Signer holds a live SAP session. One instance covers a whole app session:
