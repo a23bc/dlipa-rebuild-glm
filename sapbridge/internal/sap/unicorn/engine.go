@@ -81,6 +81,7 @@ type api struct {
 	ctl      func(uintptr, uint32, uint32) int32
 	strerror func(int32) string
 	memMap   func(uintptr, uint64, uint64, uint32) int32
+	memProtect func(uintptr, uint64, uint64, uint32) int32
 	memUnmap func(uintptr, uint64, uint64) int32
 	memRead  func(uintptr, uint64, unsafe.Pointer, uint64) int32
 	memWrite func(uintptr, uint64, unsafe.Pointer, uint64) int32
@@ -207,6 +208,7 @@ func (e *Engine) register(handle uintptr) {
 	purego.RegisterLibFunc(&e.api.ctl, handle, "uc_ctl")
 	purego.RegisterLibFunc(&e.api.strerror, handle, "uc_strerror")
 	purego.RegisterLibFunc(&e.api.memMap, handle, "uc_mem_map")
+	purego.RegisterLibFunc(&e.api.memProtect, handle, "uc_mem_protect")
 	purego.RegisterLibFunc(&e.api.memUnmap, handle, "uc_mem_unmap")
 	purego.RegisterLibFunc(&e.api.memRead, handle, "uc_mem_read")
 	purego.RegisterLibFunc(&e.api.memWrite, handle, "uc_mem_write")
@@ -227,6 +229,20 @@ func (e *Engine) MemMap(address, size uint64) error {
 	defer done()
 
 	return e.err(e.api.memMap(handle, address, size, protAll))
+}
+
+// MemProtect reapplies protection over a range. Even when the protection is
+// unchanged this flushes the translation caches for that range, which is the
+// only way to force a stale softmmu entry out on the TCI build.
+func (e *Engine) MemProtect(address, size uint64, prot uint32) error {
+	handle, done, err := e.beginOperation()
+	if err != nil {
+		return err
+	}
+
+	defer done()
+
+	return e.err(e.api.memProtect(handle, address, size, prot))
 }
 
 func (e *Engine) MemUnmap(address, size uint64) error {
