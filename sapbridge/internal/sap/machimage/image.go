@@ -458,7 +458,7 @@ func (i *Image) Load(memory Memory) error {
 		// Skip __LINKEDIT: symbol tables, binding info. Not needed at runtime.
 		// Skip __DATA_DIRTY: dirty data pages. Will crash if accessed, but
 		// saves RSS. SAP handshake may not need these.
-		if item.name == "__LINKEDIT" || item.name == "__DATA_DIRTY" {
+		if item.name == "__LINKEDIT" {
 			skippedSize += item.size
 			fmt.Fprintf(os.Stderr, "[SAP]   skip %s %s size=%d (%dMB) fileSize=%d\n",
 				i.name, item.name, item.size, item.size>>20, item.fileSize)
