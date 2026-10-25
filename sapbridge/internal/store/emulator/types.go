@@ -24,6 +24,17 @@ type Object struct {
 	Properties map[string]uint64
 }
 
+// Guest layout constants, copied from upstream runtime.go. heapSize bounds every
+// allocation the bridge makes inside the guest, so it belongs with the types
+// rather than with the guest setup that will arrive with the rest of the port.
+const (
+	heapBase = uint64(0x300000000)
+	heapSize = uint64(64 << 20)
+	stackBase = uint64(0x500000000000)
+	stackSize = uint64(8 << 20)
+	returnPC  = uint64(0x100000000)
+)
+
 // methodKey names a method the way the bridge looks it up: sign, class, selector.
 // Copied from upstream runtime.go so the rest of the port needs no edits.
 func methodKey(class, selector string, meta bool) string {
