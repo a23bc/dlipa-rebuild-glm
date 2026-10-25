@@ -20,6 +20,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 )
@@ -39,6 +40,15 @@ func (s *Signer) StoreSmoke() (string, error) {
 	// (a uint64), not a Go context, and the name collision is easy to miss.
 	ctx := context.Background()
 
+	// Read the bundle here rather than through the signer copy. On device the
+	// signer field was empty while the machine built from the same load mapped
+	// the frameworks fine, so the field is the wrong thing to trust.
+	// assets.Load is memoised, so this costs a map lookup.
+	bundle, err := assets.Load(ctx)
+	if err != nil {
+		return "", fmt.Errorf("store smoke: load assets: %w", err)
+	}
+
 	started := time.Now()
 
 	data, err := profile.Load(ctx)
@@ -52,7 +62,7 @@ func (s *Signer) StoreSmoke() (string, error) {
 	// there. The pinned digest lives in runtime.go and the loader has its own copy
 	// in assets.go; if the two disagree the only way to tell which slice is wrong
 	// is to look at the bytes in the app.
-	image := s.bundle.AppleMediaServices
+	image := bundle.AppleMediaServices
 	imageSum := sha256.Sum256(image)
 	magic := image
 	if len(magic) > 8 {
