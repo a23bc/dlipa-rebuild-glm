@@ -145,16 +145,25 @@ func referencedPages(ctx context.Context) ([]uint64, error) {
 	// The metadata blob is zstd-compressed JSON; fall back to raw JSON so the
 	// command keeps working if the encoding ever changes.
 	if decoder, derr := zstd.NewReader(bytes.NewReader(raw)); derr == nil {
-		if decoded, decodeErr := decoder.DecodeAll(nil, nil); decodeErr == nil {
+		if decoded, decodeErr := decoder.DecodeAll(nil, nil); decodeErr == nil && len(decoded) > 0 {
 			raw = decoded
 		}
 
 		decoder.Close()
 	}
 
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("profile metadata is empty")
+	}
+
 	var prof profileformat.Profile
 	if err = json.Unmarshal(raw, &prof); err != nil {
-		return nil, fmt.Errorf("decode profile metadata: %w", err)
+		header := raw
+		if len(header) > 32 {
+			header = header[:32]
+		}
+
+		return nil, fmt.Errorf("decode profile metadata (%d bytes, starts %x): %w", len(raw), header, err)
 	}
 
 	seen := map[uint64]struct{}{}
