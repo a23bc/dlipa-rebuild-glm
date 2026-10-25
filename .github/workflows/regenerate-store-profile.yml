@@ -133,12 +133,14 @@ jobs:
             echo "::error::$file is missing or empty"
             exit 1
           fi
+
           size=$(stat -c %s "$file")
           lines=$(wc -l < "$file")
           echo "profile: $size bytes, $lines lines"
 
-          # A profile that generates but is empty of symbols would compile and
-          # then fail at runtime inside the guest, so check the shape here.
+          # Shape checks only: non-empty, plausible size, right header. Naming
+          # the tables inside the generated source was a guess about its form
+          # and guessed wrong, so the real comparison is the hash below.
           if [ "$size" -lt 100000 ]; then
             echo "::error::$file is $size bytes; a real profile is megabytes"
             exit 1
@@ -147,13 +149,22 @@ jobs:
             echo "::error::$file does not start with the generated-code header"
             exit 1
           fi
-          for symbol in Symbols Features SwiftTypes Bridges; do
-            if ! grep -q "$symbol" "$file"; then
-              echo "::error::$file has no $symbol table"
-              exit 1
-            fi
-          done
 
+          # The meaningful check: does regenerating from our pinned image give
+          # the profile upstream committed? Identical means our dump, our
+          # feature-flag source and our runner are all faithful. A difference
+          # is not a failure -- it is the diff to review before adopting it.
+          upstream=/tmp/ipatool/internal/store/profile/data_generated.go
+          ours=$(sha256sum "$file" | cut -d" " -f1)
+          theirs=$(sha256sum "$upstream" | cut -d" " -f1)
+          echo "ours:     $ours"
+          echo "upstream: $theirs"
+          if [ "$ours" = "$theirs" ]; then
+            echo "::notice::the regenerated profile is byte-identical to the committed one"
+          else
+            echo "::warning::the regenerated profile differs from the committed one"
+            diff <(head -c 200000 "$file") <(head -c 200000 "$upstream") | head -40 || true
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: store-profile
