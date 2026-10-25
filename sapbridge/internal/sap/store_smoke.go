@@ -54,7 +54,11 @@ func (s *Signer) StoreSmoke() (string, error) {
 	// is to look at the bytes in the app.
 	image := s.bundle.AppleMediaServices
 	imageSum := sha256.Sum256(image)
-	fmt.Fprintf(os.Stderr, "[SAP] store smoke: AMS %d bytes sha256 %x\n", len(image), imageSum)
+	magic := image
+	if len(magic) > 8 {
+		magic = magic[:8]
+	}
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: AMS %d bytes sha256 %x magic %x\n", len(image), imageSum, magic)
 
 	opened := time.Now()
 
