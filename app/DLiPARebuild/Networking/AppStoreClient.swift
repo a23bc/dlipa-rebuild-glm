@@ -863,11 +863,20 @@ final class AppStoreClient {
                         + ", " + String(data.count) + " bytes"
                         + (failure.isEmpty ? "" : ", failureType " + failure), .download)
 
-            if failure.isEmpty && !data.isEmpty {
+            // A 502 from Apple's edge arrives as a short HTML or plain-text
+            // body with no failureType, so "no failureType and some bytes" is
+            // not success -- it is a gateway error that reads like a plist-shaped
+            // answer to anything that does not check the status. Require 200.
+            if failure.isEmpty && http.statusCode == 200 && !data.isEmpty {
                 return plist
             }
             if !failure.isEmpty {
                 rejected = (failure, plist["customerMessage"] as? String ?? "")
+            } else if http.statusCode != 200 {
+                // Kept so the caller falls back to the classic endpoint with a
+                // status in hand rather than an empty dictionary.
+                rejected = ("http" + String(http.statusCode),
+                            "ent/download returned " + String(http.statusCode))
             }
         }
 
