@@ -72,10 +72,13 @@ func (s *Signer) StoreSmoke(bundle assets.Bundle) (string, error) {
 
 	opened := time.Now()
 
-	runtime, err := emulator.OpenWithEngine(ctx, engine, s.bundle.AppleMediaServices, data)
+	runtime, err := emulator.OpenWithEngine(ctx, engine, image, data)
 	if err != nil {
-		return "", fmt.Errorf("store smoke: open runtime after %s: %w",
-			time.Since(opened).Round(time.Millisecond), err)
+		// The sizes go into the error string on purpose. Everything printed to
+		// stderr only replays on the next launch, so a diagnostic written there
+		// is always one press behind. The error reaches AppLog immediately.
+		return "", fmt.Errorf("store smoke: open runtime after %s: %w (image=%d bytes, plugin=%d bytes)",
+			time.Since(opened).Round(time.Millisecond), err, len(image), len(data.Plugin))
 	}
 
 	openDuration := time.Since(opened)
