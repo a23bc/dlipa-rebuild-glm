@@ -20,7 +20,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 )
