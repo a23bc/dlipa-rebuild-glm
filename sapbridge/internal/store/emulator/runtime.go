@@ -196,6 +196,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	}
 
 	for name, data := range imageInputs {
+		fmt.Fprintf(os.Stderr, "[SAP] open(): machimage.Open %s with %d bytes\n", name, len(data))
 		image, e := machimage.Open(name, data)
 		if e != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
