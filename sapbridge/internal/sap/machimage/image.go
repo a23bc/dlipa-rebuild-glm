@@ -57,6 +57,11 @@ func Open(name string, input []byte) (*Image, error) {
 		return nil, fmt.Errorf("open %s: %w", name, err)
 	}
 
+	// Printed unconditionally: a zero-length slice here is the difference between
+	// "the caller passed nothing" and "the slicer dropped it", and the error that
+	// follows (failed to parse magic: EOF) cannot tell them apart.
+	fmt.Fprintf(os.Stderr, "[SAP] machimage.Open %s: input=%d slice=%d\n", name, len(input), len(data))
+
 	file, err := macho.NewFile(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("open %s Mach-O: %w", name, err)
@@ -167,9 +172,25 @@ func (i *Image) removePointerAuthentication() error {
 }
 
 func arm64Slice(input []byte) ([]byte, error) {
+	// Only a fat binary is worth handing to the fat parser. Asking it about a
+	// thin Mach-O used to be harmless, but on device it accepted the thin header
+	// and yielded an arm64e slice of zero length. That surfaced far away as
+	// "failed to parse magic: EOF" while holding a 15 MB, valid arm64 image.
+	// The magic is cheap to check, so check it.
+	if len(input) < 4 {
+		return nil, errors.New("input is too short to hold a Mach-O magic")
+	}
+
+	switch binary.BigEndian.Uint32(input[:4]) {
+	case 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca:
+		// A fat binary: fall through to the parser below.
+	default:
+		return bytes.Clone(input), nil
+	}
+
 	fat, err := macho.NewFatFile(bytes.NewReader(input))
 	if err != nil {
-		return bytes.Clone(input), nil
+		return nil, fmt.Errorf("parse universal binary: %w", err)
 	}
 
 	for _, architecture := range fat.Arches {
