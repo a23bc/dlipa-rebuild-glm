@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 )
 
 // EncodeProbe drives the real StoreKit request encoder far enough to know whether
@@ -98,31 +100,82 @@ func (r *Runtime) InspectRequest(request uint64) (string, error) {
 	}
 
 	bodyLength := 0
-	bodyHead := ""
+	bodyText := ""
 
 	if value, err := r.Invoke(request, "HTTPBody"); err == nil && value != 0 {
 		if data, err := r.guestData(value); err == nil {
 			bodyLength = len(data)
-
-			head := data
-			if len(head) > 48 {
-				head = head[:48]
-			}
-
-			bodyHead = hex.EncodeToString(head)
+			bodyText = printable(data, 1024)
 		}
 	}
 
-	headers := 0
+	names := r.headerNames(request)
 
-	if value, err := r.Invoke(request, "allHTTPHeaderFields"); err == nil && value != 0 {
-		if count, err := r.Invoke(value, "count"); err == nil {
-			headers = int(count)
+	// The plan's E1 pass line is that the body carries the keys upstream sends.
+	// Naming which ones arrived turns "looks like a plist" into a verdict.
+	var present []string
+
+	for _, key := range []string{"salableAdamId", "creditDisplay"} {
+		if strings.Contains(bodyText, key) {
+			present = append(present, key)
 		}
 	}
 
-	return fmt.Sprintf("method=%s url=%s body=%d head=%s headers=%d",
-		method, address, bodyLength, bodyHead, headers), nil
+	return fmt.Sprintf("method=%s url=%s body=%d headers=[%s] keys=[%s] body=%s",
+		method, address, bodyLength, strings.Join(names, ","),
+		strings.Join(present, ","), bodyText), nil
+}
+
+// headerNames lists the header fields the request carries. The count alone says
+// nothing about whether the encoder set the ones Apple reads.
+func (r *Runtime) headerNames(request uint64) []string {
+	fields, err := r.Invoke(request, "allHTTPHeaderFields")
+	if err != nil || fields == 0 {
+		return nil
+	}
+
+	keys, err := r.Invoke(fields, "allKeys")
+	if err != nil || keys == 0 {
+		return nil
+	}
+
+	count, err := r.Invoke(keys, "count")
+	if err != nil {
+		return nil
+	}
+
+	names := make([]string, 0, count)
+
+	for index := uint64(0); index < count && index < 64; index++ {
+		key, err := r.Invoke(keys, "objectAtIndex:", index)
+		if err != nil || key == 0 {
+			continue
+		}
+
+		if name, err := r.guestString(key); err == nil && name != "" {
+			names = append(names, name)
+		}
+	}
+
+	sort.Strings(names)
+
+	return names
+}
+
+// printable returns the body as text when it is text, and as hex otherwise.
+// A plist body is the thing the plan's E1 pass line asks to see.
+func printable(data []byte, limit int) string {
+	if len(data) > limit {
+		data = data[:limit]
+	}
+
+	for _, b := range data {
+		if b == 0 || (b < 0x20 && b != '\n' && b != '\r' && b != '\t') {
+			return "hex:" + hex.EncodeToString(data)
+		}
+	}
+
+	return strings.Join(strings.Fields(string(data)), " ")
 }
 
 // guestString reads an NSString out of the guest through its UTF8String.
