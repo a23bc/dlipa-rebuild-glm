@@ -47,7 +47,7 @@ func Load() ([]Page, error) {
 
 	defer decoder.Close()
 
-	raw, err := decoder.DecodeAll(nil, nil)
+	raw, err := decoder.DecodeAll(compressed, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decode page blob: %w", err)
 	}
