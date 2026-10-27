@@ -214,13 +214,16 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
 
+		// Read the instruction sections before Load drops i.file to free the asset
+		// bytes; afterwards the Mach-O is gone and the sections cannot be read.
+		for _, sec := range image.TextSections() {
+			textRanges = append(textRanges, textRange{name: name, start: sec[0], size: sec[1]})
+		}
+
 		if e = image.Load(r); e != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
 
-		for _, sec := range image.TextSections() {
-			textRanges = append(textRanges, textRange{name: name, start: sec[0], size: sec[1]})
-		}
 	}
 
 	// The profile's prepared pages point into the dyld shared cache, which the host
