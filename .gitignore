@@ -16,3 +16,6 @@ VendorAssets/
 # Working notes written during the SAP investigation. Kept locally,
 # not part of the repository.
 /Archive/
+
+# Windows build artifacts from the local Go tooling.
+*.exe
