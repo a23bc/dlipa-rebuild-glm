@@ -85,31 +85,9 @@ func (r *Runtime) EncodeProbe(endpoint string, parameters map[string]any) (uint6
 // a URL, a method, a body with the expected shape -- is a separate question, and
 // the answer decides whether wiring Execute is worth doing next.
 func (r *Runtime) InspectRequest(request uint64) (string, error) {
-	method := ""
+	method, address, body, names := r.RequestParts(request)
 
-	if value, err := r.Invoke(request, "HTTPMethod"); err == nil && value != 0 {
-		method, _ = r.guestString(value)
-	}
-
-	address := ""
-
-	if value, err := r.Invoke(request, "URL"); err == nil && value != 0 {
-		if absolute, err := r.Invoke(value, "absoluteString"); err == nil && absolute != 0 {
-			address, _ = r.guestString(absolute)
-		}
-	}
-
-	bodyLength := 0
-	bodyText := ""
-
-	if value, err := r.Invoke(request, "HTTPBody"); err == nil && value != 0 {
-		if data, err := r.guestData(value); err == nil {
-			bodyLength = len(data)
-			bodyText = printable(data, 1024)
-		}
-	}
-
-	names := r.headerNames(request)
+	bodyText := printable(body, 1024)
 
 	// The plan's E1 pass line is that the body carries the keys upstream sends.
 	// Naming which ones arrived turns "looks like a plist" into a verdict.
@@ -122,8 +100,28 @@ func (r *Runtime) InspectRequest(request uint64) (string, error) {
 	}
 
 	return fmt.Sprintf("method=%s url=%s body=%d headers=[%s] keys=[%s] body=%s",
-		method, address, bodyLength, strings.Join(names, ","),
+		method, address, len(body), strings.Join(names, ","),
 		strings.Join(present, ","), bodyText), nil
+}
+
+// RequestParts reads the method, URL, body and header names back out of the
+// request the encoder built, so the same bytes can be handed to the transport.
+func (r *Runtime) RequestParts(request uint64) (method, endpoint string, body []byte, headers []string) {
+	if value, err := r.Invoke(request, "HTTPMethod"); err == nil && value != 0 {
+		method, _ = r.guestString(value)
+	}
+
+	if value, err := r.Invoke(request, "URL"); err == nil && value != 0 {
+		if absolute, err := r.Invoke(value, "absoluteString"); err == nil && absolute != 0 {
+			endpoint, _ = r.guestString(absolute)
+		}
+	}
+
+	if value, err := r.Invoke(request, "HTTPBody"); err == nil && value != 0 {
+		body, _ = r.guestData(value)
+	}
+
+	return method, endpoint, body, r.headerNames(request)
 }
 
 // headerNames lists the header fields the request carries. The count alone says

@@ -9,7 +9,10 @@ package sap
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"time"
 
@@ -118,6 +121,38 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", summary)
 
+	// E2, first step: hand the request the encoder built to the real transport
+	// and see whether a response comes back. There is no session cookie here, so
+	// the Store will refuse it; the status is the measurement, not a pass line.
+	// What this proves is that the callback path -- guest request out, response
+	// back in -- completes at all, which is what E2 is about.
+	method, endpoint, body, _ := runtime.RequestParts(address)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	response, execErr := runtime.Execute(emulator.Request{
+		URL:        endpoint,
+		Method:     method,
+		Body:       body,
+		HardwareID: s.hardware,
+		Transport:  client.Do,
+		Raw:        true,
+	})
+
+	executed := ""
+
+	if execErr != nil {
+		executed = "execute failed: " + execErr.Error()
+	} else {
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		_ = response.Body.Close()
+
+		executed = fmt.Sprintf("execute status=%d bytes=%d head=%s",
+			response.StatusCode, len(payload), hexHead(payload, 64))
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", executed)
+
 
 
 
@@ -135,6 +170,22 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 		loaded.Round(time.Millisecond),
 		openDuration.Round(time.Millisecond),
 		closed.Round(time.Millisecond),
-		length, equal, address, summary,
+		length, equal, address, summary+" | "+executed,
 	), nil
+}
+
+// hexHead renders the first bytes of a response so a plist error body is
+// readable in one log line: text when it is text, hex when it is not.
+func hexHead(data []byte, limit int) string {
+	if len(data) > limit {
+		data = data[:limit]
+	}
+
+	for _, b := range data {
+		if b == 0 || (b < 0x20 && b != '\n' && b != '\r' && b != '\t') {
+			return hex.EncodeToString(data)
+		}
+	}
+
+	return string(data)
 }
