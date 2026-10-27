@@ -649,13 +649,17 @@ func align(value, alignment uint64) uint64 {
 	return (value + alignment - 1) &^ (alignment - 1)
 }
 
-// StripPAC replaces pointer-authentication instructions in data with equivalents
-// the emulated CPU can execute.
+// StripPAC replaces instructions the emulated CPU cannot execute with
+// equivalents that it can.
 //
-// The emulator's CPU has no PAuth, so an autib/pacib reaching it raises
-// UC_ERR_EXCEPTION. Images are stripped when they are loaded, but the Store
-// profile's prepared pages are a snapshot of a real process and carry the
-// original bytes, so the code has to be stripped again after those pages land.
+// Two families so far. The CPU has no PAuth, so an autib/pacib reaching it
+// raises UC_ERR_EXCEPTION. It also has no FEAT_LRCPC, so QEMU rejects ldapr as
+// unallocated -- and the shared cache is built for Apple silicon, which emits
+// ldapr freely.
+//
+// Images are stripped when they are loaded, but the Store profile's prepared
+// pages and the shared-cache pages are snapshots of a real process and carry the
+// original bytes, so the code has to be stripped again after they land.
 func StripPAC(data []byte) int {
 	const nop = uint32(0xd503201f)
 
@@ -674,6 +678,17 @@ func StripPAC(data []byte) int {
 		case 0xdac10000, 0xdac10400, 0xdac10800, 0xdac10c00,
 			0xdac11000, 0xdac11400, 0xdac11800, 0xdac11c00:
 			replacement = nop
+		case 0x38bfc000, 0x78bfc000, 0xb8bfc000, 0xf8bfc000:
+			// LDAPR*, ARMv8.3-RCpc. The mask covers A, R and Rs, so the
+			// acquire bit and the required Rs=31 are already pinned by the
+			// case value.
+			//
+			// Same load, stronger ordering: QEMU's own LDAPR is a full LDAR
+			// ("we choose to implement them as full LDAQ"), so this matches
+			// what the hardware model would have done had it been enabled.
+			// Size in bits 31-30 picks the width: each step is +0x40000000.
+			replacement = 0x08dffc00 + (instruction>>30)*0x40000000 | (instruction & 0x3ff)
+
 		default:
 			switch instruction {
 			case 0xd65f0bff, 0xd65f0fff:

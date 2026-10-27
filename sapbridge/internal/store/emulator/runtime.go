@@ -298,7 +298,16 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	cacheStart := time.Now()
 	runs := cachepages.Runs(cachePages)
 
+	var stripped int
+
 	for _, run := range runs {
+		// The blob is a slice of the real shared cache, built for Apple silicon,
+		// so its code carries PAuth and RCpc instructions this CPU cannot
+		// execute. The SAP machine signs by calling into these pages -- the
+		// first ldapr it met aborted the signature -- so they have to be
+		// rewritten before anything runs from them.
+		stripped += machimage.StripPAC(run.Data)
+
 		if err = r.MemMap(run.Address, uint64(len(run.Data))); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: map cache run %#x: %w", run.Address, err)
 		}
@@ -319,8 +328,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	}
 
 	if len(cachePages) > 0 {
-		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages in %d runs, %d ms (%d dropped: inside a loaded image)\n",
-			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds(), dropped)
+		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages in %d runs, %d ms (%d dropped: inside a loaded image, %d instructions rewritten)\n",
+			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds(), dropped, stripped)
 	}
 
 	pageData := prepared.Pages
