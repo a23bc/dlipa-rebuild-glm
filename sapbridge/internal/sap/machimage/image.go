@@ -699,13 +699,36 @@ func StripPAC(data []byte) int {
 	return replaced
 }
 
-// TextRange reports where the image's __TEXT segment was placed.
-func (i *Image) TextRange() (uint64, uint64, bool) {
-	for _, item := range i.segments {
-		if item.name == "__TEXT" && item.size > 0 {
-			return item.address, item.size, true
+// TextSections reports the guest ranges that hold instructions.
+//
+// Only sections flagged as pure instructions may be rewritten: __TEXT also holds
+// literal pools, cstrings and unwind tables, and patching a word there corrupts
+// data instead of neutralising an instruction. That is why the load-time stripper
+// walks sections rather than the segment.
+func (i *Image) TextSections() [][2]uint64 {
+	var out [][2]uint64
+
+	for _, section := range i.file.Sections {
+		if !section.Flags.IsPureInstructions() {
+			continue
 		}
+
+		addr, ok := i.guestAddress(section.Addr)
+		if !ok {
+			continue
+		}
+
+		out = append(out, [2]uint64{addr, section.Size})
 	}
 
-	return 0, 0, false
+	return out
+}
+
+// guestAddress translates a file virtual address to where the image was loaded.
+func (i *Image) guestAddress(address uint64) (uint64, bool) {
+	if address < i.base {
+		return 0, false
+	}
+
+	return i.loadedBase + (address - i.base), true
 }

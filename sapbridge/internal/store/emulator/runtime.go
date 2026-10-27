@@ -218,8 +218,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
 
-		if start, size, ok := image.TextRange(); ok {
-			textRanges = append(textRanges, textRange{name: name, start: start, size: size})
+		for _, sec := range image.TextSections() {
+			textRanges = append(textRanges, textRange{name: name, start: sec[0], size: sec[1]})
 		}
 	}
 
