@@ -21,6 +21,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/cachepages"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	storeprofile "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 )
@@ -68,7 +69,14 @@ func run() error {
 }
 
 // referencedPages collects the distinct 4 KiB pages the profile's prepared pages
-// point into, inside the shared-cache range.
+// point into, inside the shared-cache range, plus the pages the vendored images
+// point at.
+//
+// The two sets answer different questions. The profile is a snapshot of dynamic
+// state, so it only reveals pointers the process happened to hold. A pointer
+// compiled into a data segment never appears there, and that is the one that
+// stopped initWithBag: __DATA_DIRTY in AppleMediaServices holds 0x1e9881478, a
+// page no profile scan had ever listed.
 func referencedPages(ctx context.Context) ([]uint64, error) {
 	data, err := storeprofile.Load(ctx)
 	if err != nil {
@@ -98,6 +106,19 @@ func referencedPages(ctx context.Context) ([]uint64, error) {
 			seen[v&^uint64(pageSize-1)] = struct{}{}
 		}
 	}
+
+	static := 0
+
+	for _, address := range cachepages.StaticPages() {
+		if _, ok := seen[address]; ok {
+			continue
+		}
+
+		seen[address] = struct{}{}
+		static++
+	}
+
+	fmt.Fprintf(os.Stderr, "profile pages=%d, static pages added=%d, total=%d\n", len(seen)-static, static, len(seen))
 
 	out := make([]uint64, 0, len(seen))
 	for a := range seen {
