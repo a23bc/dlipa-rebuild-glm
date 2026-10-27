@@ -217,6 +217,10 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		if e = image.Load(r); e != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
+
+		if start, size, ok := image.TextRange(); ok {
+			textRanges = append(textRanges, textRange{name: name, start: start, size: size})
+		}
 	}
 
 	// The profile's prepared pages point into the dyld shared cache, which the host
@@ -335,9 +339,7 @@ regions, err := groupPages(addresses)
 			replaced += changed
 		}
 
-		if replaced > 0 {
-			fmt.Fprintf(os.Stderr, "[SAP] open(): re-stripped %d PAC instructions in %s\n", replaced, tr.name)
-		}
+		fmt.Fprintf(os.Stderr, "[SAP] open(): PAC strip %s: %d replaced over %#x+%#x\n", tr.name, replaced, tr.start, tr.size)
 	}
 
 	for _, imageBytes := range imageInputs {
