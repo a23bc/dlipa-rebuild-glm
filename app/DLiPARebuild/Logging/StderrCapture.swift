@@ -89,5 +89,61 @@ enum StderrCapture {
             }
             AppLog.error("===== END PREVIOUS STDERR =====", .app)
         }
+
+        startTailing()
     }
+
+    /// Copies new stderr lines into AppLog while the app is running.
+    ///
+    /// Reading the log only on the next launch is what made the store smoke
+    /// impossible to iterate on: relaunching to read it archives the current
+    /// file over the previous one, so a launch that dies during pre-warm
+    /// destroys the log of the run being investigated. Tailing the same file
+    /// means the run can be read, and shared, while it is still in progress.
+    static func startTailing() {
+        tailOffset = 0
+
+        let timer = DispatchSource.makeTimerSource(queue: tailQueue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { readNewLines() }
+        timer.resume()
+
+        tailTimer = timer
+    }
+
+    private static func readNewLines() {
+        guard let handle = try? FileHandle(forReadingFrom: currentLogURL) else {
+            return
+        }
+
+        defer { try? handle.close() }
+
+        guard let end = try? handle.seekToEnd() else { return }
+
+        // A relaunch truncates the file, so a smaller size means start over.
+        if end < tailOffset {
+            tailOffset = 0
+        }
+
+        guard end > tailOffset else { return }
+
+        try? handle.seek(toOffset: tailOffset)
+
+        let length = Int(end - tailOffset)
+        let data = (try? handle.read(upToCount: length)) ?? Data()
+
+        tailOffset = end
+
+        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
+            return
+        }
+
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            AppLog.info(String(line), .sap)
+        }
+    }
+
+    private static let tailQueue = DispatchQueue(label: "com.a23bc.dliparebuild.stderr-tail")
+    private static var tailTimer: DispatchSourceTimer?
+    private static var tailOffset: UInt64 = 0
 }

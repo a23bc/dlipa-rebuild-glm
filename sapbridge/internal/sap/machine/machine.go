@@ -673,7 +673,7 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 	}
 
 	if instruction != returnAddress {
-		return 0, fmt.Errorf("SAP guest stopped unexpectedly at %#x", instruction)
+		return 0, fmt.Errorf("SAP guest stopped unexpectedly: %s", m.describeStop(instruction))
 	}
 
 	result, err := m.engine.RegRead(unicorn.RegX0)
@@ -833,4 +833,39 @@ func (m *Machine) HeapUsed() uint64 {
 	}
 
 	return m.services.heapCursor
+}
+
+// describeStop says where the guest ended up and how it got there.
+//
+// "stopped unexpectedly at 0x..." names one address and nothing else, which is
+// not enough to tell a jump into unmapped memory from a return to the wrong
+// frame. The link register and the frame chain say which call produced it.
+func (m *Machine) describeStop(pc uint64) string {
+	link, _ := m.engine.RegRead(unicorn.RegLR)
+	x0, _ := m.engine.RegRead(unicorn.RegX0)
+	x1, _ := m.engine.RegRead(unicorn.RegX1)
+
+	frames := make([]string, 0, 8)
+
+	if fp, err := m.engine.RegRead(unicorn.RegX29); err == nil && fp != 0 {
+		for depth := 0; depth < 8; depth++ {
+			frame, err := m.engine.MemRead(fp, 16)
+			if err != nil {
+				break
+			}
+
+			next := binary.LittleEndian.Uint64(frame)
+			returned := binary.LittleEndian.Uint64(frame[8:])
+
+			frames = append(frames, fmt.Sprintf("#%d %#x", depth, returned))
+
+			if next <= fp {
+				break
+			}
+
+			fp = next
+		}
+	}
+
+	return fmt.Sprintf("pc=%#x lr=%#x x0=%#x x1=%#x back=%v", pc, link, x0, x1, frames)
 }

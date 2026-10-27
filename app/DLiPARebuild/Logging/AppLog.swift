@@ -156,7 +156,10 @@ struct LogEntry: Identifiable {
 private final class LogStore {
     private let queue = DispatchQueue(label: "com.a23bc.dliparebuild.log")
     private var buffer: [LogEntry] = []
-    private let limit = 500
+    // The store smoke writes a hundred lines of its own, and the live stderr
+    // tail adds them as it goes. 500 pushed the first half out of the window
+    // before the run had finished.
+    private let limit = 4000
 
     var onUpdate: (([LogEntry]) -> Void)?
 
