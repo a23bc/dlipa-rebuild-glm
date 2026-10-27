@@ -41,3 +41,42 @@ func Runs(pages []Page) []Run {
 
 	return out
 }
+
+// WithoutSpans drops the pages that fall inside ranges the caller already owns.
+//
+// The blob is built from the shared cache, and a system framework lives in that
+// cache, so the blob carries the framework's own pages too. Loading the image
+// already wrote those ranges with fixups applied; the cache copy still has them
+// encoded. Writing it back turns every pointer in the segment into a value that
+// resolves to nothing.
+func WithoutSpans(pages []Page, spans [][2]uint64) ([]Page, int) {
+	if len(spans) == 0 {
+		return pages, 0
+	}
+
+	kept := make([]Page, 0, len(pages))
+
+	dropped := 0
+
+	for _, page := range pages {
+		inside := false
+
+		for _, span := range spans {
+			if page.Address >= span[0] && page.Address < span[1] {
+				inside = true
+
+				break
+			}
+		}
+
+		if inside {
+			dropped++
+
+			continue
+		}
+
+		kept = append(kept, page)
+	}
+
+	return kept, dropped
+}

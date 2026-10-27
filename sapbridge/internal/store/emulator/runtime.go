@@ -205,6 +205,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	var textRanges []textRange
 
+	var imageSpans [][2]uint64
+
 	for name, data := range imageInputs {
 		fmt.Fprintf(os.Stderr, "[SAP] open(): machimage.Open %s with %d bytes\n", name, len(data))
 		image, e := machimage.Open(name, data)
@@ -222,6 +224,10 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			textRanges = append(textRanges, textRange{name: name, start: sec[0], size: sec[1]})
 		}
 
+		// Collected before Load, which drops the segment table along with the
+		// file. The cache pages below must not land on any of these ranges.
+		imageSpans = append(imageSpans, image.Spans()...)
+
 		if e = image.Load(r); e != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
@@ -237,9 +243,15 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		return nil, fmt.Errorf("prepare store runtime: %w", err)
 	}
 
-	// Mapping one page at a time inserts one region per call, and the blob now
-	// carries 9,758 pages. Contiguous pages share a mapping instead: 4,198
-	// regions for the same bytes.
+	// The blob also carries pages that belong to the images this runtime just
+	// loaded, because a system framework lives in the shared cache. Mapping those
+	// is worse than useless: Load wrote that memory with its fixups applied, and
+	// the cache copy still holds them encoded, so writing it back turns every
+	// pointer in the segment into an address that means nothing.
+	cachePages, dropped := cachepages.WithoutSpans(cachePages, imageSpans)
+
+	// Mapping one page at a time inserts one region per call; contiguous pages
+	// share a mapping instead.
 	cacheStart := time.Now()
 	runs := cachepages.Runs(cachePages)
 
@@ -264,8 +276,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	}
 
 	if len(cachePages) > 0 {
-		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages in %d runs, %d ms\n",
-			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds())
+		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages in %d runs, %d ms (%d dropped: inside a loaded image)\n",
+			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds(), dropped)
 	}
 
 	pageData := prepared.Pages

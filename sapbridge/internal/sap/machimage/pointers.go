@@ -47,3 +47,35 @@ func (i *Image) DataPointers(lo, hi uint64) []uint64 {
 
 	return out
 }
+
+// Spans reports the guest ranges this image occupies, as [start, end) pairs in
+// file address terms (the caller adds the slide if it loaded elsewhere).
+//
+// A cache page that falls inside one of these is not the guest's copy of that
+// memory: Load already wrote it with the fixups applied. Mapping the cache
+// version over it puts the undecoded chained fixups back, and the first pointer
+// read out of that segment is garbage.
+func (i *Image) Spans() [][2]uint64 {
+	var out [][2]uint64
+
+	// Before relocation loadedBase is zero, so fall back to the file address.
+	loaded := i.loadedBase
+	if loaded == 0 {
+		loaded = i.base
+	}
+
+	for _, item := range i.segments {
+		if item.name == "__PAGEZERO" || item.size == 0 {
+			continue
+		}
+
+		start, overflow := add(loaded, item.address-i.base)
+		if overflow {
+			continue
+		}
+
+		out = append(out, [2]uint64{start, start + item.size})
+	}
+
+	return out
+}
