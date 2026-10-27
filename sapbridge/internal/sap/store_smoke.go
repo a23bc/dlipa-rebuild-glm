@@ -77,7 +77,9 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		return "", fmt.Errorf("store smoke: machine has no engine")
 	}
 
-	runtime, err := emulator.OpenWithEngine(ctx, engine, image, data)
+	// The machine keeps allocating on this heap whenever it signs, so the runtime
+	// has to be told how much of it is already in use.
+	runtime, err := emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
 	if err != nil {
 		return "", fmt.Errorf("store smoke: open runtime after %s: %w (image=%d bytes, plugin=%d bytes)",
 			time.Since(opened).Round(time.Millisecond), err, len(image), len(data.Plugin))

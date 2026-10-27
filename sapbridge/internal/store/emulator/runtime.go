@@ -91,7 +91,7 @@ type Runtime struct {
 }
 
 func Open(ctx context.Context, imageData []byte, prepared storeprofile.Data) (*Runtime, error) {
-	return open(ctx, nil, imageData, prepared, false)
+	return open(ctx, nil, imageData, prepared, 0, false)
 }
 
 // OpenWithEngine builds the runtime on top of an engine that already exists.
@@ -105,12 +105,29 @@ func OpenWithEngine(ctx context.Context, engine *unicorn.Engine, imageData []byt
 		return nil, errors.New("emulator engine is nil")
 	}
 
-	return open(ctx, engine, imageData, prepared, false)
+	return open(ctx, engine, imageData, prepared, 0, false)
+}
+
+// OpenWithEngineAt is OpenWithEngine for an engine whose heap already belongs to
+// another guest.
+//
+// The SAP machine and this runtime share one 64 MB heap region, and the machine
+// keeps allocating there whenever it signs. Handing the runtime the same low
+// addresses means every object it creates lands on live session state -- and
+// since allocations are now cleared, it erases it. heapUsed is how far the other
+// tenant has got; the runtime starts past the halfway mark regardless, so the
+// two cannot chase each other upward.
+func OpenWithEngineAt(ctx context.Context, engine *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64) (*Runtime, error) {
+	if engine == nil {
+		return nil, errors.New("emulator engine is nil")
+	}
+
+	return open(ctx, engine, imageData, prepared, heapUsed, false)
 }
 
 // open optionally guards accesses against the exported page set. Validation and
 // production use the same grouped mappings to stay within Unicorn section limits.
-func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, strict bool) (*Runtime, error) {
+func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64, strict bool) (*Runtime, error) {
 	if ctx == nil {
 		return nil, errors.New("emulator context is nil")
 	}
@@ -203,6 +220,25 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 	}
+
+	// The heap is shared with whichever guest mapped it first. Starting at the
+	// bottom would hand out its live data, and every allocation is cleared now,
+	// so that data would be erased. Half the heap each, and never below where the
+	// other tenant has already got to.
+	floor := heapUsed
+	if floor < heapSize/2 {
+		floor = heapSize / 2
+	}
+
+	floor = (floor + 15) &^ 15
+	if floor > heapSize/2 {
+		fmt.Fprintf(os.Stderr, "[SAP] open(): the other guest has used %d MB of the shared heap\n", floor>>20)
+	}
+
+	r.cursor = floor
+
+	fmt.Fprintf(os.Stderr, "[SAP] open(): store heap starts at +%#x of %d MB (other guest used %#x)\n",
+		floor, heapSize>>20, heapUsed)
 
 	type textRange struct {
 		name        string

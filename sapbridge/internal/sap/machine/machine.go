@@ -820,3 +820,17 @@ func hardwareBlock(hardwareID []byte) ([]byte, error) {
 func align(value, alignment uint64) uint64 {
 	return (value + alignment - 1) &^ (alignment - 1)
 }
+
+// HeapUsed reports how far this machine's guest allocator has advanced.
+//
+// The store runtime shares the same 64 MB heap region -- one engine, one
+// address space -- so it has to start above this or it will hand out memory the
+// handshake is still using. Clearing an allocation then destroys live session
+// state, and the next Sign fails somewhere unrelated.
+func (m *Machine) HeapUsed() uint64 {
+	if m == nil || m.services == nil {
+		return 0
+	}
+
+	return m.services.heapCursor
+}
