@@ -8,6 +8,10 @@ import UIKit
 /// debugger is not something anyone wants to do to report a bug.
 struct DiagnosticsScreen: View {
     @State private var running = false
+    /// When the current probe started. The Store runtime takes long enough that
+    /// a disabled button with no other change reads as a hang, so the elapsed
+    /// time is shown instead.
+    @State private var started = Date()
     @State private var recording = AppLog.isRecording
     @State private var logText = ""
 
@@ -35,6 +39,21 @@ struct DiagnosticsScreen: View {
                         Button("Open Store runtime (E1-a)") { runStoreSmoke() }
                             .disabled(running)
                             .disabled(running)
+                    }
+
+                    if running {
+                        Section {
+                            // The guest can run for minutes. Without this the
+                            // screen only shows greyed-out buttons, which is
+                            // indistinguishable from a freeze.
+                            TimelineView(.periodic(from: started, by: 1)) { context in
+                                HStack(spacing: 8) {
+                                    ProgressView()
+                                    Text("working… \(Int(context.date.timeIntervalSince(started)))s")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
                     }
 
                     Section {
@@ -75,6 +94,7 @@ struct DiagnosticsScreen: View {
     /// Nothing here touches the account UI, so it works before sign-in.
     private func runSAP() {
         running = true
+        started = Date()
         SAPSelfTest.run { line in
             AppLog.info(line, .sap)
             if line.hasPrefix("SELF TEST PASSED") || line.hasPrefix("FAILED") {
@@ -90,6 +110,7 @@ struct DiagnosticsScreen: View {
 
     private func runFrameworkProbe() {
         running = true
+        started = Date()
         DispatchQueue.main.async {
             FrameworkProbe.run()
             AppLog.info("framework probe finished", .app)
@@ -101,6 +122,7 @@ struct DiagnosticsScreen: View {
     /// whether the download plan continues.
     private func runKBSync() {
         running = true
+        started = Date()
         Task {
             _ = await AppSession.shared.diagnosticKBSync()
             running = false
@@ -110,6 +132,7 @@ struct DiagnosticsScreen: View {
     private func runStoreSmoke() {
 
         running = true
+        started = Date()
 
         Task {
 

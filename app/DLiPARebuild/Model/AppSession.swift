@@ -328,8 +328,16 @@ func diagnosticStoreSmoke() async -> String {
         guard let signer else { return "no signer" }
 
         AppLog.info("store smoke: opening the Store runtime", .sap)
-        let result = try signer.storeSmoke()
-        AppLog.info("store smoke: " + result, .sap)
+
+        // storeSmoke() runs the emulated guest synchronously, and this class is
+        // @MainActor, so calling it directly holds the main thread for the whole
+        // run. Once the runtime got past initWithBag the run grew long enough
+        // that the screen stopped drawing entirely, which reads as a hang rather
+        // than as work in progress.
+        let started = Date()
+        let result = try await runOffMain { try signer.storeSmoke() }
+        let seconds = Int(Date().timeIntervalSince(started))
+        AppLog.info("store smoke: " + result + " (wall \(seconds)s)", .sap)
 
         return result
     } catch {
@@ -545,4 +553,22 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     func urlSession(_ session: URLSession,
                     downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {}
+}
+
+/// Runs a blocking bridge call without holding the main actor.
+///
+/// Every gomobile entry point executes the emulated guest synchronously on the
+/// calling thread. Called straight from a @MainActor method it freezes the UI
+/// for the duration, and a run that takes a minute is indistinguishable from a
+/// hang. This hands the call to a background queue and resumes when it returns.
+private func runOffMain<T>(_ work: @escaping () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                continuation.resume(returning: try work())
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
 }
