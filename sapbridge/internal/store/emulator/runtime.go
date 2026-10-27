@@ -64,6 +64,7 @@ type Runtime struct {
 	allocations                 map[uint64]uint64
 	ctx                         context.Context
 	codeRanges                  [][2]uint64
+	running                     bool
 	steps                       uint64
 	timers                      []timer
 	callbacks                   map[uint64]func()
@@ -873,6 +874,15 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	_ = r.engine.RegWrite(unicorn.RegSP, sp)
 	_ = r.engine.RegWrite(unicorn.RegLR, returnPC)
 	r.fault = nil
+
+	// The code hook is installed over the whole address space, and the engine is
+	// shared with the SAP machine. Without this flag the hook also fires while
+	// that machine runs -- for instance when Execute calls Sign -- and stops it
+	// for executing outside this runtime's images, which is exactly what the SAP
+	// machine is supposed to do.
+	r.running = true
+	defer func() { r.running = false }()
+
 	err = r.engine.StartBounded(entry, returnPC, 2*time.Minute, 20_000_000)
 
 	if r.fault != nil {
@@ -898,6 +908,11 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	return value, nil
 }
 func (r *Runtime) step(address uint64, _ uint32) {
+	// Not our emulation window: the other tenant of this engine owns the guest.
+	if !r.running {
+		return
+	}
+
 	defer func() {
 		if p := recover(); p != nil {
 			r.fault = fmt.Errorf("guest bridge at %#x: %w; back=%v; recent=%v",
