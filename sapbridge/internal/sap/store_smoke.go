@@ -108,6 +108,16 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: encoder produced request at %#x\n", address)
 
+	// E1-c: the request object exists; this says whether it is usable. A URL, a
+	// method and a body of the right shape are what Execute needs before wiring
+	// it is worth doing.
+	summary, inspectErr := runtime.InspectRequest(address)
+	if inspectErr != nil {
+		summary = "inspect failed: " + inspectErr.Error()
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", summary)
+
 
 
 
@@ -120,11 +130,11 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 	closed := time.Since(closeStart)
 
 	return fmt.Sprintf(
-		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d; request=%#x",
+		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d; request=%#x; %s",
 		(len(data.Metadata)+len(data.Pages)+len(data.Plugin))/(1<<20),
 		loaded.Round(time.Millisecond),
 		openDuration.Round(time.Millisecond),
 		closed.Round(time.Millisecond),
-		length, equal, address,
+		length, equal, address, summary,
 	), nil
 }

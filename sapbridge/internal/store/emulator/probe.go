@@ -1,6 +1,8 @@
 package emulator
 
 import (
+	"bytes"
+	"encoding/hex"
 	"fmt"
 	"os"
 )
@@ -74,3 +76,99 @@ func (r *Runtime) EncodeProbe(endpoint string, parameters map[string]any) (uint6
 // dumpFaultState lives in fault.go: it decodes the instruction at the PC
 // instead of guessing which address was missing.
 
+
+// InspectRequest reads back what the encoder produced.
+//
+// E1-b stopped at "there is a request object". Whether that object is usable --
+// a URL, a method, a body with the expected shape -- is a separate question, and
+// the answer decides whether wiring Execute is worth doing next.
+func (r *Runtime) InspectRequest(request uint64) (string, error) {
+	method := ""
+
+	if value, err := r.Invoke(request, "HTTPMethod"); err == nil && value != 0 {
+		method, _ = r.guestString(value)
+	}
+
+	address := ""
+
+	if value, err := r.Invoke(request, "URL"); err == nil && value != 0 {
+		if absolute, err := r.Invoke(value, "absoluteString"); err == nil && absolute != 0 {
+			address, _ = r.guestString(absolute)
+		}
+	}
+
+	bodyLength := 0
+	bodyHead := ""
+
+	if value, err := r.Invoke(request, "HTTPBody"); err == nil && value != 0 {
+		if data, err := r.guestData(value); err == nil {
+			bodyLength = len(data)
+
+			head := data
+			if len(head) > 48 {
+				head = head[:48]
+			}
+
+			bodyHead = hex.EncodeToString(head)
+		}
+	}
+
+	headers := 0
+
+	if value, err := r.Invoke(request, "allHTTPHeaderFields"); err == nil && value != 0 {
+		if count, err := r.Invoke(value, "count"); err == nil {
+			headers = int(count)
+		}
+	}
+
+	return fmt.Sprintf("method=%s url=%s body=%d head=%s headers=%d",
+		method, address, bodyLength, bodyHead, headers), nil
+}
+
+// guestString reads an NSString out of the guest through its UTF8String.
+func (r *Runtime) guestString(object uint64) (string, error) {
+	pointer, err := r.Invoke(object, "UTF8String")
+	if err != nil {
+		return "", err
+	}
+
+	if pointer == 0 {
+		return "", nil
+	}
+
+	var out []byte
+
+	for offset := uint64(0); offset < 8192; offset += 64 {
+		chunk, err := r.engine.MemRead(pointer+offset, 64)
+		if err != nil {
+			break
+		}
+
+		if end := bytes.IndexByte(chunk, 0); end >= 0 {
+			return string(append(out, chunk[:end]...)), nil
+		}
+
+		out = append(out, chunk...)
+	}
+
+	return string(out), nil
+}
+
+// guestData reads an NSData out of the guest.
+func (r *Runtime) guestData(object uint64) ([]byte, error) {
+	length, err := r.Invoke(object, "length")
+	if err != nil {
+		return nil, err
+	}
+
+	if length == 0 {
+		return nil, nil
+	}
+
+	pointer, err := r.Invoke(object, "bytes")
+	if err != nil {
+		return nil, err
+	}
+
+	return r.engine.MemRead(pointer, length)
+}
