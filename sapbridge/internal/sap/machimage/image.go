@@ -456,8 +456,12 @@ func (i *Image) Load(memory Memory) error {
 		}
 
 		// Skip __LINKEDIT: symbol tables, binding info. Not needed at runtime.
-		// Skip __DATA_DIRTY: dirty data pages. Will crash if accessed, but
-		// saves RSS. SAP handshake may not need these.
+		//
+		// __DATA_DIRTY is mapped, not skipped. It used to be skipped on the
+		// theory that a dirty segment only costs RSS, but AMS keeps its class
+		// tables there and reading one through a zero page is what stopped
+		// initWithBag: the slot at 0x1e660ae58 held 0 in the guest and a
+		// pointer to 0x1e9881478 in the file.
 		if item.name == "__LINKEDIT" {
 			skippedSize += item.size
 			fmt.Fprintf(os.Stderr, "[SAP]   skip %s %s size=%d (%dMB) fileSize=%d\n",
@@ -523,7 +527,7 @@ func (i *Image) Load(memory Memory) error {
 	}
 
 	for _, item := range i.segments {
-		if item.name == "__PAGEZERO" || item.name == "__LINKEDIT" || item.name == "__DATA_DIRTY" || item.fileSize == 0 {
+		if item.name == "__PAGEZERO" || item.name == "__LINKEDIT" || item.fileSize == 0 {
 			continue
 		}
 
