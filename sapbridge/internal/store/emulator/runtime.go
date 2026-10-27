@@ -181,6 +181,12 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 	}()
 
+	// Evidence for the reuse below: a non-zero head means the SAP machine has
+	// already been here, and every allocation has to be cleared before use.
+	if head, readErr := r.engine.MemRead(heapBase, 64); readErr == nil {
+		fmt.Fprintf(os.Stderr, "[SAP] open(): heap head before reuse: %x\n", head)
+	}
+
 	for _, region := range [][2]uint64{{heapBase, heapSize}, {stackBase, stackSize}, {returnPC, 4096}} {
 		if err = r.MemMap(region[0], region[1]); err != nil {
 			// On iOS the SAP machine and the Store runtime share one guest, and
@@ -582,6 +588,10 @@ func (r *Runtime) MemWrite(address uint64, data []byte) error {
 
 	return nil
 }
+const zeroChunk = 4096
+
+var zeroBlock [zeroChunk]byte
+
 func (r *Runtime) alloc(size uint64) uint64 {
 	if size > heapSize {
 		panic("guest allocation exceeds heap budget")
@@ -599,6 +609,24 @@ func (r *Runtime) alloc(size uint64) uint64 {
 	address := heapBase + r.cursor
 
 	r.cursor += size
+
+	// The heap is shared with the SAP machine: open reuses the region it already
+	// mapped, so this memory holds whatever the handshake left there. A bump
+	// allocator that hands that back as a fresh object gives every ivar the
+	// previous tenant's bytes, and the handshake's bytes are key material that
+	// differs on every run. That is why an AMSProcessInfo reached copyWithZone:
+	// with a receiver that was never a pointer.
+	for offset := uint64(0); offset < size; offset += zeroChunk {
+		length := size - offset
+		if length > zeroChunk {
+			length = zeroChunk
+		}
+
+		if err := r.MemWrite(address+offset, zeroBlock[:length]); err != nil {
+			panic(fmt.Sprintf("clear guest allocation %#x: %v", address, err))
+		}
+	}
+
 	if r.allocations == nil {
 		r.allocations = map[uint64]uint64{}
 	}
