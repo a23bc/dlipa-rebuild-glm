@@ -15,18 +15,14 @@ package main
 import (
 	"bytes"
 	"context"
-	"debug/macho"
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	storeprofile "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
-	"github.com/klauspost/compress/zstd"
 )
 
 const (
@@ -36,13 +32,6 @@ const (
 	magic    = "DSHPAGES1"
 )
 
-// segment maps a guest address range to a byte range inside a dumped file.
-type segment struct {
-	addr, size uint64
-	file       string
-	offset     uint64
-}
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -51,17 +40,11 @@ func main() {
 }
 
 func run() error {
-	systemDir := flag.String("system-dir", "", "directory holding the dumped dyld-cache members")
-	output := flag.String("output", "", "path to write the page blob to")
+	systemDir := flag.String("addresses", "", "path to write the referenced page addresses to")
 	flag.Parse()
 
-	if *systemDir == "" || *output == "" {
-		return fmt.Errorf("-system-dir and -output are required")
-	}
-
-	segments, err := index(*systemDir)
-	if err != nil {
-		return fmt.Errorf("index dumped members: %w", err)
+	if *systemDir == "" {
+		return fmt.Errorf("-addresses is required")
 	}
 
 	addresses, err := referencedPages(context.Background())
@@ -69,64 +52,17 @@ func run() error {
 		return fmt.Errorf("read profile: %w", err)
 	}
 
-	buf := make([]byte, 0, len(addresses)*4104)
-
-	page := make([]byte, pageSize)
-
-	var missing int
+	var buf bytes.Buffer
 
 	for _, addr := range addresses {
-		seg := find(segments, addr)
-		if seg == nil {
-			missing++
-			continue
-		}
-
-		if err = readPage(*seg, addr, page); err != nil {
-			return fmt.Errorf("read page %#x from %s: %w", addr, seg.file, err)
-		}
-
-		var head [8]byte
-		binary.LittleEndian.PutUint64(head[:], addr)
-		buf = append(buf, head[:]...)
-		buf = append(buf, page...)
+		fmt.Fprintf(&buf, "%#x\n", addr)
 	}
 
-	if missing > 0 {
-		fmt.Fprintf(os.Stderr, "warning: %d pages had no backing member\n", missing)
-	}
-
-	var plain bytes.Buffer
-	plain.WriteString(magic)
-
-	if err = binary.Write(&plain, binary.LittleEndian, uint64(len(buf)/4104)); err != nil {
+	if err = os.WriteFile(*systemDir, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
 
-	plain.Write(buf)
-
-	encoder, err := zstd.NewWriter(nil)
-	if err != nil {
-		return err
-	}
-
-	packed := encoder.EncodeAll(plain.Bytes(), nil)
-	encoder.Close()
-
-	out, err := os.Create(*output)
-	if err != nil {
-		return err
-	}
-
-	if _, err = out.Write(packed); err != nil {
-		return err
-	}
-
-	if err = out.Close(); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(os.Stderr, "wrote %d pages (%d MB) to %s\n", len(buf)/4104, len(buf)/(1<<20), *output)
+	fmt.Fprintf(os.Stderr, "wrote %d addresses to %s\n", len(addresses), *systemDir)
 
 	return nil
 }
@@ -171,72 +107,4 @@ func referencedPages(ctx context.Context) ([]uint64, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 
 	return out, nil
-}
-
-func index(dir string) ([]segment, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	var out []segment
-
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-
-		path := filepath.Join(dir, e.Name())
-
-		f, err := macho.Open(path)
-		if err != nil {
-			// Not a Mach-O (plists, icxs). Ignore: the profile only points at code.
-			continue
-		}
-
-		for _, load := range f.Loads {
-			seg, ok := load.(*macho.Segment)
-			if !ok || seg.Filesz == 0 {
-				continue
-			}
-
-			out = append(out, segment{addr: seg.Addr, size: seg.Filesz, file: path, offset: uint64(seg.Offset)})
-		}
-
-		f.Close()
-	}
-
-	return out, nil
-}
-
-func find(segments []segment, addr uint64) *segment {
-	for i := range segments {
-		if addr >= segments[i].addr && addr < segments[i].addr+segments[i].size {
-			return &segments[i]
-		}
-	}
-
-	return nil
-}
-
-func readPage(seg segment, addr uint64, dst []byte) error {
-	f, err := os.Open(seg.file)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	off := int64(seg.offset) + int64(addr-seg.addr)
-
-	n, err := f.ReadAt(dst, off)
-	if err != nil && err != io.EOF {
-		return err
-	}
-
-	for i := n; i < len(dst); i++ {
-		dst[i] = 0
-	}
-
-	return nil
 }

@@ -65,6 +65,9 @@ jobs:
           mkdir -p /tmp/ipatool/cmd/export-profile
           cp scripts/export-profile/main.go \
              /tmp/ipatool/cmd/export-profile/main.go
+          mkdir -p /tmp/ipatool/cmd/export-cache-pages
+          cp scripts/export-cache-pages/main.go \
+             /tmp/ipatool/cmd/export-cache-pages/main.go
 
       - name: Dump the cache and the feature flags
         run: |
@@ -165,21 +168,26 @@ jobs:
             echo "::warning::the regenerated profile differs from the committed one"
             diff <(head -c 200000 "$file") <(head -c 200000 "$upstream") | head -40 || true
           fi
-      - name: Extract the shared-cache pages the profile points at
+      - name: List the pages the profile points at
         run: |
           cp "$RUNNER_TEMP/data_generated.go" \
              sapbridge/internal/store/profile/data_generated.go
           cd sapbridge
           go run ./cmd/export-cache-pages \
-            -system-dir "$RUNNER_TEMP/dyld" \
-            -output internal/store/cachepages/pages.bin.zst
-          ls -l internal/store/cachepages/pages.bin.zst
+            -addresses "$RUNNER_TEMP/addresses.txt"
+          wc -l "$RUNNER_TEMP/addresses.txt"
 
-      - name: Upload the page blob
-        uses: actions/upload-artifact@v4
-        with:
-          name: cache-pages
-          path: sapbridge/internal/store/cachepages/pages.bin.zst
+      - name: Pull those pages out of the dumped cache
+        run: |
+          mkdir -p sapbridge/internal/store/cachepages
+          cd /tmp/ipatool
+          go run ./cmd/export-cache-pages \
+            -prefix "$RUNNER_TEMP/dyld/$CACHE_PREFIX" \
+            -system-dir "$RUNNER_TEMP/dyld-system" \
+            -addresses "$RUNNER_TEMP/addresses.txt" \
+            -output "$GITHUB_WORKSPACE/sapbridge/internal/store/cachepages/pages.bin.zst"
+          ls -l "$GITHUB_WORKSPACE/sapbridge/internal/store/cachepages/pages.bin.zst"
+
 
       - uses: actions/upload-artifact@v4
         with:
