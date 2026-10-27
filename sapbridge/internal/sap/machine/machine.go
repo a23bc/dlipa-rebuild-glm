@@ -655,12 +655,14 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 		if readErr != nil {
 			return 0, fmt.Errorf("execute SAP guest function: %w", executionErr)
 		}
-		link, linkErr := m.engine.RegRead(unicorn.RegLR)
-		if linkErr != nil {
-			return 0, fmt.Errorf("execute SAP guest function at %#x: %w", instruction, executionErr)
-		}
+		// The entry and the link register say where the call came from; the
+		// instruction at the faulting PC is what actually failed. Unicorn reports
+		// UC_ERR_EXCEPTION for anything the CPU cannot execute, and guessing
+		// which one it was has already cost a build.
+		stopped, _ := m.engine.RegRead(unicorn.RegPC)
 
-		return 0, fmt.Errorf("execute SAP guest function at %#x from %#x: %w", instruction, link, executionErr)
+		return 0, fmt.Errorf("execute SAP guest function at %#x from %#x: %w; %s",
+			instruction, m.linkRegister(), executionErr, m.describeStop(stopped))
 	}
 
 	if m.services.fault != nil {
@@ -867,5 +869,27 @@ func (m *Machine) describeStop(pc uint64) string {
 		}
 	}
 
-	return fmt.Sprintf("pc=%#x lr=%#x x0=%#x x1=%#x back=%v", pc, link, x0, x1, frames)
+	instruction := ""
+
+	if word, err := m.engine.MemRead(pc, 4); err == nil {
+		instruction = fmt.Sprintf("insn=%#x", binary.LittleEndian.Uint32(word))
+	} else {
+		instruction = "insn=<unreadable>"
+	}
+
+	return fmt.Sprintf("pc=%#x %s lr=%#x x0=%#x x1=%#x x8=%#x back=%v",
+		pc, instruction, link, x0, x1, m.register(unicorn.RegX0+8), frames)
+}
+
+// linkRegister reads LR without failing the caller when the engine is gone.
+func (m *Machine) linkRegister() uint64 {
+	value, _ := m.engine.RegRead(unicorn.RegLR)
+
+	return value
+}
+
+func (m *Machine) register(ordinal int) uint64 {
+	value, _ := m.engine.RegRead(ordinal)
+
+	return value
 }
