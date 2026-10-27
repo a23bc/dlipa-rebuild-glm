@@ -25,6 +25,7 @@ func main() {
 	asset := flag.String("asset", "../VendorAssets/AppleMediaServices", "Mach-O to inspect")
 	sym := flag.String("sym", "", "list symbols whose name contains this substring")
 	rng := flag.String("range", "", "list symbols and function starts in lo,hi")
+	mem := flag.String("bytes", "", "dump raw file bytes at addr,len")
 	window := flag.Int("window", 0x40, "bytes to dump from the function start")
 	flag.Parse()
 
@@ -51,6 +52,11 @@ func main() {
 				symbols[sym.Value] = append(symbols[sym.Value], sym.Name)
 			}
 		}
+	}
+
+	if *mem != "" {
+		dumpBytes(file, raw, *mem)
+		return
 	}
 
 	if *rng != "" {
@@ -211,4 +217,41 @@ func listRange(file *macho.File, spec string) {
 	for _, e := range entries {
 		fmt.Printf("  %#x %s %s\n", e.addr, e.kind, e.name)
 	}
+}
+
+// dumpBytes prints what the file holds at a guest address, which is the only
+// way to tell "the loader left this slot zero" from "it was always zero".
+func dumpBytes(file *macho.File, raw []byte, spec string) {
+	parts := strings.SplitN(spec, ",", 2)
+	if len(parts) != 2 {
+		fmt.Fprintf(os.Stderr, "bytes wants addr,len\n")
+		return
+	}
+
+	addr, _ := strconv.ParseUint(parts[0], 0, 64)
+	length, _ := strconv.ParseUint(parts[1], 0, 64)
+
+	for _, section := range file.Sections {
+		if addr < section.Addr || addr >= section.Addr+section.Size {
+			continue
+		}
+
+		base := uint64(section.Offset) + (addr - section.Addr)
+		if base+length > uint64(len(raw)) {
+			fmt.Fprintf(os.Stderr, "range exceeds file\n")
+			return
+		}
+
+		fmt.Printf("  section %s,%s  file offset %#x\n", section.Seg, section.Name, base)
+
+		for offset := uint64(0); offset < length; offset += 8 {
+			chunk := raw[base+offset : base+offset+8]
+			word := binary.LittleEndian.Uint64(chunk)
+			fmt.Printf("  %#x: %016x  (%d)\n", addr+offset, word, word)
+		}
+
+		return
+	}
+
+	fmt.Printf("  %#x is not inside any section\n", addr)
 }

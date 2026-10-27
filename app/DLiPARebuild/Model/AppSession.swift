@@ -334,8 +334,17 @@ func diagnosticStoreSmoke() async -> String {
         // run. Once the runtime got past initWithBag the run grew long enough
         // that the screen stopped drawing entirely, which reads as a hang rather
         // than as work in progress.
+        // An empty account still runs: the Store answers an anonymous request
+        // with a 200 carrying a failure plist, which is worth seeing.
+        let account = activeAccount
+        let dsid = account?.dsid ?? ""
+        let token = account?.passwordToken ?? ""
+        let storefront = account?.storefront ?? ""
+
         let started = Date()
-        let result = try await runOffMain { try signer.storeSmoke() }
+        let result = try await runOffMain {
+            try signer.storeSmoke(dsid: dsid, token: token, storefront: storefront)
+        }
         let seconds = Int(Date().timeIntervalSince(started))
         AppLog.info("store smoke: " + result + " (wall \(seconds)s)", .sap)
 

@@ -28,7 +28,14 @@ import (
 // sharing one address space made the page mapping fail with UC_ERR_MAP. A second
 // guest costs memory, but it removes the requirement that two independent
 // layouts agree -- which is the point of this build.
-func (s *Signer) StoreSmoke(image []byte) (string, error) {
+// StoreAccount is the session the request is made on behalf of. Empty fields
+// mean an anonymous request, which the Store answers with a 200 carrying an
+// error plist rather than an HTTP failure.
+type StoreAccount struct {
+	DSID, Token, StoreFront string
+}
+
+func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) {
 	if s == nil || s.machine == nil {
 		return "", fmt.Errorf("store smoke: no machine")
 	}
@@ -130,11 +137,28 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
+	// Execute turns these three into the account the guest signs for; the action
+	// signature is the SAP header the Store checks. Without them the request is
+	// anonymous and the Store answers 200 with a failure plist.
+	headers := http.Header{}
+
+	for key, value := range map[string]string{
+		"X-Dsid":                account.DSID,
+		"X-Token":               account.Token,
+		"X-Apple-Store-Front":   account.StoreFront,
+	} {
+		if value != "" {
+			headers.Set(key, value)
+		}
+	}
+
 	response, execErr := runtime.Execute(emulator.Request{
 		URL:        endpoint,
 		Method:     method,
 		Body:       body,
+		Headers:    headers,
 		HardwareID: s.hardware,
+		Sign:       s.Sign,
 		Transport:  client.Do,
 		Raw:        true,
 	})
@@ -147,8 +171,8 @@ func (s *Signer) StoreSmoke(image []byte) (string, error) {
 		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		_ = response.Body.Close()
 
-		executed = fmt.Sprintf("execute status=%d bytes=%d head=%s",
-			response.StatusCode, len(payload), hexHead(payload, 64))
+		executed = fmt.Sprintf("execute status=%d bytes=%d body=%s",
+			response.StatusCode, len(payload), hexHead(payload, 2048))
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", executed)

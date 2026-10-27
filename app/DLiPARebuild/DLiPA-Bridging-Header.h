@@ -32,7 +32,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSData *)sign:(NSData *)body error:(NSError **)error;
 - (NSString *)signatureHeaderValue:(NSData *)body error:(NSError **)error;
 - (nullable NSData *)generateKBSync:(NSString *)dsid error:(NSError **)error;
-- (nullable NSString *)storeSmoke:(NSError **)error;
+- (NSString *)storeSmoke:(nullable NSString *)dsid token:(nullable NSString *)token storefront:(nullable NSString *)storefront error:(NSError **)error;
 - (nullable NSData *)hardware;
 - (BOOL)close:(NSError **)error;
 @end
