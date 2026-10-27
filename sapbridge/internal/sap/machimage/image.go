@@ -644,3 +644,68 @@ func add(left, right uint64) (uint64, bool) {
 func align(value, alignment uint64) uint64 {
 	return (value + alignment - 1) &^ (alignment - 1)
 }
+
+// StripPAC replaces pointer-authentication instructions in data with equivalents
+// the emulated CPU can execute.
+//
+// The emulator's CPU has no PAuth, so an autib/pacib reaching it raises
+// UC_ERR_EXCEPTION. Images are stripped when they are loaded, but the Store
+// profile's prepared pages are a snapshot of a real process and carry the
+// original bytes, so the code has to be stripped again after those pages land.
+func StripPAC(data []byte) int {
+	const nop = uint32(0xd503201f)
+
+	var replaced int
+
+	for offset := 0; offset+4 <= len(data); offset += 4 {
+		instruction := binary.LittleEndian.Uint32(data[offset:])
+
+		var replacement uint32
+
+		switch instruction & 0xfffffc00 {
+		case 0xd71f0800, 0xd71f0c00, 0xd61f0800, 0xd61f0c00:
+			replacement = 0xd61f0000 | (instruction & 0x3e0)
+		case 0xd73f0800, 0xd73f0c00, 0xd63f0800, 0xd63f0c00:
+			replacement = 0xd63f0000 | (instruction & 0x3e0)
+		case 0xdac10000, 0xdac10400, 0xdac10800, 0xdac10c00,
+			0xdac11000, 0xdac11400, 0xdac11800, 0xdac11c00:
+			replacement = nop
+		default:
+			switch instruction {
+			case 0xd65f0bff, 0xd65f0fff:
+				replacement = 0xd65f03c0
+			case 0xd503211f, 0xd503215f, 0xd503219f, 0xd50321df,
+				0xd503233f, 0xd503237f, 0xd50323bf, 0xd50323ff,
+				0xd50320ff:
+				replacement = nop
+			default:
+				opcode := instruction & 0xffffffe0
+				if opcode == 0xdac123e0 || opcode == 0xdac127e0 ||
+					opcode == 0xdac12be0 || opcode == 0xdac12fe0 ||
+					opcode == 0xdac133e0 || opcode == 0xdac137e0 ||
+					opcode == 0xdac13be0 || opcode == 0xdac13fe0 ||
+					opcode == 0xdac143e0 || opcode == 0xdac147e0 {
+					replacement = nop
+				}
+			}
+		}
+
+		if replacement != 0 {
+			binary.LittleEndian.PutUint32(data[offset:], replacement)
+			replaced++
+		}
+	}
+
+	return replaced
+}
+
+// TextRange reports where the image's __TEXT segment was placed.
+func (i *Image) TextRange() (uint64, uint64, bool) {
+	for _, item := range i.segments {
+		if item.name == "__TEXT" && item.size > 0 {
+			return item.address, item.size, true
+		}
+	}
+
+	return 0, 0, false
+}

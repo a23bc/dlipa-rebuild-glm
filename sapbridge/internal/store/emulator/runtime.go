@@ -196,6 +196,13 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 	}
 
+	type textRange struct {
+		name        string
+		start, size uint64
+	}
+
+	var textRanges []textRange
+
 	for name, data := range imageInputs {
 		fmt.Fprintf(os.Stderr, "[SAP] open(): machimage.Open %s with %d bytes\n", name, len(data))
 		image, e := machimage.Open(name, data)
@@ -296,6 +303,43 @@ regions, err := groupPages(addresses)
 		}
 	}
 	// Non-fragile ivar offsets are fixed by the Objective-C loader on macOS.
+	// The profile's prepared pages are a snapshot of a real process, so they carry
+	// the original pointer-authentication instructions and undo the stripping done
+	// when each image was loaded. The emulated CPU has no PAuth and raises
+	// UC_ERR_EXCEPTION on an autib, so strip again inside the guest.
+	for _, tr := range textRanges {
+		const chunk = 64 << 10
+
+		var replaced int
+
+		for off := uint64(0); off < tr.size; off += chunk {
+			n := uint64(chunk)
+			if off+n > tr.size {
+				n = tr.size - off
+			}
+
+			b, readErr := r.engine.MemRead(tr.start+off, n)
+			if readErr != nil {
+				return nil, fmt.Errorf("prepare store runtime: read %s text: %w", tr.name, readErr)
+			}
+
+			changed := machimage.StripPAC(b)
+			if changed == 0 {
+				continue
+			}
+
+			if writeErr := r.engine.MemWrite(tr.start+off, b); writeErr != nil {
+				return nil, fmt.Errorf("prepare store runtime: write %s text: %w", tr.name, writeErr)
+			}
+
+			replaced += changed
+		}
+
+		if replaced > 0 {
+			fmt.Fprintf(os.Stderr, "[SAP] open(): re-stripped %d PAC instructions in %s\n", replaced, tr.name)
+		}
+	}
+
 	for _, imageBytes := range imageInputs {
 		file, err := macho.NewFile(bytes.NewReader(imageBytes))
 		if err != nil {
