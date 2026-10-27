@@ -163,11 +163,19 @@ func (r *Runtime) dumpFaultState() {
 // shared-cache blob, or neither. "Neither" is the informative answer -- it means
 // the real process allocated that memory at runtime and no shipped asset holds
 // it, so no amount of remapping will help.
+//
+// The profile set is tracked separately from Runtime.pages because MemMap
+// records every range it maps, cache pages included.
 func (r *Runtime) pageOrigin(page uint64) string {
+	inProfile := r.profilePages[page]
+	inCache := r.cachePages[page]
+
 	switch {
-	case r.pages[page]:
+	case inProfile && inCache:
+		return "profile page, written over a shared-cache page"
+	case inProfile:
 		return "profile page"
-	case r.cachePages[page]:
+	case inCache:
 		return "shared-cache page"
 	default:
 		return "neither profile nor cache"

@@ -81,6 +81,7 @@ type Runtime struct {
 	objects                     map[uint64]*Object
 	pages                       map[uint64]bool
 	cachePages                  map[uint64]bool
+	profilePages                map[uint64]bool
 	cursor                      uint64
 	fault                       error
 	trace                       []string
@@ -304,6 +305,14 @@ regions, err := groupPages(addresses)
 		if err = r.MemWrite(page.Address, pageData[page.Offset:page.Offset+4096]); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
+
+		// MemMap records every range it maps, cache pages included, so the
+		// profile's own pages are tracked separately for the fault report.
+		if r.profilePages == nil {
+			r.profilePages = map[uint64]bool{}
+		}
+
+		r.profilePages[page.Address&^0xFFF] = true
 	}
 
 	for _, call := range profile.Calls {
