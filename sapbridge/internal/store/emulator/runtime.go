@@ -836,7 +836,8 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 func (r *Runtime) step(address uint64, _ uint32) {
 	defer func() {
 		if p := recover(); p != nil {
-			r.fault = fmt.Errorf("guest bridge at %#x: %w; recent=%v", address, recoveredError("runtime", p), r.trace)
+			r.fault = fmt.Errorf("guest bridge at %#x: %w; back=%v; recent=%v",
+				address, recoveredError("runtime", p), r.guestBacktrace(), r.trace)
 			_ = r.engine.Stop()
 		}
 	}()
@@ -848,9 +849,12 @@ func (r *Runtime) step(address uint64, _ uint32) {
 	}
 
 	if name := r.entries[address]; name != "" {
-		r.trace = append(r.trace, name)
-		if len(r.trace) > 12 {
-			r.trace = r.trace[len(r.trace)-12:]
+		// The receiver is the one thing a bridge panic cannot reconstruct
+		// afterwards, and a wrong receiver is exactly what it reports.
+		receiver, _ := r.engine.RegRead(unicorn.RegX0)
+		r.trace = append(r.trace, fmt.Sprintf("%s(recv=%#x)", name, receiver))
+		if len(r.trace) > 32 {
+			r.trace = r.trace[len(r.trace)-32:]
 		}
 	}
 

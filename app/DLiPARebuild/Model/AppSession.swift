@@ -395,7 +395,9 @@ func diagnosticKBSync() async -> String {
 
             AppLog.info("kbsync gate: generating, this may take a while", .sap)
             let started = Date()
-            let blob = try signer.kbsync(dsid: account.dsid)
+            // Same reason as the store smoke: kbsync runs the emulated guest and
+            // this class is @MainActor, so the direct call freezes the screen.
+            let blob = try await runOffMain { try signer.kbsync(dsid: account.dsid) }
             let seconds = Date().timeIntervalSince(started)
             let head = blob.prefix(8).map { String(format: "%02x", $0) }.joined()
             report.append("kbsync OK: " + String(blob.count) + " bytes in "

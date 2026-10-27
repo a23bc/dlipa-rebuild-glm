@@ -1,6 +1,7 @@
 package emulator
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 )
@@ -107,6 +108,7 @@ func (r *Runtime) dumpFaultState() {
 	fmt.Fprintf(os.Stderr, "[SAP] fault: pc=%#x lr=%#x sp=%#x\n", pc, lr, sp)
 
 	r.dumpRegisters()
+	r.dumpCalleeSavedObject()
 
 	code, err := r.engine.MemRead(pc, 4)
 	if err != nil {
@@ -192,7 +194,7 @@ func (r *Runtime) dumpRegisters() {
 	}{
 		{"x0", regX0}, {"x1", regX1}, {"x2", 201}, {"x3", 202},
 		{"x4", 203}, {"x5", 204}, {"x6", 205}, {"x7", 206},
-		{"x8", 207}, {"x16", regX16}, {"x17", regX17}, {"x29", regX29},
+		{"x8", 207}, {"x16", regX16}, {"x17", regX17}, {"x19", 218}, {"x20", 219}, {"x29", regX29},
 	}
 
 	for _, register := range registers {
@@ -204,5 +206,79 @@ func (r *Runtime) dumpRegisters() {
 		}
 
 		fmt.Fprintf(os.Stderr, "[SAP] fault: %s = %#x\n", register.name, value)
+	}
+}
+
+// guestBacktrace walks the frame-pointer chain the guest's prologues build
+// (stp x29, x30, [sp, #-16]!; mov x29, sp).
+//
+// Without it a bridge panic names the selector and the receiver and nothing
+// else, which is how "unknown receiver ... for copy" left no way to tell which
+// call site produced the receiver. The addresses are guest addresses, so
+// cmd/pcdecode can turn them into symbols.
+func (r *Runtime) guestBacktrace() []string {
+	fp, err := r.engine.RegRead(regX29)
+	if err != nil || fp == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, 16)
+
+	for depth := 0; depth < 16; depth++ {
+		if fp < stackBase || fp >= stackBase+stackSize || fp%8 != 0 {
+			break
+		}
+
+		frame, err := r.engine.MemRead(fp, 16)
+		if err != nil {
+			break
+		}
+
+		next := binary.LittleEndian.Uint64(frame)
+		lr := binary.LittleEndian.Uint64(frame[8:])
+
+		out = append(out, fmt.Sprintf("#%d %#x", depth, lr))
+
+		if next <= fp {
+			break
+		}
+
+		fp = next
+	}
+
+	return out
+}
+
+// dumpCalleeSavedObject prints the object the caller was working on.
+//
+// The bridge panics with an unknown receiver, and the receiver came out of a
+// callee-saved register in the caller's frame -- copyWithZone: loads it with
+// ldr x0, [x19, #16]. Reading x19's first words shows which slot holds the bad
+// pointer and what sits next to it, which is the difference between "an ivar
+// was never set" and "an ivar was overwritten".
+func (r *Runtime) dumpCalleeSavedObject() {
+	for _, register := range []struct {
+		name    string
+		ordinal int
+	}{{"x19", 218}, {"x20", 219}} {
+		object, err := r.engine.RegRead(register.ordinal)
+		if err != nil || object == 0 {
+			continue
+		}
+
+		page := object &^ 0xFFF
+		if _, err = r.engine.MemRead(page, 1); err != nil {
+			continue
+		}
+
+		data, err := r.engine.MemRead(object, 64)
+		if err != nil {
+			continue
+		}
+
+		for offset := 0; offset < len(data); offset += 8 {
+			word := binary.LittleEndian.Uint64(data[offset:])
+			fmt.Fprintf(os.Stderr, "[SAP] fault: %s[%#x] = %#x\n", register.name, offset, word)
+		}
 	}
 }
