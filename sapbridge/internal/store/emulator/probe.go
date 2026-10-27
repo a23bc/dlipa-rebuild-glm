@@ -19,13 +19,19 @@ func (r *Runtime) EncodeProbe(endpoint string, parameters map[string]any) (uint6
 	// nil, not an empty map: ephemeralAccount returns a fresh account straight
 	// away for nil, but treats a map as a saved account and parses its DSID.
 	// An empty map therefore fails with "invalid saved account identifier".
-	// Reported by initWithBag: on device. Checked here so the log says whether
-	// the page is mapped *before* the encoder is built, which separates "we
-	// never mapped it" from "something unmapped it afterwards".
-	if probe, readErr := r.engine.MemRead(0x1a2a0621c, 4); readErr != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] probe: 0x1a2a0621c UNREADABLE: %v\n", readErr)
+	//
+	// The probe is the page holding ___swift_mutable_project_boxed_
+	// opaque_existential_1, where initWithBag stopped on device. Reading it here
+	// says whether AMS code was mapped *before* the encoder was built, which
+	// separates "we never mapped it" from "something unmapped it afterwards".
+	// The address that faulted is no longer guessed from this: fault.go decodes
+	// the instruction at the PC.
+	const swiftHelper = 0x1a2a061f8
+
+	if probe, readErr := r.engine.MemRead(swiftHelper, 4); readErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] probe: %#x UNREADABLE: %v\n", swiftHelper, readErr)
 	} else {
-		fmt.Fprintf(os.Stderr, "[SAP] probe: 0x1a2a0621c readable %x\n", probe)
+		fmt.Fprintf(os.Stderr, "[SAP] probe: %#x readable %x\n", swiftHelper, probe)
 	}
 
 	account, err := r.ephemeralAccount(nil)
@@ -45,66 +51,26 @@ func (r *Runtime) EncodeProbe(endpoint string, parameters map[string]any) (uint6
 	}
 
 	if _, err = r.Invoke(encoder, "setAccount:", account); err != nil {
+		r.dumpFaultState()
 		return 0, fmt.Errorf("encoder setAccount: %w", err)
 	}
 
 	promise, err := r.Invoke(encoder, "requestWithMethod:URL:parameters:",
 		4, r.New("NSURL", endpoint), r.importValue(parameters))
 	if err != nil {
+		r.dumpFaultState()
 		return 0, fmt.Errorf("requestWithMethod:URL:parameters:: %w", err)
 	}
 
 	address, err := r.resolveAddress(promise)
 	if err != nil {
+		r.dumpFaultState()
 		return 0, fmt.Errorf("resolve promise: %w", err)
 	}
 
 	return address, nil
 }
 
-// dumpFaultState reports what the guest looks like at the moment a call faulted.
-//
-// The guest faulted reading 0x1a2a0621c while uc_mem_read returned real bytes for
-// the same address, and flushing the TLB changed nothing. Reading that address
-// again after the fault separates "the page left" from "the translation never
-// resolved", and the bytes at the reported PC say what the instruction wanted.
-func (r *Runtime) dumpFaultState() {
-	const faultAddr = 0x1a2a0621c
-	const faultPC = 0x1a2b4cdac
+// dumpFaultState lives in fault.go: it decodes the instruction at the PC
+// instead of guessing which address was missing.
 
-	// UC_ARM64_REG_* ordinals from include/unicorn/arm64.h at the pinned commit.
-	const (
-		regX0     = 199
-		regPC     = 260
-		regESR    = 277
-		regFAR    = 281
-		regTTBR0  = 274
-	)
-
-	read := func(name string, reg int) {
-		if v, err := r.engine.RegRead(reg); err != nil {
-			fmt.Fprintf(os.Stderr, "[SAP] reg %s: unreadable: %v\n", name, err)
-			return
-		} else {
-			fmt.Fprintf(os.Stderr, "[SAP] reg %s = %#x\n", name, v)
-		}
-	}
-
-	read("x0", regX0)
-	read("pc", regPC)
-	read("far_el1", regFAR)
-	read("esr_el1", regESR)
-	read("ttbr0_el1", regTTBR0)
-
-	if after, err := r.engine.MemRead(faultAddr, 16); err != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] after fault: %#x unreadable: %v\n", faultAddr, err)
-	} else {
-		fmt.Fprintf(os.Stderr, "[SAP] after fault: %#x still readable %x\n", faultAddr, after)
-	}
-
-	if code, err := r.engine.MemRead(faultPC, 16); err != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] after fault: PC bytes unreadable: %v\n", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "[SAP] after fault: PC %#x code %x\n", faultPC, code)
-	}
-}

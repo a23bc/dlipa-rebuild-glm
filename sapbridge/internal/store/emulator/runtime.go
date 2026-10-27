@@ -80,6 +80,7 @@ type Runtime struct {
 	selectorAddresses           map[string]uint64
 	objects                     map[uint64]*Object
 	pages                       map[uint64]bool
+	cachePages                  map[uint64]bool
 	cursor                      uint64
 	fault                       error
 	trace                       []string
@@ -243,6 +244,14 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		if err = r.MemWrite(cp.Address, cp.Data); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: write cache page %#x: %w", cp.Address, err)
 		}
+
+		// Remembered so a fault can say whether the missing page was in
+		// this blob at all, rather than only that it is unmapped now.
+		if r.cachePages == nil {
+			r.cachePages = map[uint64]bool{}
+		}
+
+		r.cachePages[cp.Address&^0xFFF] = true
 	}
 
 	if len(cachePages) > 0 {
