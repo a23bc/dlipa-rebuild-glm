@@ -601,9 +601,9 @@ func (m *Machine) Sign(contextValue uint64, input []byte) ([]byte, error) {
 
 	contextAfter, _ := m.engine.MemRead(contextValue, 32)
 
-	fmt.Fprintf(os.Stderr, "[SAP] sign: %d bytes in, %s, %d emulation starts (%d -> %d)\n",
+	fmt.Fprintf(os.Stderr, "[SAP] sign: %d bytes in, %s, %d emulation starts (%d -> %d), heap used %#x\n",
 		len(input), time.Since(started).Round(time.Millisecond),
-		unicorn.EmuStarts()-startsBefore, startsBefore, unicorn.EmuStarts())
+		unicorn.EmuStarts()-startsBefore, startsBefore, unicorn.EmuStarts(), m.HeapUsed())
 	fmt.Fprintf(os.Stderr, "[SAP] sign: context %#x before=%x\n", contextValue, contextBefore)
 	fmt.Fprintf(os.Stderr, "[SAP] sign: context %#x after =%x\n", contextValue, contextAfter)
 
