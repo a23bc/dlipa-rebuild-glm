@@ -45,9 +45,22 @@ const (
 	// checking it first. Nothing in the SAP assets installs one, so it is mapped
 	// here: zeroed, and pointed at from the middle so the small negative offsets
 	// Darwin uses for pthread fields stay inside the block.
-	tlsBase       = uint64(0x0000600000000000)
-	tlsSize       = uint64(0x2000)
-	tlsPointer    = tlsBase + tlsSize/2
+	tlsBase    = uint64(0x0000600000000000)
+	tlsSize    = uint64(0x2000)
+	tlsPointer = tlsBase + tlsSize/2
+	// The comm page. libsystem reads the kernel's time data from a fixed address
+	// and dereferences it without first checking that anything is mapped there:
+	// signing stopped on an ldr from 0xFFFFFC120, built by two instructions a few
+	// bytes earlier, and 0xFFFFFC000 is where arm64 keeps the comm page.
+	//
+	// Zeroed is the answer that helps, because two fields then choose the path
+	// the guest already handles. The timebase mode byte at +0x88 is 0, which
+	// routes time reads to the svc trap the shims serve; the timestamp at +0x120
+	// is 0, which fails the seqlock's own "has anyone filled this in" test. Filling
+	// in seconds and a numerator instead would be inventing a contract; a system
+	// with no comm page timebase takes the same fallback.
+	commPageBase  = uint64(0x0000FFFFFC000)
+	commPageSize  = uint64(0x4000)
 	pageSize      = uint64(0x1000)
 	maxOutputSize = uint64(16 << 20)
 )
@@ -246,6 +259,7 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 		{heapBase, heapSize},
 		{stackBase, stackSize},
 		{tlsBase, tlsSize},
+		{commPageBase, commPageSize},
 	} {
 		// The first of these triggers UC_INIT, and with it QEMU's
 		// code_gen_alloc. That function calls exit(1) when its mmap fails, so the
