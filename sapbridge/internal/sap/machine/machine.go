@@ -25,6 +25,11 @@ func init() {
 
 const sapGuestTimeout = time.Minute
 
+// sapInstructionChunk bounds a single emulation start. Emulation restarts after
+// every instruction the compatibility layer emulates, so this is also the
+// granularity at which the wall-clock deadline is checked.
+const sapInstructionChunk = 20_000_000
+
 const (
 	returnAddress = uint64(0x0000000100000000)
 	coreFPBase    = uint64(0x0000100000000000)
@@ -666,12 +671,37 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 	// SAP's cryptographic routines have input- and host-dependent instruction
 	// counts. Bound execution by wall time without rejecting legitimate work on
 	// slower machines for crossing a fixed instruction limit.
+	//
+	// The wall time is enforced here rather than through Unicorn's timeout: that
+	// timeout is a QEMU timer with a thread behind it, this loop restarts
+	// emulation once per instruction the compatibility layer emulates, and the
+	// signer hits enough of those to exhaust the process's threads --
+	// "qemu_thread_create: Resource temporarily unavailable" at 0x18088a368,
+	// which is a `casp` in a crypto loop. Chunks of instructions bound the same
+	// wait without a thread.
+	deadline := time.Now().Add(sapGuestTimeout)
 	next := function
 
 	for {
-		executionErr := m.engine.StartBounded(next, returnAddress, sapGuestTimeout, 0)
+		executionErr := m.engine.StartBounded(next, returnAddress, 0, sapInstructionChunk)
 		if executionErr == nil {
-			break
+			pc, readErr := m.engine.RegRead(unicorn.RegPC)
+			if readErr != nil {
+				return 0, fmt.Errorf("read SAP guest instruction register: %w", readErr)
+			}
+
+			if pc == returnAddress {
+				break
+			}
+
+			// The chunk ran out rather than the function returning.
+			if time.Now().After(deadline) {
+				return 0, fmt.Errorf("SAP guest exceeded %s at %#x", sapGuestTimeout, pc)
+			}
+
+			next = pc
+
+			continue
 		}
 		if m.services.fault != nil {
 			return 0, m.services.fault

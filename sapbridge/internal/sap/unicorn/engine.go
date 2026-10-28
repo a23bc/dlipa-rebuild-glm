@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -425,13 +426,23 @@ func (e *Engine) Start(begin, end uint64) error {
 }
 
 func (e *Engine) StartBounded(begin, end uint64, timeout time.Duration, instructionLimit uint64) error {
-	if timeout <= 0 {
-		return errors.New("unicorn timeout must be positive")
+	if timeout < 0 {
+		return errors.New("unicorn timeout must not be negative")
 	}
 
-	microseconds := uint64(timeout / time.Microsecond)
-	if microseconds == 0 {
-		microseconds = 1
+	// A zero timeout means "none". It is the preferred form here: Unicorn's
+	// timeout is enforced by a QEMU timer, and the signer starts emulation often
+	// enough that the timer's thread is a resource the process cannot always
+	// afford -- the run ended in "qemu_thread_create: Resource temporarily
+	// unavailable" after finishing most of its work. An instruction limit bounds
+	// the same thing without a thread.
+	var microseconds uint64
+
+	if timeout > 0 {
+		microseconds = uint64(timeout / time.Microsecond)
+		if microseconds == 0 {
+			microseconds = 1
+		}
 	}
 
 	handle, done, err := e.beginOperation()
@@ -445,8 +456,14 @@ func (e *Engine) StartBounded(begin, end uint64, timeout time.Duration, instruct
 		return err
 	}
 
+	emuStarts.Add(1)
+
 	if err := e.err(e.api.emuStart(handle, begin, end, microseconds, instructionLimit)); err != nil {
 		return err
+	}
+
+	if microseconds == 0 {
+		return nil
 	}
 
 	var timedOut uint64
@@ -460,6 +477,13 @@ func (e *Engine) StartBounded(begin, end uint64, timeout time.Duration, instruct
 
 	return nil
 }
+
+// emuStarts counts how many times emulation has been started on this engine.
+// Reported at the end of a run to tell a leak of QEMU resources from a one-off.
+var emuStarts atomic.Uint64
+
+// EmuStarts reports the number of emulation starts since the process began.
+func EmuStarts() uint64 { return emuStarts.Load() }
 
 func (e *Engine) Stop() error {
 	handle, done, err := e.beginOperation()

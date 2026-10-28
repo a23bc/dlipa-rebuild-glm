@@ -986,7 +986,9 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	r.running = true
 	defer func() { r.running = false }()
 
-	err = r.engine.StartBounded(entry, returnPC, 2*time.Minute, 20_000_000)
+	// No wall-clock timeout: the instruction budget bounds the run, and the
+	// timeout's QEMU timer thread is a resource this process ran out of.
+	err = r.engine.StartBounded(entry, returnPC, 0, 20_000_000)
 
 	if r.fault != nil {
 		return 0, r.fault
