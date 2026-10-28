@@ -165,6 +165,13 @@ func Open(ctx context.Context, bundle assets.Bundle) (*Machine, error) {
 		teardown:   exports["_IPaI1oem5iL"],
 		dispose:    exports["_jEHf8Xzsv8K"],
 	}
+
+	// Printed once: a zero here means a symbol that did not resolve, and an
+	// address worth comparing against CoreFP's own symbol table when a call
+	// returns a status nobody can explain.
+	fmt.Fprintf(os.Stderr, "[SAP] entry initialize=%#x exchange=%#x sign=%#x teardown=%#x\n",
+		machine.entry.initialize, machine.entry.exchange, machine.entry.sign, machine.entry.teardown)
+
 	return machine, nil
 }
 
@@ -587,11 +594,16 @@ func (m *Machine) Sign(contextValue uint64, input []byte) ([]byte, error) {
 		// A non-zero status is the guest's verdict, and the fields it wrote say
 		// whether it produced anything anyway: a signature with a bad status is a
 		// different failure from no signature at all.
+		//
+		// The full 64 bits are printed because int32 hides whether this is a
+		// status at all: a pointer whose low half happens to look like a small
+		// negative number reads exactly like an error code when truncated.
 		pointer, _ := m.readUint64(outputField)
 		length, _ := m.readUint64(lengthField)
+		second, _ := m.engine.RegRead(unicorn.RegX1)
 
-		return nil, fmt.Errorf("SAP signing returned %d (output pointer %#x, length %d)",
-			int32(status), pointer, length)
+		return nil, fmt.Errorf("SAP signing returned %d (x0=%#x x1=%#x, output pointer %#x, length %d)",
+			int32(status), status, second, pointer, length)
 	}
 
 	output, err := m.consumeOutput(outputField, lengthField)
