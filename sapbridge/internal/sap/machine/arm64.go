@@ -4,6 +4,7 @@ package machine
 import (
 	"encoding/binary"
 	"fmt"
+	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 )
@@ -33,14 +34,26 @@ const (
 
 	arm64EOR3Mask = uint32(0xffe08000)
 	arm64EOR3     = uint32(0xce000000)
+
+	// svc #imm16. Unicorn does not implement the trap, so a guest that executes
+	// one stops with UC_ERR_EXCEPTION -- which is how the comm page's own
+	// fallback path ends up here instead of reaching any shim.
+	arm64SVCMask = uint32(0xffe0001f)
+	arm64SVC     = uint32(0xd4000001)
+	arm64RET     = uint32(0xd65f03c0)
+
+	// Mach traps reach the kernel in x16 as negative numbers. -3 is
+	// MACH_ABSOLUTE_TIME_TRAP, the one the comm page fallback uses.
+	machAbsoluteTimeTrap = uint32(0xfffffffd)
 )
 
 type arm64Compatibility struct {
 	engine *unicorn.Engine
+	start  time.Time
 }
 
 func newARM64Compatibility(engine *unicorn.Engine) *arm64Compatibility {
-	return &arm64Compatibility{engine: engine}
+	return &arm64Compatibility{engine: engine, start: time.Now()}
 }
 
 func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
@@ -64,6 +77,32 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 		}
 
 		return true, nil
+	}
+
+	// svc is the one stop where the PC has already moved: an architectural
+	// exception leaves the return address on the instruction after the trap, so
+	// the word at the PC is the `ret` that ends the stub rather than the svc.
+	// The look back is limited to that shape -- a `ret` at the PC -- because this
+	// layer cannot tell one Unicorn error from another, and every other fault it
+	// sees is genuinely at the PC.
+	if word, readErr := c.instructionAt(pc); readErr == nil && isSVC(word) {
+		if err := c.emulateSVC(); err != nil {
+			return false, err
+		}
+
+		if err := c.engine.RegWrite(unicorn.RegPC, pc+4); err != nil {
+			return false, fmt.Errorf("advance arm64 instruction address: %w", err)
+		}
+
+		return true, nil
+	} else if readErr == nil && word == arm64RET {
+		if previous, previousErr := c.instructionAt(pc - 4); previousErr == nil && isSVC(previous) {
+			if err := c.emulateSVC(); err != nil {
+				return false, err
+			}
+
+			return true, nil
+		}
 	}
 
 	width, isCAS, ok := classifyAtomic(instruction)
@@ -219,6 +258,49 @@ func (c *arm64Compatibility) writeMemoryValue(address, value, width uint64) erro
 	}
 
 	return nil
+}
+
+func (c *arm64Compatibility) instructionAt(address uint64) (uint32, error) {
+	data, err := c.engine.MemRead(address, 4)
+	if err != nil {
+		return 0, err
+	}
+
+	return binary.LittleEndian.Uint32(data), nil
+}
+
+// isSVC reports whether a word is an svc, whatever immediate it carries. The
+// immediate is the trap's own business, not the decoder's.
+func isSVC(word uint32) bool { return word&arm64SVCMask == arm64SVC }
+
+// emulateSVC serves a Mach trap the guest reached through an inline svc, which
+// is how libsystem asks for the time when the comm page has no timebase.
+//
+// Only the traps that have been seen are here. An unknown number is an error
+// rather than a silent zero: the value in x16 names exactly what still needs a
+// shim, and a wrong return value would surface much further away than this.
+func (c *arm64Compatibility) emulateSVC() error {
+	trap, err := c.engine.RegRead(unicorn.RegX16)
+	if err != nil {
+		return fmt.Errorf("read arm64 trap number: %w", err)
+	}
+
+	switch uint32(trap) {
+	case machAbsoluteTimeTrap:
+		// mach_absolute_time counts timebase ticks and callers only difference
+		// it. Nothing here reads the timebase, so this counts nanoseconds since
+		// the machine started; it is monotonic, which is what callers use.
+		ticks := uint64(time.Since(c.start).Nanoseconds())
+
+		if err := c.engine.RegWrite(unicorn.RegX0, ticks); err != nil {
+			return fmt.Errorf("write arm64 trap result: %w", err)
+		}
+
+		return nil
+	default:
+		return fmt.Errorf("guest called mach trap %d (x16 = %#x) with no shim for it",
+			int32(uint32(trap)), trap)
+	}
 }
 
 // classifyAtomic reports an LSE compare-and-swap or swap: the width in bytes,

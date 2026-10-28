@@ -68,3 +68,30 @@ func TestClassifyAtomicRejectsOrdinaryCode(t *testing.T) {
 		}
 	}
 }
+
+// TestIsSVC pins the encoding the compatibility layer looks for. The comm page's
+// fallback is `mov w16, #-3; svc #0x80; ret`, so both the svc and the ret that
+// follows it have to be recognised for the look-back to work.
+func TestIsSVC(t *testing.T) {
+	if !isSVC(0xd4001001) { // svc #0x80
+		t.Fatal("svc #0x80 not recognised")
+	}
+
+	if !isSVC(0xd4000001) { // svc #0
+		t.Fatal("svc #0 not recognised")
+	}
+
+	for _, word := range []uint32{
+		0xd65f03c0, // ret
+		0xd4001002, // not an svc: bit 0 clear
+		0xf9400230, // ldr x16, [x17]
+	} {
+		if isSVC(word) {
+			t.Fatalf("%#x was classified as an svc", word)
+		}
+	}
+
+	if arm64RET != 0xd65f03c0 {
+		t.Fatalf("arm64RET is %#x", arm64RET)
+	}
+}
