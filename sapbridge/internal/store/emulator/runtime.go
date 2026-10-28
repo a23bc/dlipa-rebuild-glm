@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blacktop/go-macho"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machimage"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/cachepages"
 	storeprofile "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 	profileformat "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile/format"
+	"github.com/blacktop/go-macho"
 )
 
 const heapBase = uint64(0x400000000000)
@@ -118,6 +118,33 @@ func OpenWithEngine(ctx context.Context, engine *unicorn.Engine, imageData []byt
 // since allocations are now cleared, it erases it. heapUsed is how far the other
 // tenant has got; the runtime starts past the halfway mark regardless, so the
 // two cannot chase each other upward.
+// openProbe is a guest address whose word is printed after each phase of open().
+//
+// Temporary. A single instruction differed from the page blob in the guest --
+// `mov x1, x0` had become `ret` -- and no write hook saw it happen, so the stage
+// that changes it has to be found by asking between stages rather than by
+// guessing at writers. Zero disables it.
+var openProbe uint64
+
+// SetOpenProbe names the address open() should report after each phase.
+func SetOpenProbe(address uint64) { openProbe = address }
+
+// probeWord prints the word at the probe address, if one is set.
+func (r *Runtime) probeWord(phase string) {
+	if openProbe == 0 {
+		return
+	}
+
+	word, err := r.engine.MemRead(openProbe, 4)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] probe %s: %#x unreadable: %v\n", phase, openProbe, err)
+
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] probe %s: %#x = %x\n", phase, openProbe, word)
+}
+
 func OpenWithEngineAt(ctx context.Context, engine *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64) (*Runtime, error) {
 	if engine == nil {
 		return nil, errors.New("emulator engine is nil")
@@ -277,6 +304,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	}
 
+	r.probeWord("after images")
+
 	// The profile's prepared pages point into the dyld shared cache, which the host
 	// had mapped and the guest does not. Bring in the pages those pointers
 	// reference before writing the profile's own pages, or every absolute pointer
@@ -332,6 +361,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds(), dropped, stripped)
 	}
 
+	r.probeWord("after cache pages")
+
 	pageData := prepared.Pages
 	addresses := make([]uint64, 0, len(profile.Pages))
 
@@ -355,7 +386,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	// path already works on the same engine kbsync uses.
 	_ = strict
 
-regions, err := groupPages(addresses)
+	regions, err := groupPages(addresses)
 	if err != nil {
 		return nil, fmt.Errorf("prepare store runtime: %w", err)
 	}
@@ -390,6 +421,24 @@ regions, err := groupPages(addresses)
 
 	for _, call := range profile.Calls {
 		page := call.Address &^ 4095
+
+		// A recorded call is patched to `ret` because its implementation lived on
+		// the host -- Swift runtime entry points, mostly -- and cannot be
+		// recreated. That is a reasonable last resort for a call whose code does
+		// not exist here, and the wrong answer for one whose code does: the patch
+		// turns a real function into a no-op, and a caller that expected a value
+		// back gets its own argument instead.
+		//
+		// 0x180675ce8 is exactly that case. The page blob holds a real thunk
+		// there (`mov x1, x0; ldr x0, [global]; b ...`), the patch replaced it
+		// with `ret`, and the Store signer's VM stored the argument 0x200 into a
+		// register that is read back as a pointer.
+		if r.cachePages[page] {
+			fmt.Fprintf(os.Stderr, "[SAP] open(): leaving %#x alone, the blob has that page\n", call.Address)
+
+			continue
+		}
+
 		if !r.pages[page] {
 			if err = r.MemMap(page, 4096); err != nil {
 				return nil, fmt.Errorf("prepare store runtime: %w", err)
@@ -613,7 +662,6 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 		fresh++
 	}
 
-
 	// Force the translation caches for this range to be rebuilt. uc_mem_read
 	// reads physical memory directly and succeeds on a page the guest then faults
 	// on, which means the translations still say "not present"; reapplying the
@@ -634,6 +682,7 @@ func (r *Runtime) MemWrite(address uint64, data []byte) error {
 
 	return nil
 }
+
 const zeroChunk = 4096
 
 var zeroBlock [zeroChunk]byte
