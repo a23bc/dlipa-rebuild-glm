@@ -27,10 +27,12 @@ const (
 	arm64CASOrdering = uint32(1<<22 | 1<<15)
 	arm64SWPOrdering = uint32(1<<23 | 1<<22)
 
-	arm64CAS32 = uint32(0x88a07c00)
-	arm64CAS64 = uint32(0xc8a07c00)
-	arm64SWP32 = uint32(0xb8208000)
-	arm64SWP64 = uint32(0xf8208000)
+	arm64CAS32  = uint32(0x88a07c00)
+	arm64CAS64  = uint32(0xc8a07c00)
+	arm64SWP32  = uint32(0xb8208000)
+	arm64SWP64  = uint32(0xf8208000)
+	arm64CASP32 = uint32(0x08207c00)
+	arm64CASP64 = uint32(0x48207c00)
 
 	arm64EOR3Mask = uint32(0xffe08000)
 	arm64EOR3     = uint32(0xce000000)
@@ -93,6 +95,14 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 
 		if err := c.engine.RegWrite(unicorn.RegPC, pc+4); err != nil {
 			return false, fmt.Errorf("advance arm64 instruction address: %w", err)
+		}
+
+		return true, nil
+	}
+
+	if pairWidth, isPair := classifyPairCAS(instruction); isPair {
+		if err := c.emulatePairCAS(instruction, pairWidth); err != nil {
+			return false, err
 		}
 
 		return true, nil
@@ -187,6 +197,72 @@ func (c *arm64Compatibility) emulateEOR3(instruction uint32) error {
 	}
 
 	return nil
+}
+
+// emulatePairCAS performs the compare-and-swap CASP asks for.
+//
+// Same contract as the single-register form: the source pair holds the expected
+// value, the destination pair holds the new one, and the source pair always ends
+// up with what the memory held, whether the swap happened or not.
+func (c *arm64Compatibility) emulatePairCAS(instruction uint32, width uint64) error {
+	source := (instruction >> 16) & 31
+	base := (instruction >> 5) & 31
+	destination := instruction & 31
+
+	address, err := c.readBaseRegister(base)
+	if err != nil {
+		return err
+	}
+
+	memory, err := c.engine.MemRead(address, width)
+	if err != nil {
+		return fmt.Errorf("read arm64 pair atomic operand at %#x: %w", address, err)
+	}
+
+	half := width / 2
+
+	sourceLow, err := c.readValueRegister(source)
+	if err != nil {
+		return err
+	}
+
+	sourceHigh, err := c.readValueRegister(source + 1)
+	if err != nil {
+		return err
+	}
+
+	actualLow := binary.LittleEndian.Uint64(append(memory[:half], make([]byte, 8-half)...))
+	actualHigh := binary.LittleEndian.Uint64(append(memory[half:], make([]byte, 8-half)...))
+
+	if width == 8 {
+		sourceLow, sourceHigh = uint64(uint32(sourceLow)), uint64(uint32(sourceHigh))
+	}
+
+	if sourceLow == actualLow && sourceHigh == actualHigh {
+		destinationLow, readErr := c.readValueRegister(destination)
+		if readErr != nil {
+			return readErr
+		}
+
+		destinationHigh, readErr := c.readValueRegister(destination + 1)
+		if readErr != nil {
+			return readErr
+		}
+
+		if err := c.writeMemoryValue(address, destinationLow, half); err != nil {
+			return err
+		}
+
+		if err := c.writeMemoryValue(address+half, destinationHigh, half); err != nil {
+			return err
+		}
+	}
+
+	if err := c.writeValueRegister(source, actualLow); err != nil {
+		return err
+	}
+
+	return c.writeValueRegister(source+1, actualHigh)
 }
 
 func (c *arm64Compatibility) readBaseRegister(index uint32) (uint64, error) {
@@ -431,6 +507,25 @@ func writeTimeval(engine *unicorn.Engine, address uint64) error {
 // Split out from the emulation because the masks are the part that has to be
 // right: getting them wrong costs a device round to discover, and a test can
 // hold every encoding the ARM manual lists instead.
+// classifyPairCAS reports CASP, the 128-bit compare-and-swap: two registers are
+// compared against two words of memory and swapped as a unit.
+//
+//	sz=0  casp  W(s), W(s+1), W(t), W(t+1), [Xn]   8 bytes
+//	sz=1  casp  X(s), X(s+1), X(t), X(t+1), [Xn]  16 bytes
+//
+// It is not in classifyAtomic because the operand is a register pair, and every
+// other case there is a single register.
+func classifyPairCAS(instruction uint32) (width uint64, ok bool) {
+	switch instruction & arm64AtomicMask &^ arm64CASOrdering {
+	case arm64CASP32:
+		return 8, true
+	case arm64CASP64:
+		return 16, true
+	}
+
+	return 0, false
+}
+
 func classifyAtomic(instruction uint32) (width uint64, isCAS, ok bool) {
 	opcode := instruction & arm64AtomicMask
 

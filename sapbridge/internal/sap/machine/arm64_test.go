@@ -125,3 +125,36 @@ func TestEndsTrapStub(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyPairCAS pins the 128-bit compare-and-swap encodings.
+//
+// 0x48387ec0 is `casp x24, x25, x0, x1, [x22]`, the instruction that stopped
+// signing at 0x18088a368. Everything else in the atomic family takes a single
+// register, which is why this is classified separately.
+func TestClassifyPairCAS(t *testing.T) {
+	cases := []struct {
+		word  uint32
+		width uint64
+		ok    bool
+	}{
+		{0x48387ec0, 16, true}, // casp x24, x25, x0, x1, [x22]
+		{0x08207ec0, 8, true},  // casp w0, w1, w0, w1, [x22]
+		{0x4820fec0, 16, true}, // caspl, release bit set
+		{0x48607ec0, 16, true}, // caspa, acquire bit set
+		{0x4860fec0, 16, true}, // caspal, both ordering bits set
+		{0x0820fec0, 8, true},  // caspl w0, w1
+
+		// Not a pair CAS: the single-register forms and an unrelated atomic.
+		{0xc8e87c09, 0, false}, // casa x8, x9, [x0]
+		{0xf8208000, 0, false}, // swp
+		{0x88207ec0, 0, false}, // stxp, a different instruction that shares bits
+	}
+
+	for _, test := range cases {
+		width, ok := classifyPairCAS(test.word)
+		if ok != test.ok || (ok && width != test.width) {
+			t.Fatalf("%#x: got width=%d ok=%v, want width=%d ok=%v",
+				test.word, width, ok, test.width, test.ok)
+		}
+	}
+}
