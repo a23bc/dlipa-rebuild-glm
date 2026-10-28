@@ -259,6 +259,11 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 
 	response, execErr := attempt(s.Sign)
 
+	// The buffered calls are printed after the attempt, not during it: the one
+	// that matters is the last one, and printing as they arrive let objc_retain
+	// fill the quota long before the signer reached malloc.
+	runtime.DumpSymbolTrace()
+
 	if execErr != nil {
 		executed = "signed: " + execErr.Error()
 

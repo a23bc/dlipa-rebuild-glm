@@ -65,7 +65,8 @@ type Runtime struct {
 	ctx                         context.Context
 	codeRanges                  [][2]uint64
 	running                     bool
-	symbolTrace                 int
+	symbolTrace                 []string
+	symbolTraceLimit            int
 	steps                       uint64
 	timers                      []timer
 	callbacks                   map[uint64]func()
@@ -774,13 +775,34 @@ func countSymbols(calls map[uint64]Call) int {
 	return n
 }
 
-// TraceSymbols reports the next n calls that reach a recorded call site, with
+// TraceSymbols keeps the last n calls that reach a recorded call site, each with
 // the symbol name and the first three arguments.
 //
-// It answers "is the interception firing at all, and with what" -- the question
-// a `ret` that returns its own argument leaves open. Bounded, because this sits
-// on the per-instruction hook and an unbounded log there buries the run.
-func (r *Runtime) TraceSymbols(n int) { r.symbolTrace = n }
+// The first version printed the first n instead, and the first sixty-four were
+// all objc_retain and friends, so the call that mattered never appeared. Keeping
+// the tail and printing it after the attempt is the shape that cannot miss: the
+// interesting call is always near the end.
+//
+// Bounded because this sits on the per-instruction hook.
+func (r *Runtime) TraceSymbols(n int) {
+	r.symbolTrace = make([]string, 0, n)
+	r.symbolTraceLimit = n
+}
+
+// DumpSymbolTrace prints the buffered calls, oldest first.
+func (r *Runtime) DumpSymbolTrace() {
+	if r.symbolTraceLimit == 0 {
+		return
+	}
+
+	// Printed even when empty: "no call sites at all" and "tracing was off" look
+	// the same in a log otherwise, and they mean different things.
+	fmt.Fprintf(os.Stderr, "[SAP] symbol: last %d call sites\n", len(r.symbolTrace))
+
+	for _, line := range r.symbolTrace {
+		fmt.Fprintf(os.Stderr, "[SAP] symbol: %s\n", line)
+	}
+}
 
 func (r *Runtime) set(value uint64) {
 	if e := r.engine.RegWrite(unicorn.RegX0, value); e != nil {
@@ -1046,12 +1068,16 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		return
 	}
 
-	if r.symbolTrace > 0 {
-		r.symbolTrace--
+	if r.symbolTraceLimit > 0 {
+		line := fmt.Sprintf("%s(x0=%#x x1=%#x x2=%#x)",
+			strings.TrimLeft(call.Symbol, "_"), r.arg(0), r.arg(1), r.arg(2))
 
-		name := strings.TrimLeft(call.Symbol, "_")
-		fmt.Fprintf(os.Stderr, "[SAP] symbol: %s(x0=%#x x1=%#x x2=%#x)\n",
-			name, r.arg(0), r.arg(1), r.arg(2))
+		if len(r.symbolTrace) == r.symbolTraceLimit {
+			copy(r.symbolTrace, r.symbolTrace[1:])
+			r.symbolTrace[len(r.symbolTrace)-1] = line
+		} else {
+			r.symbolTrace = append(r.symbolTrace, line)
+		}
 	}
 
 	r.symbol(strings.TrimLeft(call.Symbol, "_"))
