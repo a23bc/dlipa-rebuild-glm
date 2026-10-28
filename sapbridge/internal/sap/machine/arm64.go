@@ -10,12 +10,29 @@ import (
 
 const (
 	arm64AtomicMask = uint32(0xffe0fc00)
-	arm64CASAL32    = uint32(0x88e0fc00)
-	arm64CASAL64    = uint32(0xc8e0fc00)
-	arm64SWPAL32    = uint32(0xb8e08000)
-	arm64SWPAL64    = uint32(0xf8e08000)
-	arm64EOR3Mask   = uint32(0xffe08000)
-	arm64EOR3       = uint32(0xce000000)
+
+	// CAS and SWP each come in four orderings, and the bits that select the
+	// ordering sit inside what would otherwise be the opcode. Clearing exactly
+	// those bits folds the four into one comparison. The ordering itself changes
+	// nothing for this guest: it runs one thread, so there is no other access to
+	// acquire or release against.
+	//
+	//	CAS  sz 0010001 1 Rs o0 11111 Rn Rt   -- o0 is bit 15, the acquire bit 22
+	//	SWP  sz 111000 1 Rs ...              -- acquire is bit 23, release bit 22
+	//
+	// Signing stopped on casa x8, x9, [x0] -- the plain 64-bit form -- because
+	// only the *al variants were recognised, and Unicorn raises UC_ERR_EXCEPTION
+	// for the rest rather than executing them.
+	arm64CASOrdering = uint32(1<<22 | 1<<15)
+	arm64SWPOrdering = uint32(1<<23 | 1<<22)
+
+	arm64CAS32 = uint32(0x88a07c00)
+	arm64CAS64 = uint32(0xc8a07c00)
+	arm64SWP32 = uint32(0xb8208000)
+	arm64SWP64 = uint32(0xf8208000)
+
+	arm64EOR3Mask = uint32(0xffe08000)
+	arm64EOR3     = uint32(0xce000000)
 )
 
 type arm64Compatibility struct {
@@ -49,16 +66,8 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 		return true, nil
 	}
 
-	opcode := instruction & arm64AtomicMask
-
-	var width uint64
-
-	switch opcode {
-	case arm64CASAL32, arm64SWPAL32:
-		width = 4
-	case arm64CASAL64, arm64SWPAL64:
-		width = 8
-	default:
+	width, isCAS, ok := classifyAtomic(instruction)
+	if !ok {
 		return false, nil
 	}
 
@@ -86,8 +95,7 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 		sourceValue = uint64(uint32(sourceValue))
 	}
 
-	switch opcode {
-	case arm64CASAL32, arm64CASAL64:
+	if isCAS {
 		newValue, readErr := c.readValueRegister(destination)
 		if readErr != nil {
 			return false, readErr
@@ -103,7 +111,7 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 		if err := c.writeValueRegister(source, oldValue); err != nil {
 			return false, err
 		}
-	case arm64SWPAL32, arm64SWPAL64:
+	} else {
 		if err := c.writeMemoryValue(address, sourceValue, width); err != nil {
 			return false, err
 		}
@@ -211,6 +219,32 @@ func (c *arm64Compatibility) writeMemoryValue(address, value, width uint64) erro
 	}
 
 	return nil
+}
+
+// classifyAtomic reports an LSE compare-and-swap or swap: the width in bytes,
+// whether it is the CAS shape, and whether it is one of those at all.
+//
+// Split out from the emulation because the masks are the part that has to be
+// right: getting them wrong costs a device round to discover, and a test can
+// hold every encoding the ARM manual lists instead.
+func classifyAtomic(instruction uint32) (width uint64, isCAS, ok bool) {
+	opcode := instruction & arm64AtomicMask
+
+	switch opcode &^ arm64CASOrdering {
+	case arm64CAS32:
+		return 4, true, true
+	case arm64CAS64:
+		return 8, true, true
+	}
+
+	switch opcode &^ arm64SWPOrdering {
+	case arm64SWP32:
+		return 4, false, true
+	case arm64SWP64:
+		return 8, false, true
+	}
+
+	return 0, false, false
 }
 
 func arm64GeneralRegister(index uint32) (int, bool) {
