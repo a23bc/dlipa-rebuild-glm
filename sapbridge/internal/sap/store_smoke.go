@@ -79,6 +79,19 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		return "", fmt.Errorf("store smoke: machine has no engine")
 	}
 
+	// Enumerate every shared-cache page the guest reaches for and does not have,
+	// in one run rather than one per build.
+	collector := &missingPages{engine: engine, seen: map[uint64]bool{}, limit: 400}
+
+	if collectHook, collectErr := engine.AddUnmappedHook(cacheRangeLow, cacheRangeHigh, collector.handle); collectErr == nil {
+		defer func() {
+			_ = collectHook.Close()
+			fmt.Fprintf(os.Stderr, "[SAP] collect: %d pages listed\n", len(collector.pages))
+		}()
+	} else {
+		fmt.Fprintf(os.Stderr, "[SAP] collect: not installed: %v\n", collectErr)
+	}
+
 	// One recorded call keeps its real code: the blob has a thunk at that
 	// address, and stubbing it is what turned the VM's indirect call into a
 	// no-op returning its own argument.
@@ -307,6 +320,13 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 // The address is stable because the asset is pinned by hash in the build, and it
 // is AppleMediaServices's `__DATA,__common`, not a cache page. Remove this, and
 // the watch in watchGuestWrites, once the write site is known.
+// cacheRangeLow and cacheRangeHigh bound the shared-cache address space the
+// collector is interested in.
+const (
+	cacheRangeLow  = uint64(0x180000000)
+	cacheRangeHigh = uint64(0x300000000)
+)
+
 const guestProbeGlobal = uint64(0x1e4d3bcc0)
 
 // guestProbeCall is the indirect call whose result becomes 0x200, and
@@ -374,6 +394,65 @@ func (s *Signer) watchGuestWrites(engine *unicorn.Engine) ([]*unicorn.Hook, erro
 	}
 
 	return watches, nil
+}
+
+// missingPages collects the shared-cache pages the guest asks for and does not
+// have, mapping a blank page so execution continues to the next one.
+//
+// Until now every run found exactly one page: the guest faulted on it, the page
+// went into the blob, and the next run faulted on the next page. Mapping blank
+// pages turns that into one run that enumerates them all. A blank page is not a
+// substitute for the real one -- code read from it is garbage -- so the run that
+// follows is expected to go wrong; the list is the product, not the result.
+//
+// Addresses the pinned cache does not have are harmless: the export skips them
+// and says how many it skipped.
+type missingPages struct {
+	engine *unicorn.Engine
+	seen   map[uint64]bool
+	pages  []uint64
+	limit  int
+	capped bool
+}
+
+func (m *missingPages) handle(address uint64, size uint32, fetch bool) bool {
+	page := address &^ 0xFFF
+
+	// Below the shared cache this is a null dereference or a bad pointer, and
+	// mapping it would hide the bug rather than report a missing page.
+	if page < cacheRangeLow || page >= cacheRangeHigh {
+		return false
+	}
+
+	if m.seen[page] {
+		return true
+	}
+
+	if len(m.pages) >= m.limit {
+		if !m.capped {
+			m.capped = true
+			fmt.Fprintf(os.Stderr, "[SAP] collect: stopping at %d pages\n", m.limit)
+			_ = m.engine.Stop()
+		}
+
+		return false
+	}
+
+	m.seen[page] = true
+	m.pages = append(m.pages, page)
+
+	kind := "read"
+	if fetch {
+		kind = "fetch"
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] collect: %#x (%s, %d bytes)\n", page, kind, size)
+
+	if err := m.engine.MemMap(page, 4096); err != nil {
+		return false
+	}
+
+	return true
 }
 
 // traceProbeCall reports the callee and argument of the call that produced

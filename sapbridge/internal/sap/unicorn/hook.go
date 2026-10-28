@@ -80,6 +80,8 @@ func (e *Engine) AddCodeHook(begin, end uint64, callback CodeHook) (*Hook, error
 	if err := e.err(e.api.hookAdd(handle, &hookHandle, hookCode, codeHookTrampoline, id, begin, end)); err != nil {
 		codeHookCallbacks.Delete(id)
 		writeHookCallbacks.Delete(id)
+		unmappedHookCallbacks.Delete(id)
+		writeHookCallbacks.Delete(id)
 
 		return nil, err
 	}
@@ -124,6 +126,8 @@ func (h *Hook) Close() error {
 
 	codeHookCallbacks.Delete(h.id)
 	writeHookCallbacks.Delete(h.id)
+	unmappedHookCallbacks.Delete(h.id)
+	writeHookCallbacks.Delete(h.id)
 	engine.hooks.mu.Lock()
 	delete(engine.hooks.ids, h.id)
 	engine.hooks.mu.Unlock()
@@ -141,6 +145,8 @@ func (e *Engine) clearCodeHooks() {
 
 	for id := range e.hooks.ids {
 		codeHookCallbacks.Delete(id)
+		writeHookCallbacks.Delete(id)
+		unmappedHookCallbacks.Delete(id)
 		writeHookCallbacks.Delete(id)
 	}
 
@@ -223,6 +229,92 @@ func (e *Engine) AddWriteWatch(begin, end uint64, callback WriteHook) (*Hook, er
 		writeHookCallbacks.Delete(id)
 
 		return nil, err
+	}
+
+	e.hooks.mu.Lock()
+	if e.hooks.ids == nil {
+		e.hooks.ids = make(map[uintptr]struct{})
+	}
+
+	e.hooks.ids[id] = struct{}{}
+	e.hooks.mu.Unlock()
+
+	return &Hook{engine: e, handle: hookHandle, id: id}, nil
+}
+
+const (
+	hookMemReadUnmapped  = 1 << 4
+	hookMemWriteUnmapped = 1 << 5
+	hookMemFetchUnmapped = 1 << 6
+)
+
+// UnmappedHook reports an access to memory that is not mapped, and decides
+// whether it was handled.
+//
+// Returning true tells Unicorn the fault is dealt with and the access is retried.
+// A hook that maps the page before returning therefore gets execution moving
+// again, which is the difference between discovering one missing page per run and
+// discovering all of them in one.
+type UnmappedHook func(address uint64, size uint32, fetch bool) bool
+
+type unmappedWatch struct {
+	callback UnmappedHook
+}
+
+var (
+	unmappedHookID         atomic.Uint64
+	unmappedHookCallbacks  sync.Map
+	unmappedHookTrampoline = purego.NewCallback(func(
+		_ purego.CDecl,
+		_ uintptr,
+		kind int32,
+		address uint64,
+		size uint32,
+		_ int64,
+		userData uintptr,
+	) uintptr {
+		entry, ok := unmappedHookCallbacks.Load(userData)
+		if !ok {
+			return 0
+		}
+
+		if entry.(unmappedWatch).callback(address, size, kind == hookMemFetchUnmapped) {
+			return 1
+		}
+
+		return 0
+	})
+)
+
+// AddUnmappedHook registers callback for unmapped accesses in [begin, end).
+func (e *Engine) AddUnmappedHook(begin, end uint64, callback UnmappedHook) (*Hook, error) {
+	handle, done, err := e.beginOperation()
+	if err != nil {
+		return nil, err
+	}
+
+	defer done()
+
+	if callback == nil {
+		return nil, errors.New("unicorn unmapped hook callback is nil")
+	}
+
+	id := uintptr(unmappedHookID.Add(1))
+	if id == 0 {
+		id = uintptr(unmappedHookID.Add(1))
+	}
+
+	unmappedHookCallbacks.Store(id, unmappedWatch{callback: callback})
+
+	var hookHandle uintptr
+
+	kinds := []int32{hookMemFetchUnmapped, hookMemReadUnmapped, hookMemWriteUnmapped}
+	for _, kind := range kinds {
+		if err := e.err(e.api.hookAdd(handle, &hookHandle, kind, unmappedHookTrampoline, id, begin, end)); err != nil {
+			unmappedHookCallbacks.Delete(id)
+
+			return nil, err
+		}
 	}
 
 	e.hooks.mu.Lock()
