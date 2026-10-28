@@ -79,6 +79,11 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		return "", fmt.Errorf("store smoke: machine has no engine")
 	}
 
+	// One recorded call keeps its real code: the blob has a thunk at that
+	// address, and stubbing it is what turned the VM's indirect call into a
+	// no-op returning its own argument.
+	emulator.SetCallExemptions([]uint64{guestProbeCallee})
+
 	// Watches go on before the runtime opens: the store the question is about
 	// happens while images are being loaded, and a watch installed afterwards
 	// would miss it.

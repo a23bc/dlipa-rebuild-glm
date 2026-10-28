@@ -126,6 +126,23 @@ func OpenWithEngine(ctx context.Context, engine *unicorn.Engine, imageData []byt
 // guessing at writers. Zero disables it.
 var openProbe uint64
 
+// callExemptions are recorded calls that must keep their real code.
+//
+// 0x180675ce8 is the first: the blob holds a thunk there (`mov x1, x0;
+// ldr x0, [global]; b ...`), the blanket patch replaced it with `ret`, and the
+// Store signer's VM stored the call's own argument 0x200 into a register that is
+// read back as a pointer.
+var callExemptions = map[uint64]bool{}
+
+// SetCallExemptions replaces the list of calls that keep their real code.
+func SetCallExemptions(addresses []uint64) {
+	callExemptions = make(map[uint64]bool, len(addresses))
+
+	for _, address := range addresses {
+		callExemptions[address] = true
+	}
+}
+
 // SetOpenProbe names the address open() should report after each phase.
 func SetOpenProbe(address uint64) { openProbe = address }
 
@@ -429,12 +446,12 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		// turns a real function into a no-op, and a caller that expected a value
 		// back gets its own argument instead.
 		//
-		// 0x180675ce8 is exactly that case. The page blob holds a real thunk
-		// there (`mov x1, x0; ldr x0, [global]; b ...`), the patch replaced it
-		// with `ret`, and the Store signer's VM stored the argument 0x200 into a
-		// register that is read back as a pointer.
-		if r.cachePages[page] {
-			fmt.Fprintf(os.Stderr, "[SAP] open(): leaving %#x alone, the blob has that page\n", call.Address)
+		// Exempting every call whose page the blob ships was too broad: it freed
+		// 4610 of them, Swift runtime included, and the process died inside the
+		// request encoder -- a step that had worked with them stubbed. So the
+		// exemption is a named list, one address at a time.
+		if callExemptions[call.Address] {
+			fmt.Fprintf(os.Stderr, "[SAP] open(): leaving %#x alone by exemption\n", call.Address)
 
 			continue
 		}
