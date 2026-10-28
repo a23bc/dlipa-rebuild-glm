@@ -43,8 +43,11 @@ const (
 	arm64RET     = uint32(0xd65f03c0)
 
 	// Mach traps reach the kernel in x16 as negative numbers. -3 is
-	// MACH_ABSOLUTE_TIME_TRAP, the one the comm page fallback uses.
+	// MACH_ABSOLUTE_TIME_TRAP, the one the comm page fallback uses. Non-negative
+	// numbers are BSD syscalls, and the stub that issues one branches on the
+	// carry flag to find out whether it worked.
 	machAbsoluteTimeTrap = uint32(0xfffffffd)
+	syscallGettimeofday  = uint32(116)
 )
 
 type arm64Compatibility struct {
@@ -80,12 +83,10 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 	}
 
 	// svc is the one stop where the PC has already moved: an architectural
-	// exception leaves the return address on the instruction after the trap, so
-	// the word at the PC is the `ret` that ends the stub rather than the svc.
-	// The look back is limited to that shape -- a `ret` at the PC -- because this
-	// layer cannot tell one Unicorn error from another, and every other fault it
-	// sees is genuinely at the PC.
-	if word, readErr := c.instructionAt(pc); readErr == nil && isSVC(word) {
+	// exception leaves the return address on the instruction after the trap. When
+	// the trap is at the PC this layer can step over it; when it is not, the word
+	// at the PC is what the stub does next, and that shape is checked at the end.
+	if isSVC(instruction) {
 		if err := c.emulateSVC(); err != nil {
 			return false, err
 		}
@@ -95,19 +96,11 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 		}
 
 		return true, nil
-	} else if readErr == nil && word == arm64RET {
-		if previous, previousErr := c.instructionAt(pc - 4); previousErr == nil && isSVC(previous) {
-			if err := c.emulateSVC(); err != nil {
-				return false, err
-			}
-
-			return true, nil
-		}
 	}
 
 	width, isCAS, ok := classifyAtomic(instruction)
 	if !ok {
-		return false, nil
+		return c.emulateTrailledSVC(pc, instruction)
 	}
 
 	source := (instruction >> 16) & 31
@@ -273,19 +266,72 @@ func (c *arm64Compatibility) instructionAt(address uint64) (uint32, error) {
 // immediate is the trap's own business, not the decoder's.
 func isSVC(word uint32) bool { return word&arm64SVCMask == arm64SVC }
 
-// emulateSVC serves a Mach trap the guest reached through an inline svc, which
-// is how libsystem asks for the time when the comm page has no timebase.
+// emulateSVC serves a trap the guest reached through an inline svc.
 //
-// Only the traps that have been seen are here. An unknown number is an error
-// rather than a silent zero: the value in x16 names exactly what still needs a
-// shim, and a wrong return value would surface much further away than this.
+// Only what has been seen is here. An unknown number is an error rather than a
+// silent zero: the value in x16 names exactly what still needs a shim, and a
+// wrong return value would surface much further away than this.
 func (c *arm64Compatibility) emulateSVC() error {
-	trap, err := c.engine.RegRead(unicorn.RegX16)
+	number, err := c.engine.RegRead(unicorn.RegX16)
 	if err != nil {
 		return fmt.Errorf("read arm64 trap number: %w", err)
 	}
 
-	switch uint32(trap) {
+	if int32(uint32(number)) < 0 {
+		return c.emulateMachTrap(number)
+	}
+
+	return c.emulateSyscall(number)
+}
+
+// emulateTrailledSVC handles a trap whose exception left the PC on what follows
+// it. libsystem's syscall stubs look like this:
+//
+//	mov x16, #0x74
+//	svc #0x80
+//	b.lo ok          <- carry clear means the call worked
+//	...error path...
+//
+// and the Mach trap stub ends in `ret` instead. Those shapes are what is checked
+// here, because this layer cannot tell one Unicorn error from another and every
+// other fault it sees really is at the PC it reports.
+func (c *arm64Compatibility) emulateTrailledSVC(pc uint64, instruction uint32) (bool, error) {
+	if !endsTrapStub(instruction) {
+		return false, nil
+	}
+
+	previous, err := c.instructionAt(pc - 4)
+	if err != nil || !isSVC(previous) {
+		return false, nil
+	}
+
+	if err := c.emulateSVC(); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+// endsTrapStub reports whether a word is what an inline trap stub does next.
+func endsTrapStub(word uint32) bool {
+	switch {
+	case word == arm64RET:
+		return true
+	case word&0xff000010 == 0x54000000: // b.cond
+		return true
+	case word&0xfc000000 == 0x14000000: // b
+		return true
+	case word&0x7e000000 == 0x34000000: // cbz, cbnz
+		return true
+	case word&0x7e000000 == 0x36000000: // tbz, tbnz
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *arm64Compatibility) emulateMachTrap(number uint64) error {
+	switch uint32(number) {
 	case machAbsoluteTimeTrap:
 		// mach_absolute_time counts timebase ticks and callers only difference
 		// it. Nothing here reads the timebase, so this counts nanoseconds since
@@ -299,8 +345,84 @@ func (c *arm64Compatibility) emulateSVC() error {
 		return nil
 	default:
 		return fmt.Errorf("guest called mach trap %d (x16 = %#x) with no shim for it",
-			int32(uint32(trap)), trap)
+			int32(uint32(number)), number)
 	}
+}
+
+func (c *arm64Compatibility) emulateSyscall(number uint64) error {
+	switch uint32(number) {
+	case syscallGettimeofday:
+		timeAddress, err := c.engine.RegRead(unicorn.RegX0)
+		if err != nil {
+			return fmt.Errorf("read gettimeofday timeval address: %w", err)
+		}
+
+		zoneAddress, err := c.engine.RegRead(unicorn.RegX1)
+		if err != nil {
+			return fmt.Errorf("read gettimeofday zone address: %w", err)
+		}
+
+		if timeAddress != 0 {
+			if err := writeTimeval(c.engine, timeAddress); err != nil {
+				return err
+			}
+		}
+
+		if zoneAddress != 0 {
+			if err := c.engine.MemWrite(zoneAddress, make([]byte, 8)); err != nil {
+				return fmt.Errorf("clear guest time zone: %w", err)
+			}
+		}
+
+		if err := c.engine.RegWrite(unicorn.RegX0, 0); err != nil {
+			return fmt.Errorf("write gettimeofday result: %w", err)
+		}
+
+		// The stub branches on carry, so a success has to clear it or the guest
+		// takes the error path it never asked for.
+		return c.setCarry(false)
+	default:
+		return fmt.Errorf("guest called BSD syscall %d (x16 = %#x) with no shim for it",
+			int32(uint32(number)), number)
+	}
+}
+
+func (c *arm64Compatibility) setCarry(set bool) error {
+	nzcv, err := c.engine.RegRead(unicorn.RegNZCV)
+	if err != nil {
+		return fmt.Errorf("read arm64 flags: %w", err)
+	}
+
+	const carry = uint64(1) << 29
+
+	if set {
+		nzcv |= carry
+	} else {
+		nzcv &^= carry
+	}
+
+	if err := c.engine.RegWrite(unicorn.RegNZCV, nzcv); err != nil {
+		return fmt.Errorf("write arm64 flags: %w", err)
+	}
+
+	return nil
+}
+
+// writeTimeval fills a guest timeval from the host clock. Shared with the
+// gettimeofday shim so the two paths cannot drift apart.
+func writeTimeval(engine *unicorn.Engine, address uint64) error {
+	now := time.Now()
+
+	var value [16]byte
+
+	binary.LittleEndian.PutUint64(value[0:8], uint64(now.Unix()))
+	binary.LittleEndian.PutUint32(value[8:12], uint32(now.Nanosecond()/1000))
+
+	if err := engine.MemWrite(address, value[:]); err != nil {
+		return fmt.Errorf("write guest time value: %w", err)
+	}
+
+	return nil
 }
 
 // classifyAtomic reports an LSE compare-and-swap or swap: the width in bytes,

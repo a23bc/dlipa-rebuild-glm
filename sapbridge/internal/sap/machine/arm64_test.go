@@ -95,3 +95,33 @@ func TestIsSVC(t *testing.T) {
 		t.Fatalf("arm64RET is %#x", arm64RET)
 	}
 }
+
+// TestEndsTrapStub pins the shapes that follow an inline trap.
+//
+// 0x54000103 is the word the device stopped on: `b.lo`, the carry check after
+// `mov x16, #0x74; svc #0x80`. Looking only for `ret` was the mistake that cost
+// the round before it.
+func TestEndsTrapStub(t *testing.T) {
+	for _, word := range []uint32{
+		0x54000103, // b.lo -- the observed one
+		0x54000040, // b.eq
+		0xd65f03c0, // ret
+		0x14000010, // b
+		0x34000040, // cbz
+		0x36000040, // tbz
+	} {
+		if !endsTrapStub(word) {
+			t.Fatalf("%#x should end a trap stub", word)
+		}
+	}
+
+	for _, word := range []uint32{
+		0xf9400230, // ldr x16, [x17]
+		0xc8e87c09, // casa x8, x9, [x0]
+		0xd4001001, // svc #0x80 -- handled at the PC, not as a trail
+	} {
+		if endsTrapStub(word) {
+			t.Fatalf("%#x should not end a trap stub", word)
+		}
+	}
+}

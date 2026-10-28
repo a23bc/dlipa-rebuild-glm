@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 )
@@ -323,16 +322,9 @@ func (s *shims) gettimeofday() error {
 		return err
 	}
 
-	now := time.Now()
-
 	if timeAddress != 0 {
-		var value [16]byte
-
-		binary.LittleEndian.PutUint64(value[0:8], uint64(now.Unix()))
-		binary.LittleEndian.PutUint32(value[8:12], uint32(now.Nanosecond()/1000))
-
-		if err := s.engine.MemWrite(timeAddress, value[:]); err != nil {
-			return fmt.Errorf("write guest time value: %w", err)
+		if err := writeTimeval(s.engine, timeAddress); err != nil {
+			return err
 		}
 	}
 

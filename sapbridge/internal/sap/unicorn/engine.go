@@ -50,22 +50,23 @@ const (
 	modeARM   = 0
 	protAll   = 7
 
-	RegX29 = 1
-	RegLR  = 2
-	RegSP  = 4
-	RegX0  = 199
-	RegX1  = 200
-	RegX2  = 201
-	RegX3  = 202
-	RegX4  = 203
-	RegX5  = 204
-	RegX6  = 205
-	RegX7  = 206
-	RegX14 = 213
-	RegX15 = 214
-	RegX16 = 215
-	RegV0  = 228
-	RegPC  = 260
+	RegX29  = 1
+	RegLR   = 2
+	RegNZCV = 3
+	RegSP   = 4
+	RegX0   = 199
+	RegX1   = 200
+	RegX2   = 201
+	RegX3   = 202
+	RegX4   = 203
+	RegX5   = 204
+	RegX6   = 205
+	RegX7   = 206
+	RegX14  = 213
+	RegX15  = 214
+	RegX16  = 215
+	RegV0   = 228
+	RegPC   = 260
 
 	// Thread pointer registers. Guest code that touches thread-local storage
 	// reads TPIDRRO_EL0 and expects a pointer the kernel would have installed;
