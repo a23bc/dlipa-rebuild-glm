@@ -273,6 +273,12 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// fill the quota long before the signer reached malloc.
 	runtime.DumpSymbolTrace()
 
+	// A bridge failure that happened while the SAP machine drove is stored here
+	// and read by nobody: the machine reports only that the guest stopped.
+	if bridgeErr := runtime.Fault(); bridgeErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] bridge: %v\n", bridgeErr)
+	}
+
 	if execErr != nil {
 		executed = "signed: " + execErr.Error()
 

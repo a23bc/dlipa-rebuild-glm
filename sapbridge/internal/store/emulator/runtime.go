@@ -775,6 +775,9 @@ func countSymbols(calls map[uint64]Call) int {
 	return n
 }
 
+// Fault reports the last bridge failure recorded while guest code ran, if any.
+func (r *Runtime) Fault() error { return r.fault }
+
 // TraceSymbols keeps the last n calls that reach a recorded call site, each with
 // the symbol name and the first three arguments.
 //
@@ -1086,10 +1089,17 @@ func (r *Runtime) dispatch(address uint64) bool {
 
 	// A host implementation that fails must surface as a fault on this runtime,
 	// not as a panic through the Unicorn callback frame.
+	//
+	// It has to be printed here, not only stored: when the SAP machine is the one
+	// driving, nobody reads r.fault -- the machine's own StartBounded sees the PC
+	// no longer equals its return address and reports "stopped unexpectedly",
+	// with no mention of the symbol that failed. One line here names it.
 	defer func() {
 		if p := recover(); p != nil {
-			r.fault = fmt.Errorf("guest bridge at %#x: %w; back=%v; recent=%v",
-				address, recoveredError("runtime", p), r.guestBacktrace(), r.trace)
+			reason := recoveredError("runtime", p)
+			r.fault = fmt.Errorf("guest bridge at %#x (%s): %w; back=%v; recent=%v",
+				address, call.Symbol, reason, r.guestBacktrace(), r.trace)
+			fmt.Fprintf(os.Stderr, "[SAP] bridge failed at %#x, symbol %q: %v\n", address, call.Symbol, reason)
 			_ = r.engine.Stop()
 		}
 	}()
