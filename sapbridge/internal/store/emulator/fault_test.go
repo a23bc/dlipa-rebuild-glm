@@ -107,3 +107,52 @@ func TestDescribeRegion(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeRegisterAccess covers the register-offset form, which the immediate
+// decoder reports nothing for.
+//
+// 0xb870698e is the instruction signing stopped on at 0x1a24c4d04:
+// `ldr w14, [x12, x16]`. Without this decoder the log named neither the address
+// nor the base register, and x12 was not even among the printed registers.
+func TestDecodeRegisterAccess(t *testing.T) {
+	cases := []struct {
+		name     string
+		word     uint32
+		base     int
+		index    int
+		shift    uint
+		unsigned bool
+		ok       bool
+	}{
+		{"ldr w14,[x12,x16]", 0xb870698e, 12, 16, 0, false, true},
+		// ldr x0, [x1, x2, lsl #3] -- S on a 64-bit access shifts by 3.
+		{"ldr x0,[x1,x2,lsl#3]", 0xf8627820, 1, 2, 3, false, true},
+		// ldr w0, [x1, x2, lsl #2] -- same, 32-bit access.
+		{"ldr w0,[x1,x2,lsl#2]", 0xb8627820, 1, 2, 2, false, true},
+		// ldr w0, [x1, w2, uxtw]
+		{"ldr w0,[x1,w2,uxtw]", 0xb8624820, 1, 2, 0, true, true},
+
+		// The immediate form must not be claimed here.
+		{"ldr w8,[x16,#0x50]", 0xb9405208, 0, 0, 0, false, false},
+		// Option 111 is SXTX, not covered.
+		{"ldr w0,[x1,x2,sxtx#2]", 0xb862f820, 0, 0, 0, false, false},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			base, index, shift, unsigned, ok := decodeRegisterAccess(test.word)
+			if ok != test.ok {
+				t.Fatalf("%#x: ok=%v, want %v", test.word, ok, test.ok)
+			}
+
+			if !ok {
+				return
+			}
+
+			if base != test.base || index != test.index || shift != test.shift || unsigned != test.unsigned {
+				t.Fatalf("%#x: got x%d+x%d<<%d unsigned=%v, want x%d+x%d<<%d unsigned=%v",
+					test.word, base, index, shift, unsigned, test.base, test.index, test.shift, test.unsigned)
+			}
+		})
+	}
+}

@@ -121,31 +121,14 @@ func (r *Runtime) dumpFaultState() {
 	word := uint32(code[0]) | uint32(code[1])<<8 | uint32(code[2])<<16 | uint32(code[3])<<24
 	fmt.Fprintf(os.Stderr, "[SAP] fault: insn %#08x\n", word)
 
-	register, offset, ok := decodeAccess(word)
+	target, description, ok := r.accessTarget(word)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "[SAP] fault: not an immediate load/store, no address decoded\n")
+		fmt.Fprintf(os.Stderr, "[SAP] fault: instruction form not decoded, no address\n")
 
 		return
 	}
 
-	ordinal, ok := registerOrdinal(register)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "[SAP] fault: base x%d has no readable ordinal\n", register)
-
-		return
-	}
-
-	base, err := r.engine.RegRead(ordinal)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] fault: x%d unreadable: %v\n", register, err)
-
-		return
-	}
-
-	target := base + offset
-
-	fmt.Fprintf(os.Stderr, "[SAP] fault: wants [x%d+%#x] = %#x (%s)\n",
-		register, offset, target, describeRegion(target))
+	fmt.Fprintf(os.Stderr, "[SAP] fault: wants %s = %#x (%s)\n", description, target, describeRegion(target))
 
 	page := target &^ 0xFFF
 	fmt.Fprintf(os.Stderr, "[SAP] fault: page %#x origin: %s\n", page, r.pageOrigin(page))
@@ -203,8 +186,13 @@ func (r *Runtime) dumpRegisters() {
 		ordinal int
 	}{
 		{"x0", regX0}, {"x1", regX1}, {"x2", 201}, {"x3", 202},
-		{"x4", 203}, {"x5", 204}, {"x6", 205}, {"x7", 206},
-		{"x8", 207}, {"x16", regX16}, {"x17", regX17}, {"x19", 218}, {"x20", 219}, {"x29", regX29},
+		{"x4", 203}, {"x5", 204}, {"x6", 205}, {"x7", 206}, {"x8", 207},
+		// x9-x15 are included because a register-offset load can use any of them
+		// as its base, and the fault at 0x1a24c4d04 named x12 that was not
+		// printed anywhere.
+		{"x9", 208}, {"x10", 209}, {"x11", 210}, {"x12", 211}, {"x13", 212},
+		{"x14", 213}, {"x15", 214},
+		{"x16", regX16}, {"x17", regX17}, {"x19", 218}, {"x20", 219}, {"x29", regX29},
 	}
 
 	for _, register := range registers {
@@ -217,6 +205,90 @@ func (r *Runtime) dumpRegisters() {
 
 		fmt.Fprintf(os.Stderr, "[SAP] fault: %s = %#x\n", register.name, value)
 	}
+}
+
+// decodeRegisterAccess reports the operands of a load or store whose offset is
+// in a register: `ldr w14, [x12, x16]`.
+//
+// The immediate decoder above said nothing about the instruction that stopped
+// signing at 0x1a24c4d04, so the address, the base register and the reason were
+// all missing from the log. Two extend kinds are covered; anything else reports
+// ok=false rather than a computed guess.
+//
+//	base   = bits 9-5
+//	index  = bits 20-16
+//	option = bits 15-13, the extend kind
+//	S      = bit 12, which scales the index by the access size
+//
+// There is no immediate shift in this form: `[x1, x2, lsl #3]` is option LSL
+// with S set on a 64-bit access. Reading bits 15-10 as a shift, which is what
+// the first version of this did, produced x16<<26 for `ldr w14, [x12, x16]`.
+func decodeRegisterAccess(word uint32) (base, index int, shift uint, unsigned, ok bool) {
+	const (
+		registerOffsetMask  = 0x3B200C00
+		registerOffsetValue = 0x38200800
+	)
+
+	if word&registerOffsetMask != registerOffsetValue {
+		return 0, 0, 0, false, false
+	}
+
+	switch (word >> 13) & 7 {
+	case 3: // LSL
+	case 2: // UXTW
+		unsigned = true
+	default: // SXTW, SXTX and anything else
+		return 0, 0, 0, false, false
+	}
+
+	if word&(1<<12) != 0 {
+		shift = uint(word >> 30)
+	}
+
+	return int((word >> 5) & 0x1F), int((word >> 16) & 0x1F), shift, unsigned, true
+}
+
+// accessTarget works out the address a faulting load or store wanted, in either
+// of the two forms this guest uses, and words it the way the log prints it.
+func (r *Runtime) accessTarget(word uint32) (uint64, string, bool) {
+	if register, offset, ok := decodeAccess(word); ok {
+		base, readErr := r.registerValue(register)
+		if readErr != nil {
+			return 0, "", false
+		}
+
+		return base + offset, fmt.Sprintf("[x%d+%#x]", register, offset), true
+	}
+
+	baseRegister, indexRegister, shift, unsigned, ok := decodeRegisterAccess(word)
+	if !ok {
+		return 0, "", false
+	}
+
+	base, err := r.registerValue(baseRegister)
+	if err != nil {
+		return 0, "", false
+	}
+
+	index, err := r.registerValue(indexRegister)
+	if err != nil {
+		return 0, "", false
+	}
+
+	if unsigned {
+		index = uint64(uint32(index))
+	}
+
+	return base + index<<shift, fmt.Sprintf("[x%d+x%d<<%d]", baseRegister, indexRegister, shift), true
+}
+
+func (r *Runtime) registerValue(register int) (uint64, error) {
+	ordinal, ok := registerOrdinal(register)
+	if !ok {
+		return 0, fmt.Errorf("arm64 register x%d has no readable ordinal", register)
+	}
+
+	return r.engine.RegRead(ordinal)
 }
 
 // guestBacktrace walks the frame-pointer chain the guest's prologues build
