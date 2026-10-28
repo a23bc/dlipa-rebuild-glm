@@ -27,6 +27,11 @@ const (
 	regX30 = 2
 	regSP  = 4
 	regPC  = 260
+
+	// How much of the guest stack a fault prints. The frame that mattered is
+	// 0x650 bytes and the slot that went wrong was at +0x60, so this covers the
+	// head of it without turning a fault into a memory dump.
+	faultFrameSize = 0x100
 )
 
 // far_el1 and esr_el1 are deliberately absent: this build returns 0 for both,
@@ -108,6 +113,7 @@ func (r *Runtime) dumpFaultState() {
 	fmt.Fprintf(os.Stderr, "[SAP] fault: pc=%#x lr=%#x sp=%#x\n", pc, lr, sp)
 
 	r.dumpRegisters()
+	r.dumpFrame()
 	r.dumpCalleeSavedObject()
 
 	code, err := r.engine.MemRead(pc, 4)
@@ -174,6 +180,39 @@ func (r *Runtime) pageOrigin(page uint64) string {
 		return "shared-cache page"
 	default:
 		return "neither profile nor cache"
+	}
+}
+
+// dumpFrame prints the top of the guest stack.
+//
+// The bad value in a faulting register often is not computed where it is used:
+// signing stopped with x12 = 0x200, which had been loaded from [sp, #0x60] --
+// a stack slot -- and the code that filled that slot is on a path through an
+// obfuscated dispatcher that no static read can pin down. The frame says which
+// slots hold something pointer-shaped and which hold leftovers, and a following
+// run can be compared against it.
+func (r *Runtime) dumpFrame() {
+	sp, err := r.engine.RegRead(regSP)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] fault: sp unreadable: %v\n", err)
+
+		return
+	}
+
+	data, err := r.engine.MemRead(sp, faultFrameSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] fault: frame at %#x unreadable: %v\n", sp, err)
+
+		return
+	}
+
+	for offset := 0; offset+8 <= len(data); offset += 8 {
+		value := binary.LittleEndian.Uint64(data[offset:])
+		if value == 0 {
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] fault: [sp+%#03x] = %#x\n", offset, value)
 	}
 }
 
