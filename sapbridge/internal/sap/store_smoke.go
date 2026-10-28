@@ -154,21 +154,44 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		}
 	}
 
-	response, execErr := runtime.Execute(emulator.Request{
-		URL:        endpoint,
-		Method:     method,
-		Body:       body,
-		Headers:    headers,
-		HardwareID: s.hardware,
-		Sign:       s.Sign,
-		Transport:  client.Do,
-		Raw:        true,
-	})
+	attempt := func(sign func([]byte) ([]byte, error)) (*http.Response, error) {
+		return runtime.Execute(emulator.Request{
+			URL:        endpoint,
+			Method:     method,
+			Body:       body,
+			Headers:    headers,
+			HardwareID: s.hardware,
+			Sign:       sign,
+			Transport:  client.Do,
+			Raw:        true,
+		})
+	}
 
 	executed := ""
 
+	response, execErr := attempt(s.Sign)
+
 	if execErr != nil {
-		executed = "execute failed: " + execErr.Error()
+		executed = "signed: " + execErr.Error()
+
+		// Signing runs the SAP machine, and for this request it reaches into
+		// shared-cache code the blob does not carry: AMS picks the target out of
+		// an obfuscated jump table, so no static scan of its data can see it.
+		// That is a separate problem from whether the session is right, so ask
+		// the Store again without a signature. Whatever comes back separates the
+		// two: a 200 means account, headers and the callback path are all fine
+		// and only the signature is missing.
+		unsigned, unsignedErr := attempt(nil)
+
+		if unsignedErr != nil {
+			executed += " | unsigned: " + unsignedErr.Error()
+		} else {
+			payload, _ := io.ReadAll(io.LimitReader(unsigned.Body, 4096))
+			_ = unsigned.Body.Close()
+
+			executed += fmt.Sprintf(" | unsigned status=%d bytes=%d body=%s",
+				unsigned.StatusCode, len(payload), hexHead(payload, 2048))
+		}
 	} else {
 		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		_ = response.Body.Close()
