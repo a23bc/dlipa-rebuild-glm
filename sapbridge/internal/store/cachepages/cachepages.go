@@ -40,6 +40,12 @@ func Load() ([]Page, error) {
 		return nil, nil
 	}
 
+	return Decode(compressed)
+}
+
+// Decode parses a compressed page blob, so a blob on disk can be checked before
+// it replaces the embedded one.
+func Decode(compressed []byte) ([]Page, error) {
 	decoder, err := zstd.NewReader(bytes.NewReader(compressed))
 	if err != nil {
 		return nil, fmt.Errorf("open page blob: %w", err)

@@ -20,10 +20,14 @@ var staticList string
 //
 // The list is generated from VendorAssets by static_test.go and committed so the
 // page export does not need the images on the runner.
-func StaticPages() []uint64 {
+func StaticPages() []uint64 { return parsePageList(staticList) }
+
+// parsePageList reads one address per line, ignoring comments and blank lines.
+// Shared with ExtraPages, whose file has the same shape.
+func parsePageList(text string) []uint64 {
 	var out []uint64
 
-	for _, line := range strings.Split(staticList, "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "0x") {
 			continue

@@ -41,10 +41,15 @@ func main() {
 }
 
 func run() error {
-	systemDir := flag.String("addresses", "", "path to write the referenced page addresses to")
+	addressesPath := flag.String("addresses", "", "path to write the referenced page addresses to")
+	checkPath := flag.String("check", "", "path to a page blob to verify against ExtraPages, instead of writing addresses")
 	flag.Parse()
 
-	if *systemDir == "" {
+	if *checkPath != "" {
+		return checkBlob(*checkPath)
+	}
+
+	if *addressesPath == "" {
 		return fmt.Errorf("-addresses is required")
 	}
 
@@ -59,13 +64,66 @@ func run() error {
 		fmt.Fprintf(&buf, "%#x\n", addr)
 	}
 
-	if err = os.WriteFile(*systemDir, buf.Bytes(), 0o644); err != nil {
+	if err = os.WriteFile(*addressesPath, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "wrote %d addresses to %s\n", len(addresses), *systemDir)
+	fmt.Fprintf(os.Stderr, "wrote %d addresses to %s\n", len(addresses), *addressesPath)
 
 	return nil
+}
+
+// checkBlob reports whether a built blob carries every hand-listed page.
+//
+// The exporter warns and skips when the cache cannot resolve an address, so a
+// blob that silently lacks the window looks exactly like a good one until the
+// device faults on the same page again. This is the only check that closes that
+// loop, and it is worth a separate exit code because the run that produces the
+// blob costs a 6.6 GB download.
+func checkBlob(path string) error {
+	compressed, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read blob: %w", err)
+	}
+
+	pages, err := cachepages.Decode(compressed)
+	if err != nil {
+		return fmt.Errorf("decode blob: %w", err)
+	}
+
+	present := make(map[uint64]struct{}, len(pages))
+	for _, page := range pages {
+		present[page.Address] = struct{}{}
+	}
+
+	var missing []uint64
+
+	for _, address := range cachepages.ExtraPages() {
+		if _, ok := present[address]; !ok {
+			missing = append(missing, address)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "blob %s: %d pages, %d extra pages listed, %d missing\n",
+		path, len(pages), len(cachepages.ExtraPages()), len(missing))
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	// A handful of addresses is readable; a whole window missing is not, and the
+	// count alone says which happened.
+	for i, address := range missing {
+		if i >= 8 {
+			fmt.Fprintf(os.Stderr, "  ... and %d more\n", len(missing)-i)
+
+			break
+		}
+
+		fmt.Fprintf(os.Stderr, "  missing %#x\n", address)
+	}
+
+	return fmt.Errorf("blob lacks %d listed page(s); the export skipped them", len(missing))
 }
 
 // referencedPages collects the distinct 4 KiB pages the profile's prepared pages
@@ -118,7 +176,19 @@ func referencedPages(ctx context.Context) ([]uint64, error) {
 		static++
 	}
 
-	fmt.Fprintf(os.Stderr, "profile pages=%d, static pages added=%d, total=%d\n", len(seen)-static, static, len(seen))
+	extra := 0
+
+	for _, address := range cachepages.ExtraPages() {
+		if _, ok := seen[address]; ok {
+			continue
+		}
+
+		seen[address] = struct{}{}
+		extra++
+	}
+
+	fmt.Fprintf(os.Stderr, "profile pages=%d, static pages added=%d, extra pages added=%d, total=%d\n",
+		len(seen)-static-extra, static, extra, len(seen))
 
 	out := make([]uint64, 0, len(seen))
 	for a := range seen {

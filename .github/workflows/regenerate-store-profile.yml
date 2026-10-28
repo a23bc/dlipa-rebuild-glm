@@ -188,6 +188,15 @@ jobs:
             -output "$GITHUB_WORKSPACE/sapbridge/internal/store/cachepages/pages.bin.zst"
           ls -l "$GITHUB_WORKSPACE/sapbridge/internal/store/cachepages/pages.bin.zst"
 
+      # The exporter warns and skips an address the cache cannot resolve, so a
+      # blob missing the hand-listed window looks fine until the device faults on
+      # the same page again. This fails the run instead.
+      - name: Check the blob carries the hand-listed window
+        run: |
+          cd sapbridge
+          go run ./cmd/export-cache-pages \
+            -check internal/store/cachepages/pages.bin.zst
+
 
       - uses: actions/upload-artifact@v4
         with:
