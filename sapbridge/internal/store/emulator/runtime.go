@@ -776,6 +776,19 @@ func countSymbols(calls map[uint64]Call) int {
 	return n
 }
 
+// DumpTrace prints the last methods and symbol calls the guest reached.
+func (r *Runtime) DumpTrace() {
+	if len(r.trace) == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] trace: %d entries\n", len(r.trace))
+
+	for _, line := range r.trace {
+		fmt.Fprintf(os.Stderr, "[SAP] trace: %s\n", line)
+	}
+}
+
 // Fault reports the last bridge failure recorded while guest code ran, if any.
 func (r *Runtime) Fault() error { return r.fault }
 
@@ -1038,16 +1051,6 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		}
 	}()
 
-	if name := r.entries[address]; name != "" {
-		// The receiver is the one thing a bridge panic cannot reconstruct
-		// afterwards, and a wrong receiver is exactly what it reports.
-		receiver, _ := r.engine.RegRead(unicorn.RegX0)
-		r.trace = append(r.trace, fmt.Sprintf("%s(recv=%#x)", name, receiver))
-		if len(r.trace) > 32 {
-			r.trace = r.trace[len(r.trace)-32:]
-		}
-	}
-
 	// Not a recorded call site, so it has to be inside one of this runtime's
 	// images. Anything else means the guest wandered off.
 	allowed := false
@@ -1083,6 +1086,17 @@ func (r *Runtime) dispatch(address uint64) bool {
 		callback()
 
 		return true
+	}
+
+	// The method ring is recorded here rather than in step() because the signer
+	// runs under the SAP machine: gated on r.running it stayed empty exactly
+	// during the calls worth seeing.
+	if name := r.entries[address]; name != "" {
+		receiver, _ := r.engine.RegRead(unicorn.RegX0)
+		r.trace = append(r.trace, fmt.Sprintf("%s(recv=%#x)", name, receiver))
+		if len(r.trace) > 32 {
+			r.trace = r.trace[len(r.trace)-32:]
+		}
 	}
 
 	call, ok := r.calls[address]

@@ -273,6 +273,7 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// that matters is the last one, and printing as they arrive let objc_retain
 	// fill the quota long before the signer reached malloc.
 	runtime.DumpSymbolTrace()
+	runtime.DumpTrace()
 
 	// Emulation starts are counted because QEMU's thread budget is finite and the
 	// run died in qemu_thread_create. A number in the thousands says the timer
