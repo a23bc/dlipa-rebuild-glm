@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 )
@@ -50,6 +51,7 @@ type shims struct {
 	icxsOffset      int
 	errno           uint64
 	heapCursor      uint64
+	traceLeft       int
 	allocations     map[uint64]guestAllocation
 	freeBlocks      []freeBlock
 	iterator        uint32
@@ -176,6 +178,20 @@ func (s *shims) addData(name string, data []byte) (uint64, error) {
 	return address, nil
 }
 
+// TraceCalls starts reporting guest calls into host services, up to limit.
+//
+// Temporary, and bounded on purpose: the dispatch runs on the hottest path in an
+// interpreted guest, and an unbounded log there buries the run it is describing.
+// A previous counter in this function was removed for growing into permanent
+// measurement code; this one is meant to be deleted with the question it serves.
+func (m *Machine) TraceCalls(limit int) {
+	if m == nil || m.services == nil {
+		return
+	}
+
+	m.services.traceLeft = limit
+}
+
 func (s *shims) dispatch(address uint64, _ uint32) {
 	entry, ok := s.entries[address]
 	if !ok {
@@ -189,6 +205,14 @@ func (s *shims) dispatch(address uint64, _ uint32) {
 	// in the build long after the question it answered had been answered.
 	// externalCalls is still maintained by ExternalCalls/ResetExternalCalls for
 	// the callreport test, which drives the machine directly.
+	if s.traceLeft > 0 {
+		s.traceLeft--
+
+		x0, _ := s.engine.RegRead(unicorn.RegX0)
+
+		fmt.Fprintf(os.Stderr, "[SAP] call: %s(x0=%#x)\n", entry.name, x0)
+	}
+
 	if err := entry.handler(); err != nil {
 		s.fail(fmt.Errorf("%s: %w", entry.name, err))
 	}

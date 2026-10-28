@@ -219,6 +219,11 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 
 	executed := ""
 
+	// The sign call is where the guest started returning 0x200 from an indirect
+	// call and storing it into a register that is later read as a pointer. The
+	// trace says whether a host service answered that call, and which one.
+	s.machine.TraceCalls(96)
+
 	response, execErr := attempt(s.Sign)
 
 	if execErr != nil {

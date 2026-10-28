@@ -187,9 +187,9 @@ var (
 	})
 )
 
-// deliver reads the pc straight through the api rather than through RegRead.
-// A hook runs inside an operation the engine already holds, and RegRead would
-// call beginOperation and wait for itself.
+// deliver reads the pc straight through the api rather than through RegRead, to
+// keep a watched write from taking stateMu and touching the active counter. Not
+// a deadlock: beginOperation releases the lock before it returns.
 func (w writeWatch) deliver(handle uintptr, address uint64, size uint32, value int64) {
 	var pc uint64
 
