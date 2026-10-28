@@ -708,6 +708,11 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 		}
 
 		if m.arm64 != nil {
+			before, pcErr := m.engine.RegRead(unicorn.RegPC)
+			if pcErr != nil {
+				return 0, fmt.Errorf("read SAP guest instruction register: %w", pcErr)
+			}
+
 			handled, compatibilityErr := m.arm64.emulateInvalidInstruction()
 			if compatibilityErr != nil {
 				return 0, compatibilityErr
@@ -716,6 +721,14 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 				next, compatibilityErr = m.engine.RegRead(unicorn.RegPC)
 				if compatibilityErr != nil {
 					return 0, fmt.Errorf("resume SAP guest function: %w", compatibilityErr)
+				}
+
+				// Handled means executed, and executed means the PC moved. A
+				// handler that forgets to advance re-runs the same instruction
+				// for as long as the caller is willing to wait: the first CASP
+				// support hung for five minutes and printed nothing.
+				if next == before {
+					return 0, fmt.Errorf("arm64 compatibility handled %#x without advancing", before)
 				}
 
 				continue

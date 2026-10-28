@@ -105,6 +105,14 @@ func (c *arm64Compatibility) emulateInvalidInstruction() (bool, error) {
 			return false, err
 		}
 
+		// The shared advance at the end of this function is skipped by this early
+		// return, and without it the guest re-executes the same `casp` forever:
+		// the first build with CASP support hung here with no message at all,
+		// because a retry that never advances looks exactly like slow work.
+		if err := c.engine.RegWrite(unicorn.RegPC, pc+4); err != nil {
+			return false, fmt.Errorf("advance arm64 instruction address: %w", err)
+		}
+
 		return true, nil
 	}
 
