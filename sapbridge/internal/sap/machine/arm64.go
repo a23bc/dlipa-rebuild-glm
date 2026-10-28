@@ -418,9 +418,14 @@ func (c *arm64Compatibility) emulateMachTrap(number uint64) error {
 	switch uint32(number) {
 	case machAbsoluteTimeTrap:
 		// mach_absolute_time counts timebase ticks and callers only difference
-		// it. Nothing here reads the timebase, so this counts nanoseconds since
-		// the machine started; it is monotonic, which is what callers use.
-		ticks := uint64(time.Since(c.start).Nanoseconds())
+		// it, so any monotonic source works for the difference. The absolute
+		// value still matters to code that turns ticks into a calendar time, and
+		// this guest does: the comm page is mapped zero, so libsystem takes its
+		// "no timebase" fallback and asks here, then reads seconds from a base of
+		// zero. Counting from the machine's start made that base 1970, and the
+		// signer returned -42085 with no other explanation. Counting from the
+		// Unix epoch keeps the difference and makes the absolute value sane.
+		ticks := uint64(time.Now().UnixNano())
 
 		if err := c.engine.RegWrite(unicorn.RegX0, ticks); err != nil {
 			return fmt.Errorf("write arm64 trap result: %w", err)

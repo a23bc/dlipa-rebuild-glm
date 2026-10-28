@@ -584,7 +584,14 @@ func (m *Machine) Sign(contextValue uint64, input []byte) ([]byte, error) {
 	}
 
 	if int32(status) != 0 {
-		return nil, fmt.Errorf("SAP signing returned %d", int32(status))
+		// A non-zero status is the guest's verdict, and the fields it wrote say
+		// whether it produced anything anyway: a signature with a bad status is a
+		// different failure from no signature at all.
+		pointer, _ := m.readUint64(outputField)
+		length, _ := m.readUint64(lengthField)
+
+		return nil, fmt.Errorf("SAP signing returned %d (output pointer %#x, length %d)",
+			int32(status), pointer, length)
 	}
 
 	output, err := m.consumeOutput(outputField, lengthField)
