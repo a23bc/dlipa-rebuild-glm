@@ -30,6 +30,10 @@ const sapGuestTimeout = time.Minute
 // granularity at which the wall-clock deadline is checked.
 const sapInstructionChunk = 20_000_000
 
+// handledRepeatLimit is how many times the compatibility layer may handle the
+// same PC with no progress in between before the run is called stuck.
+const handledRepeatLimit = 1000
+
 const (
 	returnAddress = uint64(0x0000000100000000)
 	coreFPBase    = uint64(0x0000100000000000)
@@ -680,6 +684,7 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 	// which is a `casp` in a crypto loop. Chunks of instructions bound the same
 	// wait without a thread.
 	deadline := time.Now().Add(sapGuestTimeout)
+	repeats := 0
 	next := function
 
 	for {
@@ -723,12 +728,23 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 					return 0, fmt.Errorf("resume SAP guest function: %w", compatibilityErr)
 				}
 
-				// Handled means executed, and executed means the PC moved. A
-				// handler that forgets to advance re-runs the same instruction
+				// A handler that forgets to advance re-runs the same instruction
 				// for as long as the caller is willing to wait: the first CASP
 				// support hung for five minutes and printed nothing.
+				//
+				// "PC did not change" is not the test, though -- the trailing svc
+				// case at 0x180849118 leaves the PC where the exception already
+				// put it, and that is correct. What is never correct is handling
+				// the same PC over and over with nothing in between, so that is
+				// what is counted.
 				if next == before {
-					return 0, fmt.Errorf("arm64 compatibility handled %#x without advancing", before)
+					repeats++
+
+					if repeats > handledRepeatLimit {
+						return 0, fmt.Errorf("arm64 compatibility handled %#x %d times without progress", before, repeats)
+					}
+				} else {
+					repeats = 0
 				}
 
 				continue
