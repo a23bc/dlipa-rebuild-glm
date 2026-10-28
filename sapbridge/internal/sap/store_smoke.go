@@ -79,6 +79,20 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		return "", fmt.Errorf("store smoke: machine has no engine")
 	}
 
+	// Watches go on before the runtime opens: the store the question is about
+	// happens while images are being loaded, and a watch installed afterwards
+	// would miss it.
+	watches, watchErr := s.watchGuestWrites(engine)
+	if watchErr != nil {
+		return "", fmt.Errorf("store smoke: %w", watchErr)
+	}
+
+	defer func() {
+		for _, watch := range watches {
+			_ = watch.Close()
+		}
+	}()
+
 	// The machine keeps allocating on this heap whenever it signs, so the runtime
 	// has to be told how much of it is already in use.
 	runtime, err := emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
@@ -94,15 +108,6 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// fault was reading and whether that page was ever shipped. Cleared before
 	// Close: the runtime is gone by then.
 	s.machine.SetFaultExplainer(runtime.ExplainFault)
-
-	watch, watchErr := s.watchGuestWrites()
-	if watchErr != nil {
-		return "", fmt.Errorf("store smoke: %w", watchErr)
-	}
-
-	if watch != nil {
-		defer func() { _ = watch.Close() }()
-	}
 
 	callProbe, callProbeErr := s.traceProbeCall()
 	if callProbeErr != nil {
@@ -299,61 +304,75 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 // the watch in watchGuestWrites, once the write site is known.
 const guestProbeGlobal = uint64(0x1e4d3bcc0)
 
-// watchGuestWrites reports stores into the probe global, with the pc that made
-// them. Capped, because a watch inside a loop would otherwise fill the log with
-// the same site repeated.
-func (s *Signer) watchGuestWrites() (*unicorn.Hook, error) {
-	engine := s.machine.Engine()
+// guestProbeCall is the indirect call whose result becomes 0x200, and
+// guestProbeCallee is the stub it jumps to. Both temporary, like the global.
+//
+//	  ldr   x8, [x23, w10, uxtw #3]   the callee, out of a dispatch table
+//	  mov   w0, #0x200                the argument
+//	  blraa x8, x17                   <- the call
+//	  str   x0, [x8]                  the result, stored into a VM register
+//
+// The callee reads as `ret` in the guest while the page blob has `mov x1, x0`
+// there, so the call returns its argument and the register ends up holding one.
+const (
+	guestProbeCall       = uint64(0x1a24c3be4)
+	guestProbeCallee     = uint64(0x180675ce8)
+	guestProbeCalleeTail = uint64(0x1806b44f0)
+)
+
+// watchGuestWrites reports stores into the addresses under investigation.
+//
+// Two questions, one mechanism. The first is what put 0x200 into a VM register.
+// The second is who rewrote the callee at 0x180675ce8: the page blob has
+// `mov x1, x0` there, the guest reads `ret`, and that difference is why an
+// indirect call returns its own argument. The rewrite happens while images load,
+// so these go on before the runtime opens.
+func (s *Signer) watchGuestWrites(engine *unicorn.Engine) ([]*unicorn.Hook, error) {
 	if engine == nil {
 		return nil, nil
 	}
 
-	seen := 0
+	var watches []*unicorn.Hook
 
-	watch, err := engine.AddWriteWatch(guestProbeGlobal, guestProbeGlobal+8, func(address uint64, size uint32, value, pc uint64) {
-		if seen >= 8 {
-			return
+	for _, probe := range []struct {
+		name    string
+		address uint64
+	}{
+		{"probe global", guestProbeGlobal},
+		{"callee", guestProbeCallee},
+	} {
+		seen := 0
+
+		watch, err := engine.AddWriteWatch(probe.address, probe.address+8, func(address uint64, size uint32, value, pc uint64) {
+			if seen >= 8 {
+				return
+			}
+
+			seen++
+
+			fmt.Fprintf(os.Stderr, "[SAP] watch: [%#x] <- %#x (%d bytes) from pc=%#x\n",
+				address, value, size, pc)
+
+			if seen == 8 {
+				fmt.Fprintf(os.Stderr, "[SAP] watch: further writes to %s not reported\n", probe.name)
+			}
+		})
+		if err != nil {
+			// A watch that cannot be installed must not cost the run: the sign
+			// attempt is the measurement, the probe is an extra.
+			fmt.Fprintf(os.Stderr, "[SAP] watch: not installed on %s (%#x): %v\n", probe.name, probe.address, err)
+
+			continue
 		}
 
-		seen++
-
-		fmt.Fprintf(os.Stderr, "[SAP] watch: [%#x] = %#x (%d bytes) from pc=%#x\n",
-			address, value, size, pc)
-
-		if seen == 8 {
-			fmt.Fprintln(os.Stderr, "[SAP] watch: further writes to the probe global not reported")
-		}
-	})
-	if err != nil {
-		// A watch that cannot be installed must not cost the run: the sign
-		// attempt is the measurement, the probe is an extra.
-		fmt.Fprintf(os.Stderr, "[SAP] watch: not installed on %#x: %v\n", guestProbeGlobal, err)
-
-		return nil, nil
+		watches = append(watches, watch)
 	}
 
-	return watch, nil
+	return watches, nil
 }
 
-// guestProbeCall is the indirect call whose result becomes 0x200. Temporary,
-// like guestProbeGlobal, and removed with it.
-//
-//	  ldr   x8, [x23, w10, uxtw #3]   the callee, out of a dispatch table
-//	  mov   w0, #0x200                the argument
-//	  mov   x17, #0xbc0b
-//	  blraa x8, x17                   <- watched
-//	  str   x0, [x8]                  the result, stored into a VM register
-const guestProbeCall = uint64(0x1a24c3be4)
-
-// guestProbeTail is where the callee at guestProbeCall branches to.
-const guestProbeTail = uint64(0x1806b44f0)
-
-// traceProbeCall reports the callee and argument of that one call.
-//
-// Nothing a host service did produced 0x200 -- the call trace came back empty,
-// so the guest never asked the host for anything during the sign attempt. That
-// leaves the callee: one instruction is enough to hook, and the address it jumps
-// to is what the next disassembly should look at.
+// traceProbeCall reports the callee and argument of the call that produced
+// 0x200, and whether its branch target is mapped at all.
 func (s *Signer) traceProbeCall() (*unicorn.Hook, error) {
 	engine := s.machine.Engine()
 	if engine == nil {
@@ -374,11 +393,7 @@ func (s *Signer) traceProbeCall() (*unicorn.Hook, error) {
 
 		fmt.Fprintf(os.Stderr, "[SAP] call site: blraa %#x(x0=%#x)\n", callee, argument)
 
-		// The callee is a four-instruction stub that tail-branches to
-		// 0x1806b44f0, and that page is not in the page blob -- yet the call
-		// returns. Either the page is mapped from somewhere else, or the branch
-		// is not what runs. Reading both says which.
-		for _, address := range []uint64{callee, guestProbeTail} {
+		for _, address := range []uint64{callee, guestProbeCalleeTail} {
 			word, readErr := engine.MemRead(address, 4)
 			if readErr != nil {
 				fmt.Fprintf(os.Stderr, "[SAP] call site: %#x unmapped: %v\n", address, readErr)
