@@ -122,6 +122,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// Close: the runtime is gone by then.
 	s.machine.SetFaultExplainer(runtime.ExplainFault)
 
+	entryProbes, entryErr := s.traceCalleeEntry()
+	if entryErr != nil {
+		return "", fmt.Errorf("store smoke: %w", entryErr)
+	}
+
+	for _, probe := range entryProbes {
+		defer func() { _ = probe.Close() }()
+	}
+
 	callProbe, callProbeErr := s.traceProbeCall()
 	if callProbeErr != nil {
 		return "", fmt.Errorf("store smoke: %w", callProbeErr)
@@ -514,6 +523,54 @@ func (s *Signer) traceProbeCall() (*unicorn.Hook, error) {
 	}
 
 	return hook, nil
+}
+
+// traceCalleeEntry reports whether the guest ever executes at the callee address.
+//
+// The call site is recorded in the profile (13369 entries, `malloc` among them),
+// the table reaches the runtime (13370 after the pinned one), and the call
+// returns its own argument -- which is what a `ret` does when nothing
+// intercepted it. So either the hook misses that address or the branch never
+// lands there. One hook at the address itself tells which.
+func (s *Signer) traceCalleeEntry() ([]*unicorn.Hook, error) {
+	engine := s.machine.Engine()
+	if engine == nil {
+		return nil, nil
+	}
+
+	var hooks []*unicorn.Hook
+
+	for _, probe := range []struct {
+		name    string
+		address uint64
+	}{
+		{"callee", guestProbeCallee},
+		{"callee tail", guestProbeCalleeTail},
+	} {
+		seen := 0
+
+		hook, err := engine.AddCodeHook(probe.address, probe.address, func(uint64, uint32) {
+			if seen >= 4 {
+				return
+			}
+
+			seen++
+
+			x0, _ := engine.RegRead(unicorn.RegX0)
+			pc, _ := engine.RegRead(unicorn.RegPC)
+
+			fmt.Fprintf(os.Stderr, "[SAP] entered %s at %#x (x0=%#x)\n", probe.name, pc, x0)
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] watch: %s not hooked: %v\n", probe.name, err)
+
+			continue
+		}
+
+		hooks = append(hooks, hook)
+	}
+
+	return hooks, nil
 }
 
 // hexHead renders the first bytes of a response so a plist error body is

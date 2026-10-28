@@ -1007,7 +1007,19 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	return value, nil
 }
 func (r *Runtime) step(address uint64, _ uint32) {
-	// Not our emulation window: the other tenant of this engine owns the guest.
+	// Dispatch first, whoever is driving. Call sites and callbacks are keyed by
+	// address, so they are unambiguous on a shared engine -- and the guest that
+	// needs them is often the other tenant: the SAP machine's Execute calls Sign,
+	// which runs the Store signer's code, and a `ret` with nothing behind it
+	// returns the caller's own argument. Gating dispatch on r.running did exactly
+	// that: 13370 recorded call sites, malloc among them, and no interception
+	// when it mattered.
+	if r.dispatch(address) {
+		return
+	}
+
+	// Everything below only means something while this runtime drives the guest:
+	// it decides which addresses may execute at all.
 	if !r.running {
 		return
 	}
@@ -1020,12 +1032,6 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		}
 	}()
 
-	if callback := r.callbacks[address]; callback != nil {
-		callback()
-
-		return
-	}
-
 	if name := r.entries[address]; name != "" {
 		// The receiver is the one thing a bridge panic cannot reconstruct
 		// afterwards, and a wrong receiver is exactly what it reports.
@@ -1036,36 +1042,62 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		}
 	}
 
+	// Not a recorded call site, so it has to be inside one of this runtime's
+	// images. Anything else means the guest wandered off.
+	allowed := false
+
+	for _, region := range r.codeRanges {
+		if address >= region[0] && address < region[1] {
+			allowed = true
+
+			break
+		}
+	}
+
+	if !allowed {
+		panic(fmt.Sprintf("execution outside the pinned image at %#x", address))
+	}
+
+	r.steps++
+	if r.steps%4096 == 0 {
+		if err := r.ctx.Err(); err != nil {
+			panic(err)
+		}
+	}
+}
+
+// dispatch runs the host implementation for a callback or a recorded call site.
+//
+// It is keyed by address alone, so it does not care which tenant of the shared
+// engine is driving -- and it must not: the Store signer's code is entered from
+// the SAP machine's Execute, and gating this on r.running left every call site
+// returning its own argument.
+func (r *Runtime) dispatch(address uint64) bool {
+	if callback := r.callbacks[address]; callback != nil {
+		callback()
+
+		return true
+	}
+
 	call, ok := r.calls[address]
 	if !ok {
-		allowed := false
-
-		for _, region := range r.codeRanges {
-			if address >= region[0] && address < region[1] {
-				allowed = true
-
-				break
-			}
-		}
-
-		if !allowed {
-			panic(fmt.Sprintf("execution outside the pinned image at %#x", address))
-		}
-
-		r.steps++
-		if r.steps%4096 == 0 {
-			if err := r.ctx.Err(); err != nil {
-				panic(err)
-			}
-		}
-
-		return
+		return false
 	}
+
+	// A host implementation that fails must surface as a fault on this runtime,
+	// not as a panic through the Unicorn callback frame.
+	defer func() {
+		if p := recover(); p != nil {
+			r.fault = fmt.Errorf("guest bridge at %#x: %w; back=%v; recent=%v",
+				address, recoveredError("runtime", p), r.guestBacktrace(), r.trace)
+			_ = r.engine.Stop()
+		}
+	}()
 
 	if call.Selector != "" {
 		r.message(r.arg(0), call.Selector, false)
 
-		return
+		return true
 	}
 
 	if r.symbolTraceLimit > 0 {
@@ -1081,7 +1113,10 @@ func (r *Runtime) step(address uint64, _ uint32) {
 	}
 
 	r.symbol(strings.TrimLeft(call.Symbol, "_"))
+
+	return true
 }
+
 func (r *Runtime) jump(entry, receiver uint64, selector string) {
 	_ = r.engine.RegWrite(unicorn.RegX0, receiver)
 	_ = r.engine.RegWrite(unicorn.RegX1, r.selector(selector))
