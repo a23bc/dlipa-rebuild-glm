@@ -65,6 +65,7 @@ type Runtime struct {
 	ctx                         context.Context
 	codeRanges                  [][2]uint64
 	running                     bool
+	symbolTrace                 int
 	steps                       uint64
 	timers                      []timer
 	callbacks                   map[uint64]func()
@@ -125,23 +126,6 @@ func OpenWithEngine(ctx context.Context, engine *unicorn.Engine, imageData []byt
 // that changes it has to be found by asking between stages rather than by
 // guessing at writers. Zero disables it.
 var openProbe uint64
-
-// callExemptions are recorded calls that must keep their real code.
-//
-// 0x180675ce8 is the first: the blob holds a thunk there (`mov x1, x0;
-// ldr x0, [global]; b ...`), the blanket patch replaced it with `ret`, and the
-// Store signer's VM stored the call's own argument 0x200 into a register that is
-// read back as a pointer.
-var callExemptions = map[uint64]bool{}
-
-// SetCallExemptions replaces the list of calls that keep their real code.
-func SetCallExemptions(addresses []uint64) {
-	callExemptions = make(map[uint64]bool, len(addresses))
-
-	for _, address := range addresses {
-		callExemptions[address] = true
-	}
-}
 
 // SetOpenProbe names the address open() should report after each phase.
 func SetOpenProbe(address uint64) { openProbe = address }
@@ -389,6 +373,9 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "[SAP] open(): %d recorded call sites, %d with symbols\n",
+		len(r.calls), countSymbols(r.calls))
+
 	for _, call := range profile.Calls {
 		page := call.Address &^ 4095
 		if !r.pages[page] {
@@ -439,23 +426,16 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	for _, call := range profile.Calls {
 		page := call.Address &^ 4095
 
-		// A recorded call is patched to `ret` because its implementation lived on
-		// the host -- Swift runtime entry points, mostly -- and cannot be
-		// recreated. That is a reasonable last resort for a call whose code does
-		// not exist here, and the wrong answer for one whose code does: the patch
-		// turns a real function into a no-op, and a caller that expected a value
-		// back gets its own argument instead.
+		// A recorded call is patched to `ret` because its implementation lives on
+		// the host and cannot be recreated here. That `ret` is not a fallback: it
+		// is the return half of the mechanism. The code hook fires at this
+		// address first, dispatches to the Go implementation by symbol name and
+		// sets x0; the guest then executes the `ret` and returns to its caller.
 		//
-		// Exempting every call whose page the blob ships was too broad: it freed
-		// 4610 of them, Swift runtime included, and the process died inside the
-		// request encoder -- a step that had worked with them stubbed. So the
-		// exemption is a named list, one address at a time.
-		if callExemptions[call.Address] {
-			fmt.Fprintf(os.Stderr, "[SAP] open(): leaving %#x alone by exemption\n", call.Address)
-
-			continue
-		}
-
+		// Removing it -- which an earlier change did, one address at a time --
+		// sends the guest into the real library body instead. For 0x180675ce8
+		// that is libsystem_malloc, which needs zone state this runtime has no
+		// way to build.
 		if !r.pages[page] {
 			if err = r.MemMap(page, 4096); err != nil {
 				return nil, fmt.Errorf("prepare store runtime: %w", err)
@@ -780,6 +760,28 @@ func (r *Runtime) arg(i int) uint64 {
 
 	return v
 }
+
+// countSymbols counts the recorded call sites that name a symbol.
+func countSymbols(calls map[uint64]Call) int {
+	n := 0
+
+	for _, call := range calls {
+		if call.Symbol != "" {
+			n++
+		}
+	}
+
+	return n
+}
+
+// TraceSymbols reports the next n calls that reach a recorded call site, with
+// the symbol name and the first three arguments.
+//
+// It answers "is the interception firing at all, and with what" -- the question
+// a `ret` that returns its own argument leaves open. Bounded, because this sits
+// on the per-instruction hook and an unbounded log there buries the run.
+func (r *Runtime) TraceSymbols(n int) { r.symbolTrace = n }
+
 func (r *Runtime) set(value uint64) {
 	if e := r.engine.RegWrite(unicorn.RegX0, value); e != nil {
 		panic(e)
@@ -1042,6 +1044,14 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		r.message(r.arg(0), call.Selector, false)
 
 		return
+	}
+
+	if r.symbolTrace > 0 {
+		r.symbolTrace--
+
+		name := strings.TrimLeft(call.Symbol, "_")
+		fmt.Fprintf(os.Stderr, "[SAP] symbol: %s(x0=%#x x1=%#x x2=%#x)\n",
+			name, r.arg(0), r.arg(1), r.arg(2))
 	}
 
 	r.symbol(strings.TrimLeft(call.Symbol, "_"))

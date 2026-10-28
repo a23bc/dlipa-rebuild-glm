@@ -92,11 +92,6 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		fmt.Fprintf(os.Stderr, "[SAP] collect: not installed: %v\n", collectErr)
 	}
 
-	// One recorded call keeps its real code: the blob has a thunk at that
-	// address, and stubbing it is what turned the VM's indirect call into a
-	// no-op returning its own argument.
-	emulator.SetCallExemptions([]uint64{guestProbeCallee})
-
 	// Watches go on before the runtime opens: the store the question is about
 	// happens while images are being loaded, and a watch installed afterwards
 	// would miss it.
@@ -255,6 +250,12 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// call and storing it into a register that is later read as a pointer. The
 	// trace says whether a host service answered that call, and which one.
 	s.machine.TraceCalls(96)
+
+	// And whether the interception fired at all: every call site that reaches a
+	// recorded address prints its symbol name and arguments. 0x180675ce8 is
+	// `malloc` in the profile, so this either shows `malloc(x0=0x200)` or shows
+	// that the hook never ran there.
+	runtime.TraceSymbols(64)
 
 	response, execErr := attempt(s.Sign)
 
