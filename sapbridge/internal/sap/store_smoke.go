@@ -115,9 +115,10 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// The payload is the one upstream sends for volumeStoreDownloadProduct
 	// (ipatool appstore_download_product.go:268): creditDisplay, guid,
 	// salableAdamId and serialNumber, with salableAdamId an integer because
-	// upstream's App.ID is int64. A request carrying only salableAdamId is
-	// answered with failureType 5002, which is the Store saying the request is
-	// incomplete rather than unauthorised.
+	// upstream's App.ID is int64. Matching upstream was worth doing, but it did
+	// not change the Store's answer and it was never going to: the run that
+	// produced failureType 5002 was signed out, and an unauthorised request
+	// fails however well formed it is. See the session line below.
 	guid := strings.ToUpper(hex.EncodeToString(s.hardware))
 
 	address, err := runtime.EncodeProbe(
@@ -151,6 +152,24 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// back in -- completes at all, which is what E2 is about.
 	method, endpoint, body, _ := runtime.RequestParts(address)
 
+	// Say which account the request is made on behalf of, in the log, every time.
+	//
+	// The previous run reported failureType 5002 and the question became whether
+	// that was the payload or the session. It was neither answerable from the log
+	// nor from the body: an anonymous request cannot be authorised to download,
+	// so the failure plist is the expected answer and says nothing about the
+	// request. Carrying the session state in the line removes that ambiguity for
+	// good, instead of leaving it to be inferred from absent headers.
+	session := "anonymous (no DSID, no token) -- a failure plist here is expected and is not evidence about the request"
+
+	if account.DSID != "" {
+		session = fmt.Sprintf("dsid=%s token=%d chars storefront=%q", account.DSID, len(account.Token), account.StoreFront)
+	} else {
+		fmt.Fprintln(os.Stderr, "[SAP] store smoke: no account; sign in before reading anything into the response")
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: session %s\n", session)
+
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	// Execute turns these three into the account the guest signs for; the action
@@ -159,10 +178,10 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	headers := http.Header{}
 
 	for key, value := range map[string]string{
-		"X-Dsid":                account.DSID,
-		"iCloud-DSID":           account.DSID,
-		"X-Token":               account.Token,
-		"X-Apple-Store-Front":   account.StoreFront,
+		"X-Dsid":              account.DSID,
+		"iCloud-DSID":         account.DSID,
+		"X-Token":             account.Token,
+		"X-Apple-Store-Front": account.StoreFront,
 	} {
 		if value != "" {
 			headers.Set(key, value)
@@ -217,9 +236,6 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", executed)
 
-
-
-
 	closeStart := time.Now()
 
 	if err := runtime.Close(); err != nil {
@@ -229,12 +245,12 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	closed := time.Since(closeStart)
 
 	return fmt.Sprintf(
-		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d; request=%#x; %s",
+		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d; session %s; request=%#x; %s",
 		(len(data.Metadata)+len(data.Pages)+len(data.Plugin))/(1<<20),
 		loaded.Round(time.Millisecond),
 		openDuration.Round(time.Millisecond),
 		closed.Round(time.Millisecond),
-		length, equal, address, summary+" | "+executed,
+		length, equal, session, address, summary+" | "+executed,
 	), nil
 }
 
