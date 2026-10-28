@@ -67,6 +67,7 @@ type Runtime struct {
 	running                     bool
 	symbolTrace                 []string
 	symbolTraceLimit            int
+	errnoCell                   uint64
 	steps                       uint64
 	timers                      []timer
 	callbacks                   map[uint64]func()

@@ -652,6 +652,84 @@ func (r *Runtime) symbol(name string) {
 		if e := r.MemWrite(r.arg(0), data); e != nil {
 			panic(e)
 		}
+	case "abort":
+		panic("guest aborted")
+	case "__error":
+		// One errno cell for the whole runtime: the guest is single threaded, and
+		// a pointer that stays valid is all any caller needs.
+		if r.errnoCell == 0 {
+			r.errnoCell = r.alloc(8)
+		}
+
+		r.set(r.errnoCell)
+	case "pthread_rwlock_init", "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "pthread_rwlock_unlock":
+		// Nothing in this guest runs concurrently, so the lock cannot contend.
+		r.set(0)
+	case "sysctlbyname":
+		// Same shape as the SAP machine's shim: report a zero-length result rather
+		// than an error, which is what the callers here check.
+		if length := r.arg(2); length != 0 {
+			if e := r.MemWrite(length, make([]byte, 8)); e != nil {
+				panic(e)
+			}
+		}
+
+		r.set(0)
+	case "gettimeofday":
+		if address := r.arg(0); address != 0 {
+			now := time.Now()
+
+			var value [16]byte
+			binary.LittleEndian.PutUint64(value[0:8], uint64(now.Unix()))
+			binary.LittleEndian.PutUint32(value[8:12], uint32(now.Nanosecond()/1000))
+
+			if e := r.MemWrite(address, value[:]); e != nil {
+				panic(e)
+			}
+		}
+
+		if zone := r.arg(1); zone != 0 {
+			if e := r.MemWrite(zone, make([]byte, 8)); e != nil {
+				panic(e)
+			}
+		}
+
+		r.set(0)
+	case "arc4random":
+		var value [4]byte
+		if _, e := rand.Read(value[:]); e != nil {
+			panic(fmt.Errorf("generate guest random value: %w", e))
+		}
+
+		r.set(uint64(binary.LittleEndian.Uint32(value[:])))
+	case "arc4random_uniform":
+		upper := uint32(r.arg(0))
+		if upper < 2 {
+			r.set(0)
+
+			return
+		}
+
+		var value [4]byte
+		if _, e := rand.Read(value[:]); e != nil {
+			panic(fmt.Errorf("generate guest random value: %w", e))
+		}
+
+		r.set(uint64(binary.LittleEndian.Uint32(value[:]) % upper))
+	case "arc4random_buf":
+		length := r.arg(1)
+		if length > heapSize {
+			panic("guest random fill exceeds memory budget")
+		}
+
+		data := make([]byte, length)
+		if _, e := rand.Read(data); e != nil {
+			panic(fmt.Errorf("generate guest random bytes: %w", e))
+		}
+
+		if e := r.MemWrite(r.arg(0), data); e != nil {
+			panic(e)
+		}
 	case "strlen":
 		r.set(uint64(len(r.cstring(r.arg(0)))))
 	default:
