@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
@@ -111,9 +112,22 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// E1-b: drive the real StoreKit encoder far enough to know whether it will
 	// produce a request at all. The helpers it needs live in the emulator package,
 	// so the sequence is behind EncodeProbe rather than inlined here.
+	// The payload is the one upstream sends for volumeStoreDownloadProduct
+	// (ipatool appstore_download_product.go:268): creditDisplay, guid,
+	// salableAdamId and serialNumber, with salableAdamId an integer because
+	// upstream's App.ID is int64. A request carrying only salableAdamId is
+	// answered with failureType 5002, which is the Store saying the request is
+	// incomplete rather than unauthorised.
+	guid := strings.ToUpper(hex.EncodeToString(s.hardware))
+
 	address, err := runtime.EncodeProbe(
-		"https://p52-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct",
-		map[string]any{"salableAdamId": "389801252"})
+		"https://p52-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid="+guid,
+		map[string]any{
+			"creditDisplay": "",
+			"guid":          guid,
+			"salableAdamId": int64(389801252),
+			"serialNumber":  "0",
+		})
 	if err != nil {
 		return "", fmt.Errorf("store smoke: %w", err)
 	}
@@ -146,6 +160,7 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 
 	for key, value := range map[string]string{
 		"X-Dsid":                account.DSID,
+		"iCloud-DSID":           account.DSID,
 		"X-Token":               account.Token,
 		"X-Apple-Store-Front":   account.StoreFront,
 	} {
