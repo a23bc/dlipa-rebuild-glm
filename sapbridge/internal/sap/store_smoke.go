@@ -345,6 +345,9 @@ func (s *Signer) watchGuestWrites() (*unicorn.Hook, error) {
 //	  str   x0, [x8]                  the result, stored into a VM register
 const guestProbeCall = uint64(0x1a24c3be4)
 
+// guestProbeTail is where the callee at guestProbeCall branches to.
+const guestProbeTail = uint64(0x1806b44f0)
+
 // traceProbeCall reports the callee and argument of that one call.
 //
 // Nothing a host service did produced 0x200 -- the call trace came back empty,
@@ -370,6 +373,21 @@ func (s *Signer) traceProbeCall() (*unicorn.Hook, error) {
 		argument, _ := engine.RegRead(unicorn.RegX0)
 
 		fmt.Fprintf(os.Stderr, "[SAP] call site: blraa %#x(x0=%#x)\n", callee, argument)
+
+		// The callee is a four-instruction stub that tail-branches to
+		// 0x1806b44f0, and that page is not in the page blob -- yet the call
+		// returns. Either the page is mapped from somewhere else, or the branch
+		// is not what runs. Reading both says which.
+		for _, address := range []uint64{callee, guestProbeTail} {
+			word, readErr := engine.MemRead(address, 4)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "[SAP] call site: %#x unmapped: %v\n", address, readErr)
+
+				continue
+			}
+
+			fmt.Fprintf(os.Stderr, "[SAP] call site: %#x readable, first word %x\n", address, word)
+		}
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[SAP] watch: call site not hooked: %v\n", err)
