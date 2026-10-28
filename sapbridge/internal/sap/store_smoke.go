@@ -104,6 +104,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		defer func() { _ = watch.Close() }()
 	}
 
+	callProbe, callProbeErr := s.traceProbeCall()
+	if callProbeErr != nil {
+		return "", fmt.Errorf("store smoke: %w", callProbeErr)
+	}
+
+	if callProbe != nil {
+		defer func() { _ = callProbe.Close() }()
+	}
+
 	// Two message sends that cannot involve StoreKit state, to learn the calling
 	// convention before attempting requestWithMethod:URL:parameters:. NSString
 	// length is 5 for "hello"; isEqualToString: against "world" is false. If
@@ -324,6 +333,51 @@ func (s *Signer) watchGuestWrites() (*unicorn.Hook, error) {
 	}
 
 	return watch, nil
+}
+
+// guestProbeCall is the indirect call whose result becomes 0x200. Temporary,
+// like guestProbeGlobal, and removed with it.
+//
+//	  ldr   x8, [x23, w10, uxtw #3]   the callee, out of a dispatch table
+//	  mov   w0, #0x200                the argument
+//	  mov   x17, #0xbc0b
+//	  blraa x8, x17                   <- watched
+//	  str   x0, [x8]                  the result, stored into a VM register
+const guestProbeCall = uint64(0x1a24c3be4)
+
+// traceProbeCall reports the callee and argument of that one call.
+//
+// Nothing a host service did produced 0x200 -- the call trace came back empty,
+// so the guest never asked the host for anything during the sign attempt. That
+// leaves the callee: one instruction is enough to hook, and the address it jumps
+// to is what the next disassembly should look at.
+func (s *Signer) traceProbeCall() (*unicorn.Hook, error) {
+	engine := s.machine.Engine()
+	if engine == nil {
+		return nil, nil
+	}
+
+	seen := 0
+
+	hook, err := engine.AddCodeHook(guestProbeCall, guestProbeCall, func(uint64, uint32) {
+		if seen >= 8 {
+			return
+		}
+
+		seen++
+
+		callee, _ := engine.RegRead(unicorn.RegX8)
+		argument, _ := engine.RegRead(unicorn.RegX0)
+
+		fmt.Fprintf(os.Stderr, "[SAP] call site: blraa %#x(x0=%#x)\n", callee, argument)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] watch: call site not hooked: %v\n", err)
+
+		return nil, nil
+	}
+
+	return hook, nil
 }
 
 // hexHead renders the first bytes of a response so a plist error body is

@@ -62,6 +62,7 @@ const (
 	RegX5   = 204
 	RegX6   = 205
 	RegX7   = 206
+	RegX8   = 207
 	RegX14  = 213
 	RegX15  = 214
 	RegX16  = 215
