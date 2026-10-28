@@ -403,6 +403,19 @@ func (s *Signer) traceProbeCall() (*unicorn.Hook, error) {
 
 			fmt.Fprintf(os.Stderr, "[SAP] call site: %#x readable, first word %x\n", address, word)
 		}
+
+		// The watch was installed before the runtime opened and still saw no
+		// store, so these bytes were not written through uc_mem_write after that
+		// point. Dumping the page says what the guest actually holds, and a
+		// comparison against the same page in the blob says whether the whole
+		// page was replaced or only this word.
+		if page, readErr := engine.MemRead(guestProbeCallee&^0xFFF, 0x40); readErr == nil {
+			fmt.Fprintf(os.Stderr, "[SAP] page head %#x: %x\n", guestProbeCallee&^0xFFF, page)
+		}
+
+		if around, readErr := engine.MemRead(guestProbeCallee-0x10, 0x30); readErr == nil {
+			fmt.Fprintf(os.Stderr, "[SAP] page %#x: %x\n", guestProbeCallee-0x10, around)
+		}
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[SAP] watch: call site not hooked: %v\n", err)
