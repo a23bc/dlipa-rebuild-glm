@@ -578,6 +578,15 @@ func (m *Machine) Sign(contextValue uint64, input []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// The context is a guest object the signer reads its key material from. It is
+	// captured before and after the call because the store runtime opened on this
+	// same engine afterwards, and if anything overwrote that memory the signer
+	// would bail out early with a value that looks like an error code.
+	contextBefore, _ := m.engine.MemRead(contextValue, 32)
+
+	started := time.Now()
+	startsBefore := unicorn.EmuStarts()
+
 	status, err := m.invoke(
 		m.entry.sign,
 		contextValue,
@@ -589,6 +598,14 @@ func (m *Machine) Sign(contextValue uint64, input []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	contextAfter, _ := m.engine.MemRead(contextValue, 32)
+
+	fmt.Fprintf(os.Stderr, "[SAP] sign: %d bytes in, %s, %d emulation starts (%d -> %d)\n",
+		len(input), time.Since(started).Round(time.Millisecond),
+		unicorn.EmuStarts()-startsBefore, startsBefore, unicorn.EmuStarts())
+	fmt.Fprintf(os.Stderr, "[SAP] sign: context %#x before=%x\n", contextValue, contextBefore)
+	fmt.Fprintf(os.Stderr, "[SAP] sign: context %#x after =%x\n", contextValue, contextAfter)
 
 	if int32(status) != 0 {
 		// A non-zero status is the guest's verdict, and the fields it wrote say
