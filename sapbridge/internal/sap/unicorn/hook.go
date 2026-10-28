@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 )
@@ -78,6 +79,7 @@ func (e *Engine) AddCodeHook(begin, end uint64, callback CodeHook) (*Hook, error
 	var hookHandle uintptr
 	if err := e.err(e.api.hookAdd(handle, &hookHandle, hookCode, codeHookTrampoline, id, begin, end)); err != nil {
 		codeHookCallbacks.Delete(id)
+		writeHookCallbacks.Delete(id)
 
 		return nil, err
 	}
@@ -121,6 +123,7 @@ func (h *Hook) Close() error {
 	}
 
 	codeHookCallbacks.Delete(h.id)
+	writeHookCallbacks.Delete(h.id)
 	engine.hooks.mu.Lock()
 	delete(engine.hooks.ids, h.id)
 	engine.hooks.mu.Unlock()
@@ -138,7 +141,97 @@ func (e *Engine) clearCodeHooks() {
 
 	for id := range e.hooks.ids {
 		codeHookCallbacks.Delete(id)
+		writeHookCallbacks.Delete(id)
 	}
 
 	clear(e.hooks.ids)
+}
+
+const hookMemWrite = 1 << 11
+
+// WriteHook reports a guest store into a watched range.
+//
+// It exists because the question "where did this value come from" sometimes has
+// no answer in the code: signing stopped on a load through a global that held
+// 0x200, the global is in AMS's bss, and the store that put it there is on one of
+// the paths an obfuscated dispatcher chooses between. Watching the eight bytes
+// answers it directly, and the pc is included so the answer is a location rather
+// than another value to interpret.
+type WriteHook func(address uint64, size uint32, value uint64, pc uint64)
+
+type writeWatch struct {
+	engine   *Engine
+	callback WriteHook
+}
+
+var (
+	writeHookID         atomic.Uint64
+	writeHookCallbacks  sync.Map
+	writeHookTrampoline = purego.NewCallback(func(
+		_ purego.CDecl,
+		handle uintptr,
+		_ int32,
+		address uint64,
+		size uint32,
+		value int64,
+		userData uintptr,
+	) uintptr {
+		entry, ok := writeHookCallbacks.Load(userData)
+		if !ok {
+			return 0
+		}
+
+		entry.(writeWatch).deliver(handle, address, size, value)
+
+		return 0
+	})
+)
+
+// deliver reads the pc straight through the api rather than through RegRead.
+// A hook runs inside an operation the engine already holds, and RegRead would
+// call beginOperation and wait for itself.
+func (w writeWatch) deliver(handle uintptr, address uint64, size uint32, value int64) {
+	var pc uint64
+
+	_ = w.engine.api.regRead(handle, RegPC, unsafe.Pointer(&pc))
+
+	w.callback(address, size, uint64(value), pc)
+}
+
+// AddWriteWatch registers callback for stores that touch [begin, end).
+func (e *Engine) AddWriteWatch(begin, end uint64, callback WriteHook) (*Hook, error) {
+	handle, done, err := e.beginOperation()
+	if err != nil {
+		return nil, err
+	}
+
+	defer done()
+
+	if callback == nil {
+		return nil, errors.New("unicorn write hook callback is nil")
+	}
+
+	id := uintptr(writeHookID.Add(1))
+	if id == 0 {
+		id = uintptr(writeHookID.Add(1))
+	}
+
+	writeHookCallbacks.Store(id, writeWatch{engine: e, callback: callback})
+
+	var hookHandle uintptr
+	if err := e.err(e.api.hookAdd(handle, &hookHandle, hookMemWrite, writeHookTrampoline, id, begin, end)); err != nil {
+		writeHookCallbacks.Delete(id)
+
+		return nil, err
+	}
+
+	e.hooks.mu.Lock()
+	if e.hooks.ids == nil {
+		e.hooks.ids = make(map[uintptr]struct{})
+	}
+
+	e.hooks.ids[id] = struct{}{}
+	e.hooks.mu.Unlock()
+
+	return &Hook{engine: e, handle: hookHandle, id: id}, nil
 }

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 )
@@ -93,6 +94,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	// fault was reading and whether that page was ever shipped. Cleared before
 	// Close: the runtime is gone by then.
 	s.machine.SetFaultExplainer(runtime.ExplainFault)
+
+	watch, watchErr := s.watchGuestWrites()
+	if watchErr != nil {
+		return "", fmt.Errorf("store smoke: %w", watchErr)
+	}
+
+	if watch != nil {
+		defer func() { _ = watch.Close() }()
+	}
 
 	// Two message sends that cannot involve StoreKit state, to learn the calling
 	// convention before attempting requestWithMethod:URL:parameters:. NSString
@@ -260,6 +270,55 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 		closed.Round(time.Millisecond),
 		length, equal, session, address, summary+" | "+executed,
 	), nil
+}
+
+// guestProbeGlobal is temporary, and dies with the question it was added for.
+//
+// Signing stopped on `ldr x12, [x12]` where x12 came from this global in
+// AppleMediaServices's bss, and the global held 0x200 instead of a pointer, so
+// the next load read unmapped memory. Which store put 0x200 there is only
+// visible at run time: the function that reaches it indexes an obfuscated
+// dispatch table, and more than one path through it writes globals.
+//
+// The address is stable because the asset is pinned by hash in the build, and it
+// is AppleMediaServices's `__DATA,__common`, not a cache page. Remove this, and
+// the watch in watchGuestWrites, once the write site is known.
+const guestProbeGlobal = uint64(0x1e4d3bcc0)
+
+// watchGuestWrites reports stores into the probe global, with the pc that made
+// them. Capped, because a watch inside a loop would otherwise fill the log with
+// the same site repeated.
+func (s *Signer) watchGuestWrites() (*unicorn.Hook, error) {
+	engine := s.machine.Engine()
+	if engine == nil {
+		return nil, nil
+	}
+
+	seen := 0
+
+	watch, err := engine.AddWriteWatch(guestProbeGlobal, guestProbeGlobal+8, func(address uint64, size uint32, value, pc uint64) {
+		if seen >= 8 {
+			return
+		}
+
+		seen++
+
+		fmt.Fprintf(os.Stderr, "[SAP] watch: [%#x] = %#x (%d bytes) from pc=%#x\n",
+			address, value, size, pc)
+
+		if seen == 8 {
+			fmt.Fprintln(os.Stderr, "[SAP] watch: further writes to the probe global not reported")
+		}
+	})
+	if err != nil {
+		// A watch that cannot be installed must not cost the run: the sign
+		// attempt is the measurement, the probe is an extra.
+		fmt.Fprintf(os.Stderr, "[SAP] watch: not installed on %#x: %v\n", guestProbeGlobal, err)
+
+		return nil, nil
+	}
+
+	return watch, nil
 }
 
 // hexHead renders the first bytes of a response so a plist error body is
