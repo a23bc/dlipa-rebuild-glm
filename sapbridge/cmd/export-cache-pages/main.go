@@ -27,8 +27,8 @@ import (
 )
 
 const (
-	cacheLo = 0x180000000
-	cacheHi = 0x1c0000000
+	cacheLo  = 0x180000000
+	cacheHi  = 0x1c0000000
 	pageSize = 4096
 	magic    = "DSHPAGES1"
 )
@@ -73,13 +73,15 @@ func run() error {
 	return nil
 }
 
-// checkBlob reports whether a built blob carries every hand-listed page.
+// checkBlob reports whether a built blob carries the pages it must, and how much
+// of the exploration window it managed to cover.
 //
 // The exporter warns and skips when the cache cannot resolve an address, so a
-// blob that silently lacks the window looks exactly like a good one until the
-// device faults on the same page again. This is the only check that closes that
-// loop, and it is worth a separate exit code because the run that produces the
-// blob costs a 6.6 GB download.
+// blob missing a page looks exactly like a good one until the device faults on it
+// again. Only the required list is fatal: the window deliberately spans more than
+// the cache contains, and a window page that does not resolve is an answer about
+// the cache rather than a fault in the export. The window counts still go to the
+// log, because they are how the window gets trimmed.
 func checkBlob(path string) error {
 	compressed, err := os.ReadFile(path)
 	if err != nil {
@@ -96,22 +98,42 @@ func checkBlob(path string) error {
 		present[page.Address] = struct{}{}
 	}
 
+	has := func(address uint64) bool {
+		_, ok := present[address]
+
+		return ok
+	}
+
+	required := cachepages.RequiredPages()
+
 	var missing []uint64
 
-	for _, address := range cachepages.ExtraPages() {
-		if _, ok := present[address]; !ok {
+	for _, address := range required {
+		if !has(address) {
 			missing = append(missing, address)
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "blob %s: %d pages, %d extra pages listed, %d missing\n",
-		path, len(pages), len(cachepages.ExtraPages()), len(missing))
+	window := cachepages.ExtraPages()
+
+	covered := 0
+
+	for _, address := range window {
+		if has(address) {
+			covered++
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "blob %s: %d pages\n", path, len(pages))
+	fmt.Fprintf(os.Stderr, "  required: %d of %d present\n", len(required)-len(missing), len(required))
+	fmt.Fprintf(os.Stderr, "  window:   %d of %d present (%d absent from the pinned cache)\n",
+		covered, len(window), len(window)-covered)
 
 	if len(missing) == 0 {
 		return nil
 	}
 
-	// A handful of addresses is readable; a whole window missing is not, and the
+	// A handful of addresses is readable; a whole set missing is not, and the
 	// count alone says which happened.
 	for i, address := range missing {
 		if i >= 8 {
@@ -123,7 +145,7 @@ func checkBlob(path string) error {
 		fmt.Fprintf(os.Stderr, "  missing %#x\n", address)
 	}
 
-	return fmt.Errorf("blob lacks %d listed page(s); the export skipped them", len(missing))
+	return fmt.Errorf("blob lacks %d required page(s); the export skipped them", len(missing))
 }
 
 // referencedPages collects the distinct 4 KiB pages the profile's prepared pages

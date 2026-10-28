@@ -19,14 +19,14 @@ import (
 
 // arm64 register ordinals from include/unicorn/arm64.h at the pinned commit.
 const (
-	regX0    = 199
-	regX1    = 200
-	regX16   = 215
-	regX17   = 216
-	regX29   = 1
-	regX30   = 2
-	regSP    = 4
-	regPC    = 260
+	regX0  = 199
+	regX1  = 200
+	regX16 = 215
+	regX17 = 216
+	regX29 = 1
+	regX30 = 2
+	regSP  = 4
+	regPC  = 260
 )
 
 // far_el1 and esr_el1 are deliberately absent: this build returns 0 for both,
@@ -112,7 +112,9 @@ func (r *Runtime) dumpFaultState() {
 
 	code, err := r.engine.MemRead(pc, 4)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] fault: PC page %#x origin: %s\n", pc&^0xFFF, r.pageOrigin(pc&^0xFFF))
 		fmt.Fprintf(os.Stderr, "[SAP] fault: PC bytes unreadable: %v\n", err)
+
 		return
 	}
 
@@ -160,6 +162,14 @@ func (r *Runtime) dumpFaultState() {
 		fmt.Fprintf(os.Stderr, "[SAP] fault: page %#x mapped, bytes at %#x: %x\n", page, target, data)
 	}
 }
+
+// ExplainFault writes the current fault's detail to stderr.
+//
+// A guest call that stops inside the SAP machine cannot describe itself: that
+// package can read registers but not decode the faulting instruction, and it has
+// no idea whether the missing page was ever shipped. This runtime knows both, so
+// the machine reaches it through SetFaultExplainer.
+func (r *Runtime) ExplainFault() { r.dumpFaultState() }
 
 // pageOrigin says where a page came from: the profile snapshot, the
 // shared-cache blob, or neither. "Neither" is the informative answer -- it means

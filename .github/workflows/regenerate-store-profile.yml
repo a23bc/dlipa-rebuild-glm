@@ -189,9 +189,10 @@ jobs:
           ls -l "$GITHUB_WORKSPACE/sapbridge/internal/store/cachepages/pages.bin.zst"
 
       # The exporter warns and skips an address the cache cannot resolve, so a
-      # blob missing the hand-listed window looks fine until the device faults on
-      # the same page again. This fails the run instead.
-      - name: Check the blob carries the hand-listed window
+      # blob missing a page looks fine until the device faults on it again. Only
+      # the required list fails the run: the exploration window is deliberately
+      # wider than the cache, and its coverage counts go to the log instead.
+      - name: Check the blob carries the required pages
         run: |
           cd sapbridge
           go run ./cmd/export-cache-pages \

@@ -5,6 +5,9 @@ import _ "embed"
 //go:embed extra-pages.txt
 var extraList string
 
+//go:embed required-pages.txt
+var requiredList string
+
 // ExtraPages reports shared-cache pages that neither derived set can reach.
 //
 // The blob is built from two scans: pointers held in the profile's prepared
@@ -14,8 +17,14 @@ var extraList string
 // no scan of anything.
 //
 // This list is therefore maintained by hand, one fault at a time, and it is a
-// window rather than the single page that faulted: the page carries the function
+// window rather than the single page that faulted: a page brings the function
 // entry but not the functions it calls, and each of those would otherwise cost
-// its own regeneration. See extra-pages.txt for the current window and why it is
-// that size.
+// its own regeneration.
+//
+// Entries here may name pages the pinned cache does not have. That is why the
+// hard check is RequiredPages: a window is an attempt, and part of it landing
+// outside the cache is information, not a failure.
 func ExtraPages() []uint64 { return parsePageList(extraList) }
+
+// RequiredPages reports the explored pages that must survive into the blob.
+func RequiredPages() []uint64 { return parsePageList(requiredList) }

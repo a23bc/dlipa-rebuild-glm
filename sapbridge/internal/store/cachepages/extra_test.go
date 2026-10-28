@@ -13,9 +13,12 @@ func TestExtraPagesAreUsable(t *testing.T) {
 		t.Fatal("extra-pages.txt parsed to nothing")
 	}
 
+	// The range the exporter draws from is the one the images' pointers span,
+	// 0x100000000-0x300000000, not the narrower window the profile scan filters
+	// on: the blob already carries pages at 0x2cf46e000.
 	const (
-		cacheLo = 0x180000000
-		cacheHi = 0x1c0000000
+		cacheLo = 0x100000000
+		cacheHi = 0x300000000
 	)
 
 	for i, address := range pages {
@@ -47,4 +50,25 @@ func TestExtraPagesCoverTheObservedFault(t *testing.T) {
 	}
 
 	t.Fatalf("page %#x holding the observed signing fault is not in extra-pages.txt", page)
+}
+
+// TestRequiredPagesAreInTheWindow keeps the two lists consistent: a required page
+// that is not also listed for export would fail the check on every regeneration
+// for a reason nothing would explain.
+func TestRequiredPagesAreInTheWindow(t *testing.T) {
+	window := map[uint64]struct{}{}
+	for _, address := range ExtraPages() {
+		window[address] = struct{}{}
+	}
+
+	required := RequiredPages()
+	if len(required) == 0 {
+		t.Fatal("required-pages.txt parsed to nothing")
+	}
+
+	for _, address := range required {
+		if _, ok := window[address]; !ok {
+			t.Fatalf("required page %#x is not in extra-pages.txt", address)
+		}
+	}
 }

@@ -62,14 +62,26 @@ type entryPoints struct {
 }
 
 type Machine struct {
-	engine        *unicorn.Engine
-	arm64         *arm64Compatibility
-	services      *shims
-	entry         entryPoints
-	storeAgent    storeAgentEntries
-	scratchCursor uint64
-	closed        bool
+	engine         *unicorn.Engine
+	arm64          *arm64Compatibility
+	services       *shims
+	entry          entryPoints
+	storeAgent     storeAgentEntries
+	scratchCursor  uint64
+	faultExplainer func()
+	closed         bool
 }
+
+// SetFaultExplainer installs a callback that describes a guest fault in more
+// detail than the registers this package can read.
+//
+// The useful question after a fault is which address the guest wanted and where
+// that page came from, and only the store runtime knows either: it holds the
+// instruction decoder the emulator's fault dump uses, and the two sets that say
+// whether a page came from the profile, the shared-cache blob, or nowhere. A
+// call that dies inside the guest stops here, so the description has to be a
+// callback rather than something this package can work out for itself.
+func (m *Machine) SetFaultExplainer(explain func()) { m.faultExplainer = explain }
 
 // storeAgentEntries are commerce's entry points, carried by every machine so
 // kbsync and decryption can run without a second emulator.
@@ -660,6 +672,10 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 		// UC_ERR_EXCEPTION for anything the CPU cannot execute, and guessing
 		// which one it was has already cost a build.
 		stopped, _ := m.engine.RegRead(unicorn.RegPC)
+
+		if m.faultExplainer != nil {
+			m.faultExplainer()
+		}
 
 		return 0, fmt.Errorf("execute SAP guest function at %#x from %#x: %w; %s",
 			instruction, m.linkRegister(), executionErr, m.describeStop(stopped))

@@ -1,0 +1,12 @@
+# Pages the blob must contain for the device to get any further than it already
+# did. Regression guard, not exploration: every address here has been confirmed
+# to resolve in the pinned cache, so its absence from a fresh blob means the
+# export silently skipped it.
+#
+# Exploration goes in extra-pages.txt, where a page that the cache does not have
+# is a legitimate answer rather than a failure -- the window is deliberately
+# wider than the known content.
+#
+# 0x1880de000 holds 0x1880de740, the entry that failed as UC_ERR_FETCH_UNMAPPED
+# on build cc75b3a^ and executed on cc75b3a.
+0x1880de000

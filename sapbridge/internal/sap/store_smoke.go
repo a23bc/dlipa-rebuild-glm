@@ -88,6 +88,12 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 
 	openDuration := time.Since(opened)
 
+	// Signing runs on the SAP machine but faulted code is reached through this
+	// runtime's address space, so this runtime is the one that can say what a
+	// fault was reading and whether that page was ever shipped. Cleared before
+	// Close: the runtime is gone by then.
+	s.machine.SetFaultExplainer(runtime.ExplainFault)
+
 	// Two message sends that cannot involve StoreKit state, to learn the calling
 	// convention before attempting requestWithMethod:URL:parameters:. NSString
 	// length is 5 for "hello"; isEqualToString: against "world" is false. If
@@ -237,6 +243,8 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", executed)
 
 	closeStart := time.Now()
+
+	s.machine.SetFaultExplainer(nil)
 
 	if err := runtime.Close(); err != nil {
 		return "", fmt.Errorf("store smoke: close runtime: %w", err)
