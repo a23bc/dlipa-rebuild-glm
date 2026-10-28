@@ -34,12 +34,20 @@ const (
 	// 1,004 rebase fixups, the 27 one has 81,083. Starting from the tightest
 	// values turns every unrelated bug into an out-of-memory report, so they
 	// start where upstream starts and only shrink if a real device says so.
-	scratchSize   = uint64(32 << 20)
-	heapBase      = uint64(0x0000400000000000)
-	heapSize      = uint64(64 << 20)
-	stackBase     = uint64(0x0000500000000000)
-	stackSize     = uint64(8 << 20)
-	stackEnd      = stackBase + stackSize
+	scratchSize = uint64(32 << 20)
+	heapBase    = uint64(0x0000400000000000)
+	heapSize    = uint64(64 << 20)
+	stackBase   = uint64(0x0000500000000000)
+	stackSize   = uint64(8 << 20)
+	stackEnd    = stackBase + stackSize
+	// A guest thread gets its thread pointer from the kernel on a real system,
+	// and code that touches thread-local storage reads TPIDRRO_EL0 without
+	// checking it first. Nothing in the SAP assets installs one, so it is mapped
+	// here: zeroed, and pointed at from the middle so the small negative offsets
+	// Darwin uses for pthread fields stay inside the block.
+	tlsBase       = uint64(0x0000600000000000)
+	tlsSize       = uint64(0x2000)
+	tlsPointer    = tlsBase + tlsSize/2
 	pageSize      = uint64(0x1000)
 	maxOutputSize = uint64(16 << 20)
 )
@@ -237,6 +245,7 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 		{scratchBase, scratchSize},
 		{heapBase, heapSize},
 		{stackBase, stackSize},
+		{tlsBase, tlsSize},
 	} {
 		// The first of these triggers UC_INIT, and with it QEMU's
 		// code_gen_alloc. That function calls exit(1) when its mmap fails, so the
@@ -253,6 +262,12 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 	if err := engine.MemWrite(returnAddress, []byte{0x00, 0x00, 0x20, 0xd4}); err != nil {
 		return nil, nil, fmt.Errorf("write SAP guest return instruction: %w", err)
 	}
+
+	// Set before anything runs: the shims reach into the guest during setup, and
+	// the first TLS access is what stopped signing at 0x18089c55c.
+	engine.SetThreadPointer(tlsPointer)
+
+	fmt.Fprintf(os.Stderr, "[SAP] thread pointer %#x (TLS %#x+%#x)\n", tlsPointer, tlsBase, tlsSize)
 
 	machine.services, err = newShimsWithOptions(engine, coreExports, bundle.CoreFPICXS, options.shims)
 	if err != nil {

@@ -66,6 +66,14 @@ const (
 	RegX16 = 215
 	RegV0  = 228
 	RegPC  = 260
+
+	// Thread pointer registers. Guest code that touches thread-local storage
+	// reads TPIDRRO_EL0 and expects a pointer the kernel would have installed;
+	// with the register clear, the first such access faults on address 0x18 --
+	// which is what stopped the Store signer at 0x18089c55c, an mrs/ldr pair
+	// whose ldr had no memory to read.
+	RegTPIDR_EL0   = 263
+	RegTPIDRRO_EL0 = 264
 )
 
 var (
@@ -74,36 +82,45 @@ var (
 )
 
 type api struct {
-	version  func(*uint32, *uint32) uint32
-	open     func(int32, int32, *uintptr) int32
-	close    func(uintptr) int32
-	query    func(uintptr, int32, *uint64) int32
-	ctl      func(uintptr, uint32, uint32) int32
-	strerror func(int32) string
-	memMap   func(uintptr, uint64, uint64, uint32) int32
+	version    func(*uint32, *uint32) uint32
+	open       func(int32, int32, *uintptr) int32
+	close      func(uintptr) int32
+	query      func(uintptr, int32, *uint64) int32
+	ctl        func(uintptr, uint32, uint32) int32
+	strerror   func(int32) string
+	memMap     func(uintptr, uint64, uint64, uint32) int32
 	memProtect func(uintptr, uint64, uint64, uint32) int32
-	memUnmap func(uintptr, uint64, uint64) int32
-	memRead  func(uintptr, uint64, unsafe.Pointer, uint64) int32
-	memWrite func(uintptr, uint64, unsafe.Pointer, uint64) int32
-	regRead  func(uintptr, int32, unsafe.Pointer) int32
-	regWrite func(uintptr, int32, unsafe.Pointer) int32
-	emuStart func(uintptr, uint64, uint64, uint64, uint64) int32
-	emuStop  func(uintptr) int32
-	hookAdd  func(uintptr, *uintptr, int32, uintptr, uintptr, uint64, uint64) int32
-	hookDel  func(uintptr, uintptr) int32
+	memUnmap   func(uintptr, uint64, uint64) int32
+	memRead    func(uintptr, uint64, unsafe.Pointer, uint64) int32
+	memWrite   func(uintptr, uint64, unsafe.Pointer, uint64) int32
+	regRead    func(uintptr, int32, unsafe.Pointer) int32
+	regWrite   func(uintptr, int32, unsafe.Pointer) int32
+	emuStart   func(uintptr, uint64, uint64, uint64, uint64) int32
+	emuStop    func(uintptr) int32
+	hookAdd    func(uintptr, *uintptr, int32, uintptr, uintptr, uint64, uint64) int32
+	hookDel    func(uintptr, uintptr) int32
 }
 
 type Engine struct {
-	api       api
-	handle    uintptr
-	library   library
-	hooks     hookState
-	stateMu   sync.Mutex
-	active    sync.WaitGroup
-	closing   bool
-	closeDone chan struct{}
-	closeErr  error
+	api           api
+	handle        uintptr
+	library       library
+	hooks         hookState
+	threadPointer uint64
+	stateMu       sync.Mutex
+	active        sync.WaitGroup
+	closing       bool
+	closeDone     chan struct{}
+	closeErr      error
 }
+
+// SetThreadPointer points the guest's thread pointer registers at a TLS block.
+//
+// Every guest entry rewrites both registers, because they are part of the
+// context a caller may have replaced. Call it once during setup with a mapped,
+// zeroed address: the guest only reads and writes the block, it does not expect
+// to allocate it.
+func (e *Engine) SetThreadPointer(address uint64) { e.threadPointer = address }
 
 func New(ctx context.Context) (*Engine, error) {
 	return newEngine(ctx, openLibrary)
@@ -369,6 +386,27 @@ func (e *Engine) RegWrite128(register int, value [16]byte) error {
 	return e.err(e.api.regWrite(handle, int32(register), unsafe.Pointer(&value[0])))
 }
 
+// applyThreadPointer installs the configured TLS address in both thread pointer
+// registers. Called with the operation already begun, so it writes through the
+// same handle the emulation that follows will use.
+func (e *Engine) applyThreadPointer(handle uintptr) error {
+	if e.threadPointer == 0 {
+		return nil
+	}
+
+	value := e.threadPointer
+
+	if err := e.err(e.api.regWrite(handle, RegTPIDR_EL0, unsafe.Pointer(&value))); err != nil {
+		return fmt.Errorf("write TPIDR_EL0: %w", err)
+	}
+
+	if err := e.err(e.api.regWrite(handle, RegTPIDRRO_EL0, unsafe.Pointer(&value))); err != nil {
+		return fmt.Errorf("write TPIDRRO_EL0: %w", err)
+	}
+
+	return nil
+}
+
 func (e *Engine) Start(begin, end uint64) error {
 	handle, done, err := e.beginOperation()
 	if err != nil {
@@ -376,6 +414,10 @@ func (e *Engine) Start(begin, end uint64) error {
 	}
 
 	defer done()
+
+	if err := e.applyThreadPointer(handle); err != nil {
+		return err
+	}
 
 	return e.err(e.api.emuStart(handle, begin, end, 0, 0))
 }
@@ -396,6 +438,10 @@ func (e *Engine) StartBounded(begin, end uint64, timeout time.Duration, instruct
 	}
 
 	defer done()
+
+	if err := e.applyThreadPointer(handle); err != nil {
+		return err
+	}
 
 	if err := e.err(e.api.emuStart(handle, begin, end, microseconds, instructionLimit)); err != nil {
 		return err
