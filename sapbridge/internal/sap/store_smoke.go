@@ -48,7 +48,17 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		}
 	}()
 
-	if s == nil || s.machine == nil {
+	if s == nil {
+		return "", fmt.Errorf("store smoke: no machine")
+	}
+
+	// The smoke drives the same machine that signs and generates kbsync. The
+	// lock the other entry points take is taken here too, so a diagnostic
+	// cannot land in the middle of a download's signature.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.machine == nil {
 		return "", fmt.Errorf("store smoke: no machine")
 	}
 
@@ -141,6 +151,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	}
 
 	openDuration := time.Since(opened)
+
+	// Every return below has to close this. The runtime is a tenant on the
+	// signer's engine: it patches call sites and installs a hook that survives
+	// Close unless Close is called, and the early returns here used to skip it.
+	defer func() {
+		if closeErr := runtime.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] store smoke: close failed: %v\n", closeErr)
+		}
+	}()
 
 	// Third point in the same A/B: sign again immediately after open, before the
 	// encoder touches anything. Opening reloads AppleMediaServices from the file,

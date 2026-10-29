@@ -26,6 +26,12 @@ import (
 // Signer holds a live SAP session. One instance covers a whole app session:
 // login -> purchase -> download. Create once, share, and Close on sign-out.
 type Signer struct {
+        // Every call here drives one guest machine in place, so they are
+        // serialised. Without this, Sign (a download on a background queue) and
+        // Close (a tab change on the main queue) read and write s.inner
+        // concurrently: an interface is two words, and a torn read is a crash
+        // with no report.
+        mu        sync.Mutex
         inner     sap.ActionSigner
         hardware  []byte
         createdAt time.Time
@@ -128,9 +134,17 @@ func (s *Signer) Sign(body []byte) (sig []byte, err error) {
 }
 
 func (s *Signer) sign(body []byte) ([]byte, error) {
-        if s == nil || s.inner == nil {
+        if s == nil {
                 return nil, errors.New("signer is closed")
         }
+
+        s.mu.Lock()
+        defer s.mu.Unlock()
+
+        if s.inner == nil {
+                return nil, errors.New("signer is closed")
+        }
+
         return s.inner.Sign(body)
 }
 
@@ -169,7 +183,14 @@ func (s *Signer) GenerateKBSync(dsid string) (blob []byte, err error) {
 }
 
 func (s *Signer) kbsync(dsid string) ([]byte, error) {
-        if s == nil || s.inner == nil {
+        if s == nil {
+                return nil, errors.New("SAP signer is closed")
+        }
+
+        s.mu.Lock()
+        defer s.mu.Unlock()
+
+        if s.inner == nil {
                 return nil, errors.New("SAP signer is closed")
         }
 
@@ -199,7 +220,16 @@ func (s *Signer) kbsync(dsid string) ([]byte, error) {
 // long each half took. It runs on the existing guest rather than creating one,
 // because a second emulator cannot be allocated on this platform.
 func (s *Signer) StoreSmoke(dsid string, token string, storefront string) (report string, err error) {
-	if s == nil || s.inner == nil {
+	if s == nil {
+		return "", fmt.Errorf("sapbridge: signer is closed")
+	}
+
+	// Exclusive, not shared: the smoke opens a second tenant on the same engine
+	// and patches call sites in memory the signer is still using.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.inner == nil {
 		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
 
@@ -245,13 +275,27 @@ func (s *Signer) Close() (err error) {
 }
 
 func (s *Signer) close() error {
-        if s == nil || s.inner == nil {
+        if s == nil {
                 return nil
         }
-        err := s.inner.Close()
+
+        s.mu.Lock()
+        inner := s.inner
         s.inner = nil
-        atomic.AddInt32(&liveSessions, -1)
-        return err
+        s.mu.Unlock()
+
+        if inner == nil {
+                return nil
+        }
+
+        // The counter is released by the deferred call rather than after
+        // Close returns. A panic in Teardown skipped the decrement entirely,
+        // liveSessions stayed at 1, and New refuses while it is non-zero -- so
+        // one bad teardown made signing unreachable for the rest of the
+        // process, with the only symptom being "a SAP session is already open".
+        defer atomic.AddInt32(&liveSessions, -1)
+
+        return inner.Close()
 }
 
 // KBSync produces the FairPlay blob required by the bag's ent/download

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machimage"
@@ -92,6 +93,10 @@ type Runtime struct {
 
 	entries map[uint64]string
 	hook    *unicorn.Hook
+	// Set before the hook is removed, and read at the top of step. The hook has
+	// to stay safe while it is being torn down, and a callback already past
+	// Close would otherwise run against a nil engine.
+	closed atomic.Bool
 }
 
 func Open(ctx context.Context, imageData []byte, prepared storeprofile.Data) (*Runtime, error) {
@@ -610,6 +615,27 @@ func (r *Runtime) Close() error {
 	if r.engine == nil {
 		return nil
 	}
+
+	// The hook is registered on the engine, and the engine is shared: it
+	// outlives this runtime by design. Leaving the hook installed kept a Go
+	// callback on every instruction after the diagnostic finished, and dispatch
+	// kept finding call sites recorded here -- but r.engine was already nil, so
+	// r.arg panicked, the panic was recovered into r.fault, and nothing on the
+	// signer path reads that. The user saw "signing sometimes fails", long after
+	// the diagnostic that caused it.
+	r.closed.Store(true)
+
+	var hookErr error
+
+	if r.hook != nil {
+		hookErr = r.hook.Close()
+		r.hook = nil
+	}
+
+	clear(r.entries)
+	clear(r.calls)
+	r.codeRanges = nil
+
 	// Guest objects live for one request. Release their host references on close.
 	clear(r.objects)
 	clear(r.callbacks)
@@ -631,6 +657,10 @@ func (r *Runtime) Close() error {
 
 	if err != nil {
 		return fmt.Errorf("close store runtime: %w", err)
+	}
+
+	if hookErr != nil {
+		return fmt.Errorf("close store runtime hook: %w", hookErr)
 	}
 
 	return nil
@@ -1095,6 +1125,10 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	return value, nil
 }
 func (r *Runtime) step(address uint64, _ uint32) {
+	if r.closed.Load() {
+		return
+	}
+
 	// Dispatch first, whoever is driving. Call sites and callbacks are keyed by
 	// address, so they are unambiguous on a shared engine -- and the guest that
 	// needs them is often the other tenant: the SAP machine's Execute calls Sign,

@@ -582,7 +582,16 @@ jobs:
       - name: Checksum
         run: |
           cd dist
-          NAME=$(ls dist/DLiPARebuild-*.ipa | head -n 1)
+          # After cd, the artifact is here, not in dist/dist. That extra
+          # component made NAME empty, sha256sum fail, and the step abort under
+          # bash -e -- so a tagged release never produced a .sha256 and never
+          # reached the release step at all.
+          NAME=$(ls DLiPARebuild-*.ipa 2>/dev/null | head -n 1)
+          if [ -z "$NAME" ]; then
+            echo "::error::no DLiPARebuild-*.ipa in the downloaded artifact"
+            ls -la
+            exit 1
+          fi
           sha256sum "$NAME" > "$NAME.sha256"
           cat "$NAME.sha256"
 
