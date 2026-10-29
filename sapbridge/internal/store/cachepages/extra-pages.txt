@@ -42,6 +42,21 @@
 # 0x1e43f0000-0x1e4400000 has no pages at all, and 0x1e63b0000 has scattered
 # neighbours but not this one. They are data pages of a process that had already
 # initialised them, which is what the blob is a snapshot of.
+#
+# Window 0x1e0180000-0x1e01d0000, 80 pages: the Accounts image.
+#
+# +[ACAccount ams_createEphemeralAccount] loads its class from a global and
+# passes it to objc_alloc:
+#
+#   0x1a276b470: adrp x8, 0x1e01a9000
+#   0x1a276b474: ldr  x0, [x8, #0xa50]      x0 = 0
+#   0x1a276b478: bl   objc_alloc
+#
+# 0x1e01a9000 is not in the blob, and it is mapped, so the read succeeds with
+# zero instead of faulting -- which is why the missing-page collector never
+# reported it. A blank page reads as a nil class, not as a fault. The rest of
+# this image is missing too: the whole 0x1e0000000-0x1e0600000 range holds two
+# pages, both of them here.
 0x180675000
 0x180676000
 0x180677000
@@ -964,6 +979,86 @@
 0x188111000
 0x188112000
 0x188113000
+0x1e0180000
+0x1e0181000
+0x1e0182000
+0x1e0183000
+0x1e0184000
+0x1e0185000
+0x1e0186000
+0x1e0187000
+0x1e0188000
+0x1e0189000
+0x1e018a000
+0x1e018b000
+0x1e018c000
+0x1e018d000
+0x1e018e000
+0x1e018f000
+0x1e0190000
+0x1e0191000
+0x1e0192000
+0x1e0193000
+0x1e0194000
+0x1e0195000
+0x1e0196000
+0x1e0197000
+0x1e0198000
+0x1e0199000
+0x1e019a000
+0x1e019b000
+0x1e019c000
+0x1e019d000
+0x1e019e000
+0x1e019f000
+0x1e01a0000
+0x1e01a1000
+0x1e01a2000
+0x1e01a3000
+0x1e01a4000
+0x1e01a5000
+0x1e01a6000
+0x1e01a7000
+0x1e01a8000
+0x1e01a9000
+0x1e01aa000
+0x1e01ab000
+0x1e01ac000
+0x1e01ad000
+0x1e01ae000
+0x1e01af000
+0x1e01b0000
+0x1e01b1000
+0x1e01b2000
+0x1e01b3000
+0x1e01b4000
+0x1e01b5000
+0x1e01b6000
+0x1e01b7000
+0x1e01b8000
+0x1e01b9000
+0x1e01ba000
+0x1e01bb000
+0x1e01bc000
+0x1e01bd000
+0x1e01be000
+0x1e01bf000
+0x1e01c0000
+0x1e01c1000
+0x1e01c2000
+0x1e01c3000
+0x1e01c4000
+0x1e01c5000
+0x1e01c6000
+0x1e01c7000
+0x1e01c8000
+0x1e01c9000
+0x1e01ca000
+0x1e01cb000
+0x1e01cc000
+0x1e01cd000
+0x1e01ce000
+0x1e01cf000
 0x1e43e0000
 0x1e43e1000
 0x1e43e2000
