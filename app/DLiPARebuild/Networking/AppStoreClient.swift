@@ -64,6 +64,11 @@ final class AppStoreClient {
     /// failed immediately after the first one had signed in.
     func resetSession() {
         authenticationPod = nil
+        // The hand-copied jar is a second cookie store, and it outlived this
+        // reset: switching accounts kept the previous one's mz_at_ssl-* and
+        // X-Token and replayed them with the new account's DSID.
+        capturedCookieHeader = ""
+        capturedCookieValues = [:]
         guard let storage = session.configuration.httpCookieStorage else { return }
         for cookie in storage.cookies ?? [] {
             storage.deleteCookie(cookie)
@@ -463,6 +468,14 @@ final class AppStoreClient {
     private var capturedCookieValues: [String: String] = [:]
 
     private func captureCookies(from http: HTTPURLResponse) {
+        // Cookies belong to the host that set them. Bag and store endpoints are
+        // always Apple's; anything else is either a redirect we should not be
+        // following with credentials or an endpoint that should never see them.
+        guard Self.isAppleHost(http.url?.host) else {
+            AppLog.warn("ignoring Set-Cookie from non-Apple host "
+                        + (http.url?.host ?? "?"), .network)
+            return
+        }
         var raw: [String] = []
         for (key, value) in http.allHeaderFields {
             if String(describing: key).lowercased() == "set-cookie" {
@@ -500,6 +513,29 @@ final class AppStoreClient {
         AppLog.info("Set-Cookie from " + (http.url?.host ?? "?") + ": "
                     + String(exposed) + " header(s), total " + String(total)
                     + " cookies: " + names.joined(separator: ", "), .network)
+    }
+
+    /// Header names with the values of anything carrying a credential replaced
+    /// by its length. Names and lengths still say what the response contained.
+    private static func redactedHeaders(_ headers: [AnyHashable: Any]) -> String {
+        let sensitive = ["set-cookie", "cookie", "x-token", "authorization",
+                         "x-apple-dsid", "x-icloud-dsid", "x-dsid"]
+        let parts: [String] = headers.keys.map { key in
+            let name = String(describing: key)
+            let lower = name.lowercased()
+            let value = String(describing: headers[key] ?? "")
+            if sensitive.contains(where: { lower.contains($0) }) {
+                return name + "=<redacted " + String(value.count) + " chars>"
+            }
+            return name + "=" + value
+        }
+        return parts.sorted().joined(separator: ", ")
+    }
+
+    /// Whether a host is one this client may hand credentials to. Apple only.
+    static func isAppleHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased(), !host.isEmpty else { return false }
+        return host == "apple.com" || host.hasSuffix(".apple.com")
     }
 
     /// Enough of an identifier to tell two accounts apart in a log, not enough
@@ -1112,10 +1148,16 @@ final class AppStoreClient {
                 // Apple puts the reason in the body. Without it a 403 is just
                 // a number, and the difference between "bad signature",
                 // "wrong endpoint" and "account locked" is the whole answer.
-                AppLog.error("403 body: " + (String(data: data, encoding: .utf8)
-                             ?? "<(data.count) binary bytes>"), .network)
-                AppLog.error("403 headers: "
-                             + String(describing: http.allHeaderFields), .network)
+                // Both lines used to carry whatever Apple sent. The body is
+                // worth reading; the headers are not -- a 403 is routine and
+                // URLSession is configured not to swallow Set-Cookie, so this
+                // wrote live session cookies into a log the user can share.
+                let text = String(data: data, encoding: .utf8)
+                    ?? "<" + String(data.count) + " binary bytes>"
+                AppLog.error("403 body (" + String(data.count) + " bytes, first 400): "
+                             + String(text.prefix(400)), .network)
+                AppLog.error("403 headers: " + Self.redactedHeaders(http.allHeaderFields),
+                             .network)
             }
 
             // A 3xx that should be replayed as-is carries a Location and keeps

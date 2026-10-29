@@ -114,6 +114,12 @@ final class AppSession: ObservableObject {
 
     func select(_ id: String) {
         guard accounts.contains(where: { $0.id == id }) else { return }
+        // The session belongs to the account that produced it. Selecting a
+        // different one used to leave that account's cookies in place, and the
+        // next download replayed them alongside the new DSID.
+        if id != activeID {
+            client.resetSession()
+        }
         activeID = id
         persist()
     }
@@ -125,6 +131,8 @@ final class AppSession: ObservableObject {
             // The selected account went away; fall back to whatever is left.
             self.activeID = accounts.first?.id
         }
+        // Whatever was captured belongs to an account that may no longer exist.
+        client.resetSession()
         persist()
     }
 
