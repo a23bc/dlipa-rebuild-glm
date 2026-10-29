@@ -133,6 +133,17 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 
 	openDuration := time.Since(opened)
 
+	// Third point in the same A/B: sign again immediately after open, before the
+	// encoder touches anything. Opening reloads AppleMediaServices from the file,
+	// and this machine initialised that image during the handshake -- if the
+	// reload reset its data segments, signing breaks here and not at the
+	// encoder's hand.
+	if signature, signErr := s.Sign(probe); signErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] post-open pre-encode sign: %v\n", signErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "[SAP] post-open pre-encode sign: %d bytes\n", len(signature))
+	}
+
 	// Signing runs on the SAP machine but faulted code is reached through this
 	// runtime's address space, so this runtime is the one that can say what a
 	// fault was reading and whether that page was ever shipped. Cleared before
