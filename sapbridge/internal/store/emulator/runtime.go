@@ -1049,7 +1049,16 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	if err != nil {
 		lr, _ := r.engine.RegRead(unicorn.RegLR)
 
-		return 0, fmt.Errorf("guest stopped at %#x from %#x: %w; recent=%v", pc, lr, err, r.trace)
+		// The registers the faulting instruction actually used: a load that
+		// follows a register somewhere unmapped says nothing about where it got
+		// the register, and the two answers -- a wild pointer, or a zero that was
+		// never written -- need different fixes.
+		x0, _ := r.engine.RegRead(unicorn.RegX0)
+		x16, _ := r.engine.RegRead(unicorn.RegX16)
+		x17, _ := r.engine.RegRead(unicorn.RegX0 + 17)
+
+		return 0, fmt.Errorf("guest stopped at %#x from %#x: %w; x0=%#x x16=%#x x17=%#x recent=%v",
+			pc, lr, err, x0, x16, x17, r.trace)
 	}
 
 	if pc != returnPC {
