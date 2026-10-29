@@ -109,6 +109,22 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) 
 
 	// The machine keeps allocating on this heap whenever it signs, so the runtime
 	// has to be told how much of it is already in use.
+	// A/B against everything that follows: sign once before the Store runtime
+	// exists. The handshake already signs and Apple accepted that signature, so
+	// the machine can sign on its own. If this succeeds and the sign after the
+	// runtime opens does not, the difference is the runtime, not the signer --
+	// and the content does not matter to a function that signs bytes.
+	probe := make([]byte, 354)
+	for index := range probe {
+		probe[index] = byte(index)
+	}
+
+	if signature, signErr := s.Sign(probe); signErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] pre-open sign: %v\n", signErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "[SAP] pre-open sign: %d bytes\n", len(signature))
+	}
+
 	runtime, err := emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
 	if err != nil {
 		return "", fmt.Errorf("store smoke: open runtime after %s: %w (image=%d bytes, plugin=%d bytes)",
