@@ -677,7 +677,20 @@ func StripPAC(data []byte) int {
 			replacement = 0xd63f0000 | (instruction & 0x3e0)
 		case 0xdac10000, 0xdac10400, 0xdac10800, 0xdac10c00,
 			0xdac11000, 0xdac11400, 0xdac11800, 0xdac11c00:
-			replacement = nop
+			// PACIA/PACIB/AUTIA/AUTIB and their ZA/ZB forms.
+			//
+			// NOP was wrong for the authenticating half: the pointer arrives
+			// signed, the instruction that would have replaced its top bits with
+			// a canonical address does nothing, and the next load follows those
+			// bits to an address that is not mapped. That is the fault at
+			// 0x1a2af0790 -- `autda x16, x17` immediately before `ldr x9, [x16,
+			// #0x40]`.
+			//
+			// Zero-extending to 48 bits is what authentication reduces to in this
+			// address space: every region here fits in 48 bits, so the mask turns
+			// a signed pointer into the pointer it was signed from, and leaves an
+			// unsigned one alone.
+			replacement = 0xd340bc00 | (instruction&0x1f)<<5 | (instruction & 0x1f)
 		case 0x38bfc000, 0x78bfc000, 0xb8bfc000, 0xf8bfc000:
 			// LDAPR*, ARMv8.3-RCpc. The mask covers A, R and Rs, so the
 			// acquire bit and the required Rs=31 are already pinned by the
