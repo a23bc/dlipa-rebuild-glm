@@ -18,6 +18,10 @@ on:
         required: false
         default: Release
 
+# Read-only by default. The release job raises it for itself.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -84,6 +88,20 @@ jobs:
           # every live test skipped, which looked identical to passing.
           brew install ldid cmake pkg-config unicorn
           ls -la /opt/homebrew/lib/libunicorn* 2>/dev/null || echo "no libunicorn under /opt/homebrew/lib"
+
+      - name: Go unit tests
+        run: |
+          # These were removed while the Go side was dead weight. It is not dead
+          # now: everything under sapbridge/internal drives the machine that
+          # signs and generates kbsync, and a regression there reaches the
+          # device before anything notices.
+          #
+          # The timeout is the point. A self-deadlock hangs instead of failing,
+          # and the default is long enough that the run looks broken rather than
+          # red. One of those shipped: a non-reentrant lock taken twice in the
+          # store smoke test, which stopped a device run mid-log.
+          go test -timeout 180s ./...
+        working-directory: sapbridge
 
       # Everything that used to sit between here and the Unicorn build was
       # diagnostic work for the Go SAP path: staging the 119 MB of macOS 27
@@ -236,6 +254,29 @@ jobs:
           name: sapbridge-ios
           path: sapbridge-ios.tar.gz
           retention-days: 5
+
+  # The project is developed on Windows and CI only ever built on macOS, so the
+  # root package was free to stop compiling there without anyone noticing --
+  # syscall.Mmap with no build tag, which also meant the public API had no test
+  # coverage on the platform it is worked on. This is the check that would have
+  # caught it, and it runs in parallel with the IPA.
+  windows-build:
+    name: Go build on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: sapbridge/go.mod
+
+      - name: Build, vet and test
+        run: |
+          go build ./...
+          go vet ./...
+          go test -timeout 180s ./...
+        working-directory: sapbridge
 
   app:
     name: Build unsigned DLiPA Rebuild app

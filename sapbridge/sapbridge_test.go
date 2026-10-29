@@ -1,6 +1,7 @@
 package sapbridge
 
 import (
+        "context"
         "encoding/base64"
         "os"
         "strings"
@@ -96,16 +97,48 @@ func TestNewRejectsBadHardware(t *testing.T) {
         }
 }
 
+// fakeActionSigner stands in for the emulator: the header encoding is what is
+// under test, not the guest.
+type fakeActionSigner struct {
+        signature []byte
+        err       error
+}
+
+func (f fakeActionSigner) Sign([]byte) ([]byte, error) { return f.signature, f.err }
+
+func (f fakeActionSigner) KBSync(context.Context, uint64) ([]byte, error) { return nil, nil }
+
+func (f fakeActionSigner) Close() error { return nil }
+
 // TestSignatureHeaderValueIsSingleLine guards the HTTP header: a newline in the
-// value would be a header-injection bug.
+// value is a header-injection bug.
+//
+// The previous version asserted that the constant string "base64 value" has no
+// newline, which cannot fail and never touched the code it claimed to guard.
+// This one signs bytes that are themselves newlines.
 func TestSignatureHeaderValueIsSingleLine(t *testing.T) {
-        // Uses a closed signer to get a deterministic error rather than a network call.
-        s := &Signer{}
-        if _, err := s.SignatureHeaderValue([]byte("x")); err == nil {
-                t.Fatal("expected an error from a closed signer")
+        raw := []byte{0x00, 0x0a, 0x0d, 0xff, 0x0a}
+        signer := &Signer{inner: fakeActionSigner{signature: raw}}
+
+        value, err := signer.SignatureHeaderValue([]byte("body"))
+        if err != nil {
+                t.Fatalf("SignatureHeaderValue: %v", err)
         }
-        if strings.Contains("base64 value", "\n") {
-                t.Fatal("unreachable")
+
+        if strings.ContainsAny(value, "\r\n") {
+                t.Fatalf("header value contains a line break: %q", value)
+        }
+
+        if want := base64.StdEncoding.EncodeToString(raw); value != want {
+                t.Fatalf("value = %q, want %q", value, want)
+        }
+}
+
+// TestSignatureHeaderValueFailsWhenClosed keeps the closed-signer contract the
+// old test was actually checking.
+func TestSignatureHeaderValueFailsWhenClosed(t *testing.T) {
+        if _, err := (&Signer{}).SignatureHeaderValue([]byte("x")); err == nil {
+                t.Fatal("expected an error from a closed signer")
         }
 }
 

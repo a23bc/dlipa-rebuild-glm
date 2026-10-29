@@ -31,8 +31,13 @@ type hookState struct {
 type Hook struct {
 	mu     sync.Mutex
 	engine *Engine
-	handle uintptr
-	id     uintptr
+	// One Hook can stand for several uc_hook handles: an unmapped callback is
+	// registered once per access kind, and Close has to delete every one of
+	// them. Storing only the last left the other two installed, so unmapped
+	// accesses kept entering a trampoline whose callback entry had already been
+	// deleted.
+	handles []uintptr
+	id      uintptr
 }
 
 var (
@@ -94,7 +99,7 @@ func (e *Engine) AddCodeHook(begin, end uint64, callback CodeHook) (*Hook, error
 	e.hooks.ids[id] = struct{}{}
 	e.hooks.mu.Unlock()
 
-	return &Hook{engine: e, handle: hookHandle, id: id}, nil
+	return &Hook{engine: e, handles: []uintptr{hookHandle}, id: id}, nil
 }
 
 func (h *Hook) Close() error {
@@ -113,7 +118,11 @@ func (h *Hook) Close() error {
 	handle, done, err := engine.beginOperation()
 
 	if err == nil {
-		err = engine.err(engine.api.hookDel(handle, h.handle))
+		for _, hookHandle := range h.handles {
+			if delErr := engine.err(engine.api.hookDel(handle, hookHandle)); delErr != nil && err == nil {
+				err = delErr
+			}
+		}
 
 		done()
 
@@ -133,7 +142,7 @@ func (h *Hook) Close() error {
 	engine.hooks.mu.Unlock()
 
 	h.engine = nil
-	h.handle = 0
+	h.handles = nil
 	h.id = 0
 
 	return nil
@@ -239,7 +248,7 @@ func (e *Engine) AddWriteWatch(begin, end uint64, callback WriteHook) (*Hook, er
 	e.hooks.ids[id] = struct{}{}
 	e.hooks.mu.Unlock()
 
-	return &Hook{engine: e, handle: hookHandle, id: id}, nil
+	return &Hook{engine: e, handles: []uintptr{hookHandle}, id: id}, nil
 }
 
 const (
@@ -306,15 +315,23 @@ func (e *Engine) AddUnmappedHook(begin, end uint64, callback UnmappedHook) (*Hoo
 
 	unmappedHookCallbacks.Store(id, unmappedWatch{callback: callback})
 
-	var hookHandle uintptr
+	var handles []uintptr
 
 	kinds := []int32{hookMemFetchUnmapped, hookMemReadUnmapped, hookMemWriteUnmapped}
 	for _, kind := range kinds {
+		var hookHandle uintptr
+
 		if err := e.err(e.api.hookAdd(handle, &hookHandle, kind, unmappedHookTrampoline, id, begin, end)); err != nil {
+			// Delete what was already registered rather than leaking it.
+			for _, added := range handles {
+				_ = e.api.hookDel(handle, added)
+			}
 			unmappedHookCallbacks.Delete(id)
 
 			return nil, err
 		}
+
+		handles = append(handles, hookHandle)
 	}
 
 	e.hooks.mu.Lock()
@@ -325,5 +342,5 @@ func (e *Engine) AddUnmappedHook(begin, end uint64, callback UnmappedHook) (*Hoo
 	e.hooks.ids[id] = struct{}{}
 	e.hooks.mu.Unlock()
 
-	return &Hook{engine: e, handle: hookHandle, id: id}, nil
+	return &Hook{engine: e, handles: handles, id: id}, nil
 }

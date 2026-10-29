@@ -110,6 +110,10 @@ func readCache(directory string) (Bundle, error) {
         return bundle, nil
 }
 
+// readCacheFile reads a staged asset and holds it to the size it was staged at.
+//
+// The parameter was accepted and ignored, so a truncated cache copy was only
+// noticed later, as a handshake that failed for no stated reason.
 func readCacheFile(path string, expectedSize int) ([]byte, error) {
         file, err := os.Open(path)
         if err != nil {
@@ -121,6 +125,13 @@ func readCacheFile(path string, expectedSize int) ([]byte, error) {
         info, err := file.Stat()
         if err != nil {
                 return nil, fmt.Errorf("inspect cached asset: %w", err)
+        }
+
+        // The staged copy is written from the bundle, so it can be larger than
+        // the pinned size (iOS appends a code signature) but never smaller.
+        if expectedSize > 0 && info.Size() < int64(expectedSize) {
+                return nil, fmt.Errorf("cached asset %s is %d bytes, expected at least %d",
+                        filepath.Base(path), info.Size(), expectedSize)
         }
 
         data := make([]byte, info.Size())
@@ -203,6 +214,17 @@ func validate(bundle Bundle) error {
                 data := files[spec.name]
                 if len(data) == 0 {
                         return fmt.Errorf("apple SAP asset %s is empty or missing", spec.name)
+                }
+
+                // Size is checked unconditionally and as a floor, not an
+                // equality: re-signing on install only appends, so a copy
+                // smaller than the pinned size is a truncation -- the failure
+                // this loader exists to catch -- while a larger one is normal on
+                // device. Nothing compared the size before, so a half-written
+                // file was only reported as "empty" or not at all.
+                if spec.size > 0 && len(data) < spec.size {
+                        return fmt.Errorf("apple SAP asset %s size is %d bytes, expected at least %d",
+                                spec.name, len(data), spec.size)
                 }
 
                 // On iOS, MobileInstallation re-signs Mach-O files in the app
