@@ -38,7 +38,16 @@ type StoreAccount struct {
 	DSID, Token, StoreFront string
 }
 
-func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (string, error) {
+func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, returnedErr error) {
+	// The result of this function goes to the app, not to stderr, and when it
+	// fails early the log ends with nothing at all -- which reads exactly like a
+	// crash. Printing the error here costs a line and removes that ambiguity.
+	defer func() {
+		if returnedErr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] store smoke returned: %v\n", returnedErr)
+		}
+	}()
+
 	if s == nil || s.machine == nil {
 		return "", fmt.Errorf("store smoke: no machine")
 	}
