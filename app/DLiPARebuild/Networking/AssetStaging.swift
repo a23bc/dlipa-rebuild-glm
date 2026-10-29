@@ -29,6 +29,11 @@ enum AssetStaging {
     private static var isStaging = false
     private static let stagingLock = NSLock()
 
+    /// Callers that arrived while a staging run was already in flight. They are
+    /// answered when that run finishes, with the same error the first caller
+    /// gets -- returning nil to them meant "ready" before anything was copied.
+    private static var waiters: [(Error?) -> Void] = []
+
     static var stagedDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SapAssets", isDirectory: true)
@@ -48,9 +53,16 @@ enum AssetStaging {
         // only one staging task runs; subsequent callers wait and then
         // see isReady=true.
         stagingLock.lock()
-        if isReady || isStaging {
+        if isReady {
             stagingLock.unlock()
             DispatchQueue.main.async { completion(nil) }
+            return
+        }
+        if isStaging {
+            // Somebody else is copying. Wait for that run instead of reporting
+            // success for a directory that is still being filled.
+            waiters.append(completion)
+            stagingLock.unlock()
             return
         }
         isStaging = true
@@ -66,7 +78,10 @@ enum AssetStaging {
                 try FileManager.default.createDirectory(
                     at: destination, withIntermediateDirectories: true)
             } catch {
-                finish(firstError, destination: destination, completion: completion)
+                // firstError is still nil here, so passing it told finish() the
+                // staging had succeeded: it set isReady, pointed the bridge at a
+                // directory that does not exist, and answered nil.
+                finish(error, destination: destination, completion: completion)
                 return
             }
 
@@ -149,8 +164,13 @@ enum AssetStaging {
             isReady = true
         }
         isStaging = false
+        let pending = waiters
+        waiters.removeAll()
         stagingLock.unlock()
-        DispatchQueue.main.async { completion(error) }
+        DispatchQueue.main.async {
+            completion(error)
+            for waiter in pending { waiter(error) }
+        }
     }
 }
 

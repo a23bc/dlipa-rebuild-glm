@@ -58,24 +58,32 @@ final class AppSession: ObservableObject {
             let fetched = try await client.fetchBag(guid: hardware.guid)
             bag = fetched
             AppLog.info("bag: sign-sap-version=" + String(fetched.signSapVersion), .sap)
-            guard fetched.hasSAPConfiguration,
-                  let setup = fetched.signSapSetup,
-                  let cert = fetched.signSapSetupCert,
-                  fetched.authenticateAccount != nil else {
-                throw StoreError.noBagEndpoint
-            }
+        }
+
+        guard let bag, bag.hasSAPConfiguration, let endpoint = bag.authenticateAccount else {
+            throw StoreError.noBagEndpoint
+        }
+
+        // The signer is created when it is missing, not when the bag arrives.
+        // Those were the same condition once, and it made a failed handshake
+        // permanent: the bag stayed cached, the signer stayed nil, and every
+        // later attempt took the "bag is already here" branch and failed the
+        // guard below.
+        if signer == nil {
             status = "Running the SAP handshake..."
-            // This is where the emulator starts. Throwing here means the
-            // container did not load, the initialiser failed, or one of the
-            // exchange legs did not reach its expected state.
-            signer = try SAPSigner(setupURL: setup, certURL: cert,
-                                   version: fetched.signSapVersion,
-                                   hardware: hardware)
+            do {
+                _ = try ensureSigner(bag)
+            } catch {
+                // Never keep a bag whose handshake failed: the next attempt has
+                // to start from the endpoints again, not from the cached copy
+                // that produced this failure.
+                self.bag = nil
+                throw error
+            }
             AppLog.info("SAP handshake complete", .sap)
         }
 
-        guard let bag, let signer,
-              let endpoint = bag.authenticateAccount else {
+        guard let signer else {
             throw StoreError.noBagEndpoint
         }
 
@@ -160,14 +168,6 @@ final class AppSession: ObservableObject {
         hardware = HardwareIdentity.current()
     }
 
-    /// deinit cannot touch actor-isolated state, so the signer is released
-    /// here instead. The view calls this when it disappears.
-    func shutdown() {
-        sessionBuild = nil
-        signer?.close()
-        signer = nil
-    }
-
     // MARK: - Shared with search and downloads
 
     /// The country whose catalogue to search: the active account's storefront,
@@ -229,6 +229,28 @@ final class AppSession: ObservableObject {
     /// button was pressed caused it.
     private var sessionBuild: Task<(StoreAccount, StoreBag, SAPSigner), Error>?
 
+    /// Creates the signer if it is missing, and only then.
+    ///
+    /// Synchronous on purpose: SAPSigner.init blocks, and nothing between the
+    /// check and the assignment suspends, so on the main actor no second caller
+    /// can arrive in between and build a second emulator. A Task here would add
+    /// nothing and would drag Sendable requirements along with it.
+    ///
+    /// A failure leaves signer == nil, so the next attempt starts over instead
+    /// of inheriting a half-built session.
+    private func ensureSigner(_ bag: StoreBag) throws -> SAPSigner {
+        if let signer {
+            return signer
+        }
+        guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
+            throw StoreError.noBagEndpoint
+        }
+        let created = try SAPSigner(setupURL: setup, certURL: cert,
+                                    version: bag.signSapVersion, hardware: hardware)
+        signer = created
+        return created
+    }
+
     private func ensureSession() async throws -> (StoreAccount, StoreBag, SAPSigner) {
         if let build = sessionBuild {
             return try await build.value
@@ -256,14 +278,9 @@ final class AppSession: ObservableObject {
         }
         guard let bag else { throw StoreError.noBagEndpoint }
         if signer == nil {
-            guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
-                throw StoreError.noBagEndpoint
-            }
             AppLog.info("opening the SAP session for downloads", .sap)
-            signer = try SAPSigner(setupURL: setup, certURL: cert,
-                                   version: bag.signSapVersion, hardware: hardware)
         }
-        guard let signer else { throw StoreError.noBagEndpoint }
+        let signer = try ensureSigner(bag)
 
         // authenticate proves the password and hands back a token, but it leaves
         // the store with no session: the cookie store comes back empty and every
@@ -316,16 +333,11 @@ final class AppSession: ObservableObject {
 func diagnosticStoreSmoke() async -> String {
     do {
         if bag == nil { bag = try await client.fetchBag(guid: hardware.guid) }
-        if signer == nil {
-            guard let bag,
-                  let setup = bag.signSapSetup,
-                  let cert = bag.signSapSetupCert else {
-                return "bag carries no SAP configuration"
-            }
-            signer = try SAPSigner(setupURL: setup, certURL: cert,
-                                   version: bag.signSapVersion, hardware: hardware)
+        guard let bag else { return "no bag" }
+        guard bag.signSapSetup != nil, bag.signSapSetupCert != nil else {
+            return "bag carries no SAP configuration"
         }
-        guard let signer else { return "no signer" }
+        let signer = try ensureSigner(bag)
 
         AppLog.info("store smoke: opening the Store runtime", .sap)
 
@@ -369,18 +381,11 @@ func diagnosticKBSync() async -> String {
                 report.append("no bag")
                 return report.joined(separator: " · ")
             }
-            if signer == nil {
-                guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
-                    report.append("bag carries no SAP configuration")
-                    return report.joined(separator: " · ")
-                }
-                signer = try SAPSigner(setupURL: setup, certURL: cert,
-                                       version: bag.signSapVersion, hardware: hardware)
-            }
-            guard let signer else {
-                report.append("no signer")
+            guard bag.signSapSetup != nil, bag.signSapSetupCert != nil else {
+                report.append("bag carries no SAP configuration")
                 return report.joined(separator: " · ")
             }
+            let signer = try ensureSigner(bag)
             guard let account = activeAccount else {
                 report.append("not signed in")
                 return report.joined(separator: " · ")

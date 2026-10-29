@@ -87,12 +87,12 @@ struct AccountsScreen: View {
             // that no longer exists.
             model.handleIdentityChange()
         }
-        .onDisappear {
-            // The tab stays alive for the session, but the emulator holds
-            // tens of megabytes of guest memory. Release it when the screen
-            // goes away rather than waiting for deallocation.
-            model.shutdown()
-        }
+        // Deliberately no onDisappear teardown. The SAP signer is a
+        // machine-level session shared by search and downloads, and closing it
+        // from a view's lifetime meant that leaving the tab made every later
+        // sign-in fail with an endpoint error: the bag stayed cached while the
+        // signer was gone. It now lives for the process, which is what a
+        // machine-level session is.
     }
 }
 
