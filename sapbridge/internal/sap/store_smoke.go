@@ -138,7 +138,9 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		probe[index] = byte(index)
 	}
 
-	if signature, signErr := s.Sign(probe); signErr != nil {
+	// signLocked, not Sign: this function already holds s.mu, which is not
+	// reentrant.
+	if signature, signErr := s.signLocked(probe); signErr != nil {
 		fmt.Fprintf(os.Stderr, "[SAP] pre-open sign: %v\n", signErr)
 	} else {
 		fmt.Fprintf(os.Stderr, "[SAP] pre-open sign: %d bytes\n", len(signature))
@@ -166,7 +168,9 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// and this machine initialised that image during the handshake -- if the
 	// reload reset its data segments, signing breaks here and not at the
 	// encoder's hand.
-	if signature, signErr := s.Sign(probe); signErr != nil {
+	// signLocked, not Sign: this function already holds s.mu, which is not
+	// reentrant.
+	if signature, signErr := s.signLocked(probe); signErr != nil {
 		fmt.Fprintf(os.Stderr, "[SAP] post-open pre-encode sign: %v\n", signErr)
 	} else {
 		fmt.Fprintf(os.Stderr, "[SAP] post-open pre-encode sign: %d bytes\n", len(signature))

@@ -168,6 +168,16 @@ func (s *Signer) Sign(input []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.signLocked(input)
+}
+
+// signLocked is Sign without taking the lock, for callers that already hold it.
+//
+// StoreSmoke holds s.mu for its whole run -- it drives the same machine a
+// signature would -- and signs inside it as a probe. Calling Sign from there
+// deadlocked on the first probe: sync.Mutex is not reentrant, so the run simply
+// stopped printing after the image line, with no error and no crash.
+func (s *Signer) signLocked(input []byte) ([]byte, error) {
 	if s.closed {
 		return nil, errSignerClosed
 	}
