@@ -1154,7 +1154,7 @@ func (r *Runtime) dispatch(address uint64) bool {
 			reason := recoveredError("runtime", p)
 			r.fault = fmt.Errorf("guest bridge at %#x (%s): %w; back=%v; recent=%v",
 				address, call.Symbol, reason, r.guestBacktrace(), r.trace)
-			fmt.Fprintf(os.Stderr, "[SAP] bridge failed at %#x, symbol %q: %v\n", address, call.Symbol, reason)
+			fmt.Fprintf(os.Stderr, "[SAP] bridge failed at %#x, symbol %q: %v; recent=%v\n", address, call.Symbol, reason, r.trace)
 			_ = r.engine.Stop()
 		}
 	}()
