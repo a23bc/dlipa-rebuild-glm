@@ -115,6 +115,35 @@ type Engine struct {
 	closing       bool
 	closeDone     chan struct{}
 	closeErr      error
+	regionsMu     sync.Mutex
+	regions       []mappedRegion
+}
+
+// mappedRegion is one uc_mem_map call, kept so a later tenant of the same engine
+// can tell what is already there.
+type mappedRegion struct {
+	start uint64
+	end   uint64
+}
+
+// IsMapped reports whether [address, address+size) is already mapped.
+//
+// The engine is shared: the SAP machine maps its images and pages long before the
+// Store runtime opens, and the runtime has to know that so it does not write
+// pristine copies over memory the machine has since changed.
+func (e *Engine) IsMapped(address, size uint64) bool {
+	end := address + size
+
+	e.regionsMu.Lock()
+	defer e.regionsMu.Unlock()
+
+	for _, region := range e.regions {
+		if region.start <= address && end <= region.end {
+			return true
+		}
+	}
+
+	return false
 }
 
 // SetThreadPointer points the guest's thread pointer registers at a TLS block.
@@ -248,7 +277,15 @@ func (e *Engine) MemMap(address, size uint64) error {
 
 	defer done()
 
-	return e.err(e.api.memMap(handle, address, size, protAll))
+	if err := e.err(e.api.memMap(handle, address, size, protAll)); err != nil {
+		return err
+	}
+
+	e.regionsMu.Lock()
+	e.regions = append(e.regions, mappedRegion{start: address, end: address + size})
+	e.regionsMu.Unlock()
+
+	return nil
 }
 
 // FlushTranslations drops every TLB entry and translation block.

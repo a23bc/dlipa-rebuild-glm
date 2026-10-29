@@ -280,6 +280,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	var imageSpans [][2]uint64
 
+	skippedImages, skippedCachePages, skippedProfilePages := 0, 0, 0
+
 	for name, data := range imageInputs {
 		fmt.Fprintf(os.Stderr, "[SAP] open(): machimage.Open %s with %d bytes\n", name, len(data))
 		image, e := machimage.Open(name, data)
@@ -301,7 +303,16 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		// file. The cache pages below must not land on any of these ranges.
 		imageSpans = append(imageSpans, image.Spans()...)
 
-		if e = image.Load(r); e != nil {
+		// The SAP machine loads AppleMediaServices before this runtime exists, and
+		// runs the handshake in it. Loading the image again writes the pristine
+		// __DATA over a running image and resets exactly the state a signer needs:
+		// with the runtime closed, the same machine signs 354 bytes in 379 ms;
+		// with it open, the same call returns nothing.
+		sections := image.TextSections()
+		if len(sections) > 0 && r.engine != nil && r.engine.IsMapped(sections[0][0], 1) {
+			fmt.Fprintf(os.Stderr, "[SAP] open(): %s is already loaded at %#x, leaving it alone\n", name, sections[0][0])
+			skippedImages++
+		} else if e = image.Load(r); e != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
 
@@ -340,12 +351,28 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		// rewritten before anything runs from them.
 		stripped += machimage.StripPAC(run.Data)
 
-		if err = r.MemMap(run.Address, uint64(len(run.Data))); err != nil {
-			return nil, fmt.Errorf("prepare store runtime: map cache run %#x: %w", run.Address, err)
+		// Pages the machine already mapped hold the machine's values, which are
+		// newer than the blob's. Writing the blob back would undo whatever the
+		// handshake initialised.
+		pieces := unmappedPieces(r, run.Address, run.Data)
+
+		total := 0
+		for _, piece := range pieces {
+			total += len(piece.data)
 		}
 
-		if err = r.MemWrite(run.Address, run.Data); err != nil {
-			return nil, fmt.Errorf("prepare store runtime: write cache run %#x: %w", run.Address, err)
+		if total != len(run.Data) {
+			skippedCachePages += (len(run.Data) - total) / 4096
+		}
+
+		for _, piece := range pieces {
+			if err = r.MemMap(piece.address, uint64(len(piece.data))); err != nil {
+				return nil, fmt.Errorf("prepare store runtime: map cache run %#x: %w", piece.address, err)
+			}
+
+			if err = r.MemWrite(piece.address, piece.data); err != nil {
+				return nil, fmt.Errorf("prepare store runtime: write cache run %#x: %w", piece.address, err)
+			}
 		}
 
 		// Remembered so a fault can say whether the missing page was in
@@ -412,9 +439,20 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, errors.New("profile page exceeds data")
 		}
 
+		// Same rule as the cache pages: a page the machine already holds is newer
+		// than the snapshot that was taken before the handshake.
+		if r.engine != nil && r.engine.IsMapped(page.Address, 4096) {
+			skippedProfilePages++
+
+			continue
+		}
+
 		if err = r.MemWrite(page.Address, pageData[page.Offset:page.Offset+4096]); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] open(): kept %d cache pages and %d profile pages the machine already had, skipped %d images\n",
+			skippedCachePages, skippedProfilePages, skippedImages)
 
 		// MemMap records every range it maps, cache pages included, so the
 		// profile's own pages are tracked separately for the fault report.
@@ -1267,4 +1305,46 @@ func recoveredError(stage string, value any) error {
 	}
 
 	return fmt.Errorf("%s: %v", stage, value)
+}
+
+// unmappedPiece is a run of pages this runtime still has to map and write.
+type unmappedPiece struct {
+	address uint64
+	data    []byte
+}
+
+// unmappedPieces splits a cache run into the stretches the engine does not
+// already hold.
+//
+// The SAP machine maps pages long before this runtime opens and keeps changing
+// them: globals it initialises, allocations it makes. The blob is a snapshot
+// taken before that work, so writing it back over those pages undoes it. Pages
+// the engine already has are left exactly as they are.
+func unmappedPieces(r *Runtime, address uint64, data []byte) []unmappedPiece {
+	if r.engine == nil {
+		return []unmappedPiece{{address: address, data: data}}
+	}
+
+	var pieces []unmappedPiece
+
+	start := -1
+
+	for offset := 0; offset < len(data); offset += 4096 {
+		page := address + uint64(offset)
+		mapped := r.engine.IsMapped(page, 4096)
+
+		switch {
+		case mapped && start >= 0:
+			pieces = append(pieces, unmappedPiece{address: address + uint64(start), data: data[start:offset]})
+			start = -1
+		case !mapped && start < 0:
+			start = offset
+		}
+	}
+
+	if start >= 0 {
+		pieces = append(pieces, unmappedPiece{address: address + uint64(start), data: data[start:]})
+	}
+
+	return pieces
 }
