@@ -254,12 +254,34 @@ func (s *shims) basename() error {
 		return err
 	}
 
-	value = strings.TrimRight(value, "/")
-	if index := strings.LastIndexByte(value, '/'); index >= 0 {
-		address += uint64(index + 1)
+	// POSIX basename is allowed to modify its argument, and this one has to:
+	// trimming trailing slashes makes the name shorter than what is in memory,
+	// and the index used to come from the trimmed copy while the pointer came
+	// from the original. "/usr/lib/" therefore answered with a pointer to
+	// "lib/" -- the slash strcmp never matches.
+	trimmed := strings.TrimRight(value, "/")
+
+	if len(trimmed) == 0 {
+		// Nothing but slashes is the root directory, whose basename is "/".
+		if err := s.engine.MemWrite(address, []byte{'/'}); err != nil {
+			return fmt.Errorf("write guest basename: %w", err)
+		}
+
+		return s.setResult(address)
 	}
 
-	return s.setResult(address)
+	if len(trimmed) < len(value) {
+		if err := s.engine.MemWrite(address+uint64(len(trimmed)), []byte{0}); err != nil {
+			return fmt.Errorf("terminate guest basename: %w", err)
+		}
+	}
+
+	start := uint64(0)
+	if index := strings.LastIndexByte(trimmed, '/'); index >= 0 {
+		start = uint64(index + 1)
+	}
+
+	return s.setResult(address + start)
 }
 
 func (s *shims) bootstrapLookUp() error {

@@ -67,6 +67,18 @@ enum SAPSelfTest {
 
                 emit("Building the signer...")
 
+                // Closed on every path from here. It used to be closed only
+                // after the signature came back, so a failure past the handshake
+                // leaked the session: liveSessions stayed at 1 and the next
+                // signer could never be created.
+                //
+                // Note that this diagnostic creates its own session, which needs
+                // liveSessions to be 0. With the app already signed in it is 1,
+                // so the constructor refuses and this reports "a SAP session is
+                // already open" no matter what -- that part is still open.
+                var opened: SAPSigner?
+                defer { opened?.close() }
+
                 // The signer constructor does the whole chain: load the X64I
                 // container, run the initialiser, fetch the certificate, run
                 // both exchange legs. Throwing here means one of those failed
@@ -75,6 +87,7 @@ enum SAPSelfTest {
                                            certURL: cert,
                                            version: bag.signSapVersion,
                                            hardware: hardware)
+                opened = signer
 
                 emit("Handshake OK")
                 emit("Signing a probe body...")
@@ -84,7 +97,6 @@ enum SAPSelfTest {
                 emit("Signature OK (\(header.count) hex chars)")
                 emit("  \(header.prefix(64))...")
                 emit("SELF TEST PASSED")
-                signer.close()
             } catch {
                 emit("FAILED: \(error.localizedDescription)")
                 let ns = error as NSError
