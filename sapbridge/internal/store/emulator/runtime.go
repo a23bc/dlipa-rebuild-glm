@@ -439,28 +439,6 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 	}
 
-	// Experiment: force Swift to instantiate a type instead of trusting a cache
-	// pointer into memory the snapshot never had.
-	//
-	// ___swift_instantiateConcreteTypeFromMangledNameV2 starts with `ldr x0, [x0]`
-	// and a `cbz` to its slow path. A non-zero word therefore means "already
-	// instantiated, here is the metadata", and it returns 0x1e64da358 -- which is
-	// inside a page of 4096 zero bytes. Clearing that word sends it down the slow
-	// path, where it allocates and fills the metadata itself.
-	//
-	// Only the one descriptor is named. If this works, the rule generalises to
-	// every descriptor whose metadata page is empty in the snapshot.
-	for _, descriptor := range reinstantiateDescriptors {
-		var cleared [8]byte
-		if err := r.MemWrite(descriptor, cleared[:]); err != nil {
-			fmt.Fprintf(os.Stderr, "[SAP] open(): drop instantiation flag at %#x: %v\n", descriptor, err)
-
-			continue
-		}
-
-		fmt.Fprintf(os.Stderr, "[SAP] open(): dropped instantiation flag at %#x\n", descriptor)
-	}
-
 	for _, page := range profile.Pages {
 		if page.Offset+4096 > uint64(len(pageData)) {
 			return nil, errors.New("profile page exceeds data")
@@ -1414,12 +1392,4 @@ func unmappedPieces(r *Runtime, address uint64, data []byte) []unmappedPiece {
 	}
 
 	return pieces
-}
-
-// reinstantiateDescriptors names Swift type descriptors whose metadata page is
-// empty in the snapshot, so the runtime has to build them instead of reading
-// them. One entry, from the frozen-bag fault: the descriptor is loaded at
-// 0x1a2af076c as `adrp 0x1e660a000 / add #0x930`.
-var reinstantiateDescriptors = []uint64{
-	0x1e660a930,
 }
