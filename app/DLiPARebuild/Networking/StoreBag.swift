@@ -241,12 +241,14 @@ enum StoreError: LocalizedError {
     case httpError(Int, String)
     case failureType(String, String)
     case twoFactorRequired
+    /// The bag, or a redirect, pointed at somewhere credentials may not go.
+    case untrustedEndpoint(String)
 
     /// User-facing message. Specific detail goes to the log so the alert stays
     /// short and localised the way the original app does it.
     var errorDescription: String? {
         switch self {
-        case .noBagEndpoint, .malformedBag, .signingFailed:
+        case .noBagEndpoint, .malformedBag, .signingFailed, .untrustedEndpoint:
             return NSLocalizedString("toast_something_wrong", comment: "Generic failure")
         case .httpError(let code, let body):
             let fmt = NSLocalizedString("Apple returned HTTP %d: %@", comment: "HTTP failure")
@@ -296,6 +298,8 @@ enum StoreError: LocalizedError {
             return type + (message.isEmpty ? "" : ": \(message)")
         case .twoFactorRequired:
             return "Apple requires 2FA verification code"
+        case .untrustedEndpoint(let url):
+            return "refusing a request to " + url
         }
     }
 }

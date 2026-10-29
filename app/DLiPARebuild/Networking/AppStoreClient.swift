@@ -180,9 +180,14 @@ final class AppStoreClient {
             let body = try PropertyListSerialization.data(
                 fromPropertyList: payload, format: .xml, options: 0)
 
+            // Checked per pass because a redirect can move endpointNow onto a
+            // pod the earlier attempt was sent to. This request carries the
+            // Apple ID password, so the destination is not negotiable.
+            let attemptURL = try Self.trustedEndpoint(endpointNow)
+
             var outcome: (Data, HTTPURLResponse)?
             for networkTry in 0..<Self.authenticationRequestAttempts {
-                var attemptRequest = URLRequest(url: URL(string: endpointNow)!)
+                var attemptRequest = URLRequest(url: attemptURL)
                 attemptRequest.httpMethod = "POST"
                 attemptRequest.setValue("application/x-www-form-urlencoded",
                                         forHTTPHeaderField: "Content-Type")
@@ -532,6 +537,34 @@ final class AppStoreClient {
         return parts.sorted().joined(separator: ", ")
     }
 
+    /// Whether a header carries something that authorises the request.
+    private static func isCredentialHeader(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return lower == "cookie"
+            || lower == "authorization"
+            || lower.hasPrefix("x-token")
+            || lower.contains("dsid")
+            || lower.contains("icloud-dsid")
+    }
+
+    /// Parses an endpoint that will carry a credential.
+    ///
+    /// Everything sent to these endpoints -- the Apple ID password, the session
+    /// cookie, the account's token -- is derived from the bag, and the bag is a
+    /// response. A tampered or merely unusual one could name an http URL or
+    /// somebody else's host, and nothing downstream checked. The Go runtime has
+    /// had this rule all along (internal/store/emulator/client.go, allowedURL);
+    /// the Swift path did not.
+    static func trustedEndpoint(_ string: String) throws -> URL {
+        guard let url = URL(string: string),
+              url.scheme?.lowercased() == "https",
+              isAppleHost(url.host) else {
+            throw StoreError.untrustedEndpoint(string)
+        }
+
+        return url
+    }
+
     /// Whether a host is one this client may hand credentials to. Apple only.
     static func isAppleHost(_ host: String?) -> Bool {
         guard let host = host?.lowercased(), !host.isEmpty else { return false }
@@ -679,7 +712,7 @@ final class AppStoreClient {
         let podPrefix = account.pod.isEmpty ? "" : "p" + account.pod + "-"
         let fallback = "https://" + podPrefix
             + "buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"
-        guard let url = URL(string: bag.buyProduct ?? fallback) else {
+        guard let url = try? Self.trustedEndpoint(bag.buyProduct ?? fallback) else {
             throw StoreError.noBagEndpoint
         }
         AppLog.info("buyProduct " + url.absoluteString + " for " + appId
@@ -780,25 +813,56 @@ final class AppStoreClient {
                                  account: Account,
                                  bag: StoreBag,
                                  signer: SAPSigner) async throws -> [String: Any] {
-        do {
-            return try await downloadProductOnce(
-                appId: appId, externalVersionId: externalVersionId,
-                guid: guid, account: account, bag: bag, signer: signer)
-        } catch {
-            // 9610 is "no licence". Acquire one and try once more.
-            guard let store = error as? StoreError,
-                  case .failureType(let type, _) = store,
-                  type == "9610" else {
+        var acquiredLicence = false
+        var discardedBlob = false
+
+        while true {
+            do {
+                return try await downloadProductOnce(
+                    appId: appId, externalVersionId: externalVersionId,
+                    guid: guid, account: account, bag: bag, signer: signer)
+            } catch {
+                guard let store = error as? StoreError,
+                      case .failureType(let type, _) = store else {
+                    throw error
+                }
+
+                // 9610 is "no licence". Acquire one and try once more.
+                if type == "9610", !acquiredLicence {
+                    acquiredLicence = true
+                    AppLog.info("download asked for a licence; acquiring one", .download)
+                    try await acquireLicense(appId: appId, guid: guid, account: account,
+                                             bag: bag, signer: signer)
+
+                    continue
+                }
+
+                // A 9610 that outlived the licence, a 2034 expired token and a
+                // 2042 "sign in" are all what Apple answers when the kbsync
+                // blob no longer describes this account or this device. The
+                // blob was cached for the life of the process and
+                // invalidateKBSync had no callers, so the only recovery was to
+                // kill the app -- the cache is in memory.
+                if Self.staleBlobFailureTypes.contains(type), !discardedBlob {
+                    discardedBlob = true
+                    AppLog.info("download answered " + type
+                                + "; discarding the cached kbsync blob and retrying", .download)
+                    signer.invalidateKBSync(dsid: account.dsid)
+
+                    continue
+                }
+
                 throw error
             }
-            AppLog.info("download asked for a licence; acquiring one", .download)
-            try await acquireLicense(appId: appId, guid: guid, account: account,
-                                     bag: bag, signer: signer)
-            return try await downloadProductOnce(
-                appId: appId, externalVersionId: externalVersionId,
-                guid: guid, account: account, bag: bag, signer: signer)
         }
     }
+
+    /// Failure types that mean "the blob is stale", not "the request is wrong".
+    ///
+    /// 2034 and 2042 are about the session the blob is bound to; 9610 is listed
+    /// because a licence that was granted and still draws "licence required" is
+    /// the same symptom one layer up.
+    private static let staleBlobFailureTypes: Set<String> = ["9610", "2042", "2034"]
 
     /// ent/download first, classic second -- the order ipatool uses.
     ///
@@ -842,7 +906,10 @@ final class AppStoreClient {
                              account: Account,
                              endpoint: String,
                              signer: SAPSigner) async throws -> [String: Any] {
-        var components = URLComponents(string: endpoint)!
+        guard var components = URLComponents(url: try Self.trustedEndpoint(endpoint),
+                                             resolvingAgainstBaseURL: false) else {
+            throw StoreError.untrustedEndpoint(endpoint)
+        }
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
 
         var request = URLRequest(url: components.url!)
@@ -960,7 +1027,10 @@ final class AppStoreClient {
             + "buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct"
         AppLog.info("requesting download for " + appId + " from " + endpoint, .download)
 
-        var components = URLComponents(string: endpoint)!
+        guard var components = URLComponents(url: try Self.trustedEndpoint(endpoint),
+                                             resolvingAgainstBaseURL: false) else {
+            throw StoreError.untrustedEndpoint(endpoint)
+        }
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
 
         var payload: [String: Any] = [
@@ -1179,8 +1249,18 @@ final class AppStoreClient {
             redirected.httpMethod = signed.httpMethod
             redirected.httpBody = signed.httpBody
             // Copy the other headers but drop the signature; it is recomputed
-            // at the top of the loop over the new body.
+            // at the top of the loop over the new body. A header that carries a
+            // credential is dropped as well when the redirect leaves the host
+            // that issued it -- the store answers some requests with a Location
+            // on another pod, and this loop used to follow it with the cookie
+            // and the account's token attached.
+            let sameHost = next.host?.lowercased() == signed.url?.host?.lowercased()
             for (key, value) in signed.allHTTPHeaderFields ?? [:] where key != "X-Apple-ActionSignature" {
+                if !sameHost, Self.isCredentialHeader(key) {
+                    AppLog.info("redirect to a different host; dropping " + key, .network)
+
+                    continue
+                }
                 redirected.setValue(value, forHTTPHeaderField: key)
             }
             current = redirected
@@ -1222,11 +1302,27 @@ final class AppStoreClient {
 
     /// Resolves a possibly relative Location against the request URL.
     private func resolvedURL(_ location: String, relativeTo base: URL?) -> URL? {
+        let resolved: URL?
+
         if let absolute = URL(string: location), absolute.scheme != nil {
-            return absolute
+            resolved = absolute
+        } else if let base {
+            resolved = URL(string: location, relativeTo: base)?.absoluteURL
+        } else {
+            resolved = nil
         }
-        guard let base else { return nil }
-        return URL(string: location, relativeTo: base)?.absoluteURL
+
+        // Downgrading to http would send the body and whatever headers survived
+        // in clear text. Refusing leaves the caller with the 3xx, which is a
+        // visible failure rather than a silent one.
+        guard let resolved, resolved.scheme?.lowercased() == "https" else {
+            AppLog.warn("refusing redirect to non-https location "
+                        + location + " from " + (base?.absoluteString ?? "?"), .network)
+
+            return nil
+        }
+
+        return resolved
     }
     // MARK: - Helpers
 

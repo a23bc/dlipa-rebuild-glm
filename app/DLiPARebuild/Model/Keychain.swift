@@ -1,12 +1,13 @@
 import Foundation
 import Security
 
-/// The account password, kept only so the store token can be refreshed.
+/// Removing a password this app used to write.
 ///
-/// The token Apple hands back at sign-in is short lived; the password is not.
-/// Without this, every launch reuses a token from a previous session and the
-/// store answers "sign in required" (2042), which is exactly what version
-/// history and downloads were hitting.
+/// Nothing here stores a credential any more. The password was written at every
+/// sign-in for a token refresh that was never implemented -- the only reader was
+/// a private method nothing called -- which left a long-lived Apple ID password
+/// in the keychain with no feature behind it. Accounts deleted by an older
+/// build still have one, so delete(for:) stays until those are gone.
 enum Keychain {
     private static let service = "com.a23bc.dliparebuild.password"
 
@@ -16,31 +17,6 @@ enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: email,
         ]
-    }
-
-    static func save(_ password: String, for email: String) {
-        guard !password.isEmpty, !email.isEmpty else { return }
-        var item = query(email)
-        SecItemDelete(item as CFDictionary)
-        item[kSecValueData as String] = Data(password.utf8)
-        // AfterFirstUnlock: a refresh may happen while the device is locked if
-        // a download was queued, and it must not block on the keychain.
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        let status = SecItemAdd(item as CFDictionary, nil)
-        if status != errSecSuccess {
-            AppLog.warn("keychain save failed with " + String(status), .auth)
-        }
-    }
-
-    static func password(for email: String) -> String? {
-        guard !email.isEmpty else { return nil }
-        var item = query(email)
-        item[kSecReturnData as String] = true
-        item[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(item as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     static func delete(for email: String) {

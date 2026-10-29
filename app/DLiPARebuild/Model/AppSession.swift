@@ -72,7 +72,7 @@ final class AppSession: ObservableObject {
         if signer == nil {
             status = "Running the SAP handshake..."
             do {
-                _ = try ensureSigner(bag)
+                _ = try await ensureSigner(bag)
             } catch {
                 // Never keep a bag whose handshake failed: the next attempt has
                 // to start from the endpoints again, not from the cached copy
@@ -104,8 +104,10 @@ final class AppSession: ObservableObject {
         upsert(StoreAccount(result))
         activeID = result.dsid
         persist()
-        // Kept so a later session can refresh the token without asking again.
-        Keychain.save(password, for: result.email)
+        // The password is not kept. It was written here for a token refresh
+        // that was never built: the only reader was a private method with no
+        // callers, so this put a long-lived credential in the keychain for
+        // nothing -- and remove(at:) did not take it back out.
         status = ""
         AppLog.info("authenticated, DSID " + result.dsid, .auth)
     }
@@ -125,7 +127,8 @@ final class AppSession: ObservableObject {
     }
 
     func remove(at offsets: IndexSet) {
-        let removed = offsets.map { accounts[$0].id }
+        let removedAccounts = offsets.map { accounts[$0] }
+        let removed = removedAccounts.map { $0.id }
         accounts.remove(atOffsets: offsets)
         if let activeID, removed.contains(activeID) {
             // The selected account went away; fall back to whatever is left.
@@ -133,6 +136,12 @@ final class AppSession: ObservableObject {
         }
         // Whatever was captured belongs to an account that may no longer exist.
         client.resetSession()
+        // And so do anything keyed by that account: a password an earlier build
+        // wrote to the keychain, and the kbsync blob, which is keyed by dsid.
+        for account in removedAccounts {
+            Keychain.delete(for: account.email)
+            signer?.invalidateKBSync(dsid: account.id)
+        }
         persist()
     }
 
@@ -209,15 +218,16 @@ final class AppSession: ObservableObject {
                 bag = try await client.fetchBag(guid: hardware.guid)
             }
             guard let bag,
-                  let setup = bag.signSapSetup,
-                  let cert = bag.signSapSetupCert else {
+                  bag.signSapSetup != nil,
+                  bag.signSapSetupCert != nil else {
                 AppLog.info("SAP pre-warm skipped: bag carries no SAP configuration", .sap)
                 return
             }
 
             AppLog.info("pre-warming the SAP runtime", .sap)
-            signer = try SAPSigner(setupURL: setup, certURL: cert,
-                                   version: bag.signSapVersion, hardware: hardware)
+            // The same entry the rest of the app uses, so a pre-warm that loses
+            // the race with a sign-in cannot build a second emulator.
+            _ = try await ensureSigner(bag)
             AppLog.info("SAP runtime pre-warmed", .sap)
         } catch {
             // Not fatal: whichever path needs it later will try again and report
@@ -237,26 +247,45 @@ final class AppSession: ObservableObject {
     /// button was pressed caused it.
     private var sessionBuild: Task<(StoreAccount, StoreBag, SAPSigner), Error>?
 
-    /// Creates the signer if it is missing, and only then.
+    /// In-flight signer creation.
     ///
-    /// Synchronous on purpose: SAPSigner.init blocks, and nothing between the
-    /// check and the assignment suspends, so on the main actor no second caller
-    /// can arrive in between and build a second emulator. A Task here would add
-    /// nothing and would drag Sendable requirements along with it.
+    /// The handshake suspends now that it runs off the main actor, so two
+    /// callers arriving together would both see signer == nil and build two
+    /// emulators -- and iOS fits one: the second dies inside QEMU with a silent
+    /// kill. Same shape as sessionBuild.
+    private var signerBuild: Task<SAPSigner, Error>?
+
+    /// Creates the signer if it is missing, and only then.
     ///
     /// A failure leaves signer == nil, so the next attempt starts over instead
     /// of inheriting a half-built session.
-    private func ensureSigner(_ bag: StoreBag) throws -> SAPSigner {
+    private func ensureSigner(_ bag: StoreBag) async throws -> SAPSigner {
         if let signer {
             return signer
+        }
+        if let build = signerBuild {
+            return try await build.value
         }
         guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
             throw StoreError.noBagEndpoint
         }
-        let created = try SAPSigner(setupURL: setup, certURL: cert,
-                                    version: bag.signSapVersion, hardware: hardware)
-        signer = created
-        return created
+        let version = bag.signSapVersion
+        let identity = hardware
+        let build = Task {
+            try await SAPSigner.open(setupURL: setup, certURL: cert,
+                                     version: version, hardware: identity)
+        }
+        signerBuild = build
+        do {
+            let created = try await build.value
+            signer = created
+            signerBuild = nil
+            return created
+        } catch {
+            // Let the next caller try again rather than replaying this failure.
+            signerBuild = nil
+            throw error
+        }
     }
 
     private func ensureSession() async throws -> (StoreAccount, StoreBag, SAPSigner) {
@@ -288,7 +317,7 @@ final class AppSession: ObservableObject {
         if signer == nil {
             AppLog.info("opening the SAP session for downloads", .sap)
         }
-        let signer = try ensureSigner(bag)
+        let signer = try await ensureSigner(bag)
 
         // authenticate proves the password and hands back a token, but it leaves
         // the store with no session: the cookie store comes back empty and every
@@ -345,7 +374,7 @@ func diagnosticStoreSmoke() async -> String {
         guard bag.signSapSetup != nil, bag.signSapSetupCert != nil else {
             return "bag carries no SAP configuration"
         }
-        let signer = try ensureSigner(bag)
+        let signer = try await ensureSigner(bag)
 
         AppLog.info("store smoke: opening the Store runtime", .sap)
 
@@ -393,7 +422,7 @@ func diagnosticKBSync() async -> String {
                 report.append("bag carries no SAP configuration")
                 return report.joined(separator: " · ")
             }
-            let signer = try ensureSigner(bag)
+            let signer = try await ensureSigner(bag)
             guard let account = activeAccount else {
                 report.append("not signed in")
                 return report.joined(separator: " · ")
@@ -430,39 +459,6 @@ func diagnosticKBSync() async -> String {
 
         for line in report { AppLog.info("kbsync gate: " + line, .sap) }
         return report.joined(separator: " · ")
-    }
-
-    /// Re-runs the sign-in with the stored password, just before authorising.
-    private func signInBeforeAuthorising() async {
-        guard let account = activeAccount else { return }
-        guard let password = Keychain.password(for: account.email) else {
-            AppLog.info("no stored credentials for a pre-authorisation sign-in", .auth)
-            return
-        }
-        guard let bag, let signer, let endpoint = bag.authenticateAccount else {
-            AppLog.warn("cannot refresh the store token: bag not ready", .auth)
-            return
-        }
-        do {
-            let fresh = try await client.authenticate(
-                email: account.email, password: password, authCode: nil,
-                guid: hardware.guid, endpoint: endpoint, signer: signer, attempt: 1)
-            // A 2FA challenge can come back looking like a session, so the
-            // clearToken has to actually be there before it replaces a real one.
-            guard !fresh.clearToken.isEmpty else {
-                AppLog.warn("pre-authorisation sign-in returned no clearToken; "
-                            + "keeping the stored one", .auth)
-                return
-            }
-            upsert(StoreAccount(fresh))
-            activeID = fresh.dsid
-            persist()
-            AppLog.info("pre-authorisation sign-in ok, clearToken "
-                        + String(fresh.clearToken.count) + " chars", .auth)
-        } catch {
-            AppLog.warn("pre-authorisation sign-in failed: "
-                        + error.localizedDescription, .auth)
-        }
     }
 
     /// The versions Apple still lists for an app, newest first.

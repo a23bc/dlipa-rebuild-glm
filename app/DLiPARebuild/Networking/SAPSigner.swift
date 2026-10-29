@@ -115,6 +115,30 @@ final class SAPSigner {
         AppLog.info("SAP signer ready via the arm64 bridge, hardware " + hardware.guid, .sap)
     }
 
+    /// Opens the session without blocking the caller.
+    ///
+    /// init runs the whole handshake: it fetches the setup certificate, posts
+    /// both exchange legs and boots the emulated guest. On the main actor that
+    /// freezes the app for the duration, with the status line unable to redraw
+    /// because the thread it would draw on is inside the handshake. The work is
+    /// the same; only where it runs changes.
+    static func open(setupURL: String,
+                     certURL: String,
+                     version: Int32,
+                     hardware: HardwareIdentity) async throws -> SAPSigner {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SAPSigner, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try SAPSigner(
+                        setupURL: setupURL, certURL: certURL,
+                        version: version, hardware: hardware))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// The value for the X-Apple-ActionSignature header.
     func signatureHeaderValue(for body: Data) throws -> String {
         AppLog.info("sign: entering with " + String(body.count) + " bytes", .sap)
