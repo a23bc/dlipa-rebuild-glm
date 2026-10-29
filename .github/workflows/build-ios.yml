@@ -439,6 +439,17 @@ jobs:
           # upstream release dropped it. The procursus build kept -S.
           git clone --depth 1 --branch v2.1.5-procursus5 \
             https://github.com/opa334/ldid.git /tmp/ldid-src
+          # OpenSSL 3 returns const-qualified names from X509_get_subject_name,
+          # X509_NAME_get_entry and X509_NAME_ENTRY_get_data; this ldid was
+          # written against 1.1 and assigns them to non-const locals. The runner's
+          # OpenSSL moved under us and the build stopped with five errors in
+          # ldid.cpp, none of them about anything ldid does. Three casts restore
+          # what 1.1 returned; nothing else changes.
+          sed -i '' \
+            -e 's/X509_NAME \*nm = X509_get_subject_name(x);/X509_NAME *nm = const_cast<X509_NAME *>(X509_get_subject_name(x));/' \
+            -e 's/e = X509_NAME_get_entry(nm, lastpos);/e = const_cast<X509_NAME_ENTRY *>(X509_NAME_get_entry(nm, lastpos));/' \
+            -e 's/ASN1_STRING \*s = X509_NAME_ENTRY_get_data(e);/ASN1_STRING *s = const_cast<ASN1_STRING *>(X509_NAME_ENTRY_get_data(e));/' \
+            /tmp/ldid-src/ldid.cpp
           make -C /tmp/ldid-src -j"$(sysctl -n hw.ncpu)"
           # plutil -insert validates entitlement values and rejects team
           # identifiers it does not recognise, so the plist is written whole.
