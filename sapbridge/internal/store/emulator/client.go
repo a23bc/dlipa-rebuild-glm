@@ -42,6 +42,18 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		}
 	}()
 
+	// One Execute is one request, and these outlived it. A transport error from
+	// the previous run was returned by send() before it tried anything, so the
+	// "unsigned fallback" a second run performs could succeed and still report
+	// the first run's failure -- the diagnostic then blames a request that
+	// never went out. fault carries a recovered bridge panic the same way.
+	//
+	// lastResponse is deliberately left alone: it is handed to the caller, and
+	// closing it here would pull the body out from under a streamed read.
+	r.transportError = nil
+	r.fault = nil
+	r.pending = nil
+
 	if input.Transport == nil {
 		return nil, errors.New("store transport is not configured")
 	}
