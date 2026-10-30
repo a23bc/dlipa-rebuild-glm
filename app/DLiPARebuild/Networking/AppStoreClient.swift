@@ -504,7 +504,10 @@ final class AppStoreClient {
         }
         capturedCookieHeader = header
         capturedCookieValues = defaults.dictionary(forKey: Self.cookieJarValuesKey) as? [String: String] ?? [:]
-        AppLog.info("restored " + String(capturedCookieValues.count)
+        // A local because AppLog's message is an escaping autoclosure, and a
+        // property reference inside one needs explicit self.
+        let restored = capturedCookieValues.count
+        AppLog.info("restored " + String(restored)
                     + " cookies from the previous launch", .network)
     }
 
