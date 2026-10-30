@@ -22,8 +22,10 @@ on:
         required: false
         default: ""
 
+# Read-only: this workflow uploads an artifact and nothing else. The
+# publish_release input has no step behind it, so write access was never used.
 permissions:
-  contents: write
+  contents: read
 
 env:
   # Pinned so the extraction logic cannot drift under us.

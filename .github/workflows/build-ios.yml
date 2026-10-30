@@ -41,7 +41,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          # From go.mod, not a literal: it says 1.26.0 and the toolchain was
+          # being switched underneath by GOTOOLCHAIN. One number, one place.
+          go-version-file: sapbridge/go.mod
 
       # The X64I container the app interprets. It needs Go and the pinned OS X
       # 10.9 CommerceKit, nothing from the Unicorn build, so it runs here and
