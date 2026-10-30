@@ -384,6 +384,26 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 	s.machine.SetFaultExplainer(nil)
 
+	// Fourth point, and the only one that measures what the diagnostic leaves
+	// behind. Close restores the call sites it patched to `ret`; if the SAP
+	// machine signs afterwards, the engine came back the way it went in. The
+	// deferred Close below then finds engine == nil and does nothing, which is
+	// what makes closing here safe.
+	closeStarted := time.Now()
+	closeErr := runtime.Close()
+	closeDuration := time.Since(closeStarted)
+
+	if closeErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] post-close: runtime close failed: %v\n", closeErr)
+	}
+
+	if signature, signErr := s.signLocked(probe); signErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] post-close sign: %v\n", signErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "[SAP] post-close sign: %d bytes after a %s close\n",
+			len(signature), closeDuration.Round(time.Millisecond))
+	}
+
 	// Closing belongs to the deferred call, and timing it from here would
 	// measure nothing: it runs after this return.
 	return fmt.Sprintf(
