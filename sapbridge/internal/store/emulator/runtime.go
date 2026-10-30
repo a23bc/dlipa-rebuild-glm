@@ -93,6 +93,11 @@ type Runtime struct {
 
 	entries map[uint64]string
 	hook    *unicorn.Hook
+	// The four bytes each call site had before it was patched to `ret`.
+	// The engine is shared: the SAP machine keeps running after Close, and a
+	// `ret` where a real function used to be is not "closed", it is "still
+	// patched". Close puts them back.
+	patchedSites map[uint64][4]byte
 	// Set before the hook is removed, and read at the top of step. The hook has
 	// to stay safe while it is being torn down, and a callback already past
 	// Close would otherwise run against a nil engine.
@@ -487,6 +492,16 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			}
 		}
 
+		if original, readErr := r.engine.MemRead(call.Address, 4); readErr == nil {
+			if r.patchedSites == nil {
+				r.patchedSites = make(map[uint64][4]byte, len(profile.Calls))
+			}
+
+			var saved [4]byte
+			copy(saved[:], original)
+			r.patchedSites[call.Address] = saved
+		}
+
 		if err = r.MemWrite(call.Address, []byte{0xc0, 0x03, 0x5f, 0xd6}); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
@@ -610,6 +625,17 @@ func (r *Runtime) Close() error {
 		r.hook = nil
 	}
 
+	// Put the call sites back before anything else is cleared. Everything
+	// after this point treats the engine as the SAP machine's again.
+	var restoreErr error
+
+	for address, original := range r.patchedSites {
+		if writeErr := r.MemWrite(address, original[:]); writeErr != nil && restoreErr == nil {
+			restoreErr = fmt.Errorf("restore call site %#x: %w", address, writeErr)
+		}
+	}
+
+	r.patchedSites = nil
 	clear(r.entries)
 	clear(r.calls)
 	r.codeRanges = nil
@@ -639,6 +665,10 @@ func (r *Runtime) Close() error {
 
 	if hookErr != nil {
 		return fmt.Errorf("close store runtime hook: %w", hookErr)
+	}
+
+	if restoreErr != nil {
+		return fmt.Errorf("close store runtime: %w", restoreErr)
 	}
 
 	return nil

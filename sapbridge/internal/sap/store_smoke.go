@@ -326,7 +326,12 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// that the hook never ran there.
 	runtime.TraceSymbols(64)
 
-	response, execErr := attempt(s.Sign)
+	// signLocked, not Sign: this function holds s.mu for its whole run. The two
+	// probes were fixed for exactly this and this call was missed -- it only
+	// deadlocks once the encoder gets far enough to sign the request, which is
+	// downstream of where it currently stops, so the device run has not hit it
+	// yet. Execute calls input.Sign when it signs the body.
+	response, execErr := attempt(s.signLocked)
 
 	// The buffered calls are printed after the attempt, not during it: the one
 	// that matters is the last one, and printing as they arrive let objc_retain
@@ -377,22 +382,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", executed)
 
-	closeStart := time.Now()
-
 	s.machine.SetFaultExplainer(nil)
 
-	if err := runtime.Close(); err != nil {
-		return "", fmt.Errorf("store smoke: close runtime: %w", err)
-	}
-
-	closed := time.Since(closeStart)
-
+	// Closing belongs to the deferred call, and timing it from here would
+	// measure nothing: it runs after this return.
 	return fmt.Sprintf(
-		"profile %d MB in %s; runtime opened in %s; closed in %s; length=%d equal=%d; session %s; request=%#x; %s",
+		"profile %d MB in %s; runtime opened in %s; length=%d equal=%d; session %s; request=%#x; %s",
 		(len(data.Metadata)+len(data.Pages)+len(data.Plugin))/(1<<20),
 		loaded.Round(time.Millisecond),
 		openDuration.Round(time.Millisecond),
-		closed.Round(time.Millisecond),
 		length, equal, session, address, summary+" | "+executed,
 	), nil
 }
