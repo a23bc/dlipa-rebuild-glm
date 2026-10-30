@@ -180,14 +180,15 @@ final class AppStoreClient {
             let body = try PropertyListSerialization.data(
                 fromPropertyList: payload, format: .xml, options: 0)
 
-            // Checked per pass because a redirect can move endpointNow onto a
-            // pod the earlier attempt was sent to. This request carries the
-            // Apple ID password, so the destination is not negotiable.
-            let attemptURL = try Self.trustedEndpoint(endpointNow)
-
             var outcome: (Data, HTTPURLResponse)?
             for networkTry in 0..<Self.authenticationRequestAttempts {
-                var attemptRequest = URLRequest(url: attemptURL)
+                // Recomputed on every try, and checked because this request
+                // carries the Apple ID password. Hoisting it out of the loop
+                // (which a previous change did) pinned every retry to the
+                // generic endpoint while endpointNow was following the pod the
+                // last attempt was redirected to -- turning a recoverable 403
+                // into a failed sign-in.
+                var attemptRequest = URLRequest(url: try Self.trustedEndpoint(endpointNow))
                 attemptRequest.httpMethod = "POST"
                 attemptRequest.setValue("application/x-www-form-urlencoded",
                                         forHTTPHeaderField: "Content-Type")
@@ -535,6 +536,37 @@ final class AppStoreClient {
             return name + "=" + value
         }
         return parts.sorted().joined(separator: ", ")
+    }
+
+    /// The fields a 403 body is worth reading for, and nothing else.
+    ///
+    /// The body is a plist that can name the account, the request and the
+    /// device, and the whole of it used to be printed into a log the Diagnostics
+    /// screen offers to share. The reason is in these keys; everything else is
+    /// reduced to a length.
+    private static func failureDetail(from data: Data) -> String {
+        guard let text = String(data: data, encoding: .utf8) else {
+            return "<" + String(data.count) + " binary bytes>"
+        }
+
+        let keys = ["failureType", "customerMessage", "message"]
+        var parts: [String] = []
+
+        for key in keys {
+            guard let keyRange = text.range(of: "<key>" + key + "</key>") else { continue }
+
+            let rest = text[keyRange.upperBound...]
+            guard let open = rest.range(of: "<string>"),
+                  let close = rest.range(of: "</string>", range: open.upperBound..<rest.endIndex) else {
+                continue
+            }
+
+            parts.append(key + "=" + String(rest[open.upperBound..<close.lowerBound].prefix(120)))
+        }
+
+        return parts.isEmpty
+            ? "<" + String(data.count) + " bytes, no failure keys>"
+            : parts.joined(separator: " ")
     }
 
     /// Whether a header carries something that authorises the request.
@@ -1160,7 +1192,18 @@ final class AppStoreClient {
                              + (metrics["dialogId"] as? String ?? "") + ")", .download)
             }
             if failure == "9610" { licenceFailure = (failure, message) }
-            lastError = StoreError.failureType(failure.isEmpty ? "download" : failure, message)
+            // A 2042 that arrives in metrics rather than as the failure type is
+            // the same answer, and dropping it here meant the retry that
+            // discards a stale kbsync blob never saw it.
+            let reason: String
+            if !failure.isEmpty {
+                reason = failure
+            } else if Self.staleBlobFailureTypes.contains(code) {
+                reason = code
+            } else {
+                reason = "download"
+            }
+            lastError = StoreError.failureType(reason, message)
         }
 
         // A licence error from the endpoint Apple actually serves is worth
@@ -1222,10 +1265,7 @@ final class AppStoreClient {
                 // worth reading; the headers are not -- a 403 is routine and
                 // URLSession is configured not to swallow Set-Cookie, so this
                 // wrote live session cookies into a log the user can share.
-                let text = String(data: data, encoding: .utf8)
-                    ?? "<" + String(data.count) + " binary bytes>"
-                AppLog.error("403 body (" + String(data.count) + " bytes, first 400): "
-                             + String(text.prefix(400)), .network)
+                AppLog.error("403 body: " + Self.failureDetail(from: data), .network)
                 AppLog.error("403 headers: " + Self.redactedHeaders(http.allHeaderFields),
                              .network)
             }
@@ -1241,6 +1281,18 @@ final class AppStoreClient {
 
             guard let next = resolvedURL(location, relativeTo: signed.url) else {
                 // An unresolvable Location is a dead end; surface the redirect.
+                return (data, http)
+            }
+
+            // The body travels with the redirect, and for authenticate that body
+            // is the Apple ID password. Refusing a Location that leaves Apple's
+            // domain is the only way that guarantee does not depend on what the
+            // response happens to say.
+            guard Self.isAppleHost(next.host) else {
+                AppLog.warn("refusing redirect off Apple's domain: "
+                            + next.absoluteString + " from "
+                            + (signed.url?.absoluteString ?? "?"), .network)
+
                 return (data, http)
             }
 

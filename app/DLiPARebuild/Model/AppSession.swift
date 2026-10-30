@@ -104,6 +104,10 @@ final class AppSession: ObservableObject {
         upsert(StoreAccount(result))
         activeID = result.dsid
         persist()
+        // The token this response carries replaces the one the cached session
+        // was built with; keeping the old tuple hands the next download a
+        // credential Apple has already retired.
+        invalidateSession()
         // The password is not kept. It was written here for a token refresh
         // that was never built: the only reader was a private method with no
         // callers, so this put a long-lived credential in the keychain for
@@ -121,6 +125,7 @@ final class AppSession: ObservableObject {
         // next download replayed them alongside the new DSID.
         if id != activeID {
             client.resetSession()
+            invalidateSession()
         }
         activeID = id
         persist()
@@ -136,6 +141,7 @@ final class AppSession: ObservableObject {
         }
         // Whatever was captured belongs to an account that may no longer exist.
         client.resetSession()
+        invalidateSession()
         // And so do anything keyed by that account: a password an earlier build
         // wrote to the keychain, and the kbsync blob, which is keyed by dsid.
         for account in removedAccounts {
@@ -167,18 +173,29 @@ final class AppSession: ObservableObject {
     /// one, and closing it would break the accounts already signed in.
     func beginNewSignIn() {
         client.resetSession()
+        invalidateSession()
         hardware = HardwareIdentity.current()
     }
 
     /// The identity changed under us: everything derived from it is stale.
     func handleIdentityChange() {
         sessionBuild = nil
+        // A creation already in flight was opened against the old identity and
+        // would be assigned to `signer` when it finishes; cancelling is not
+        // enough on its own -- SAPSigner.open has no cancellation points -- so
+        // ensureSigner also refuses a result whose identity no longer matches.
+        signerBuild?.cancel()
+        signerBuild = nil
         signer?.close()
         signer = nil
         bag = nil
         client.resetSession()
         // The stored accounts were signed against the old device identity and
-        // their tokens cannot be renewed with the new one.
+        // their tokens cannot be renewed with the new one. Anything tied to
+        // them goes with them.
+        for account in accounts {
+            Keychain.delete(for: account.email)
+        }
         accounts = []
         activeID = nil
         persist()
@@ -278,6 +295,17 @@ final class AppSession: ObservableObject {
         signerBuild = build
         do {
             let created = try await build.value
+            // The identity can be regenerated while this runs, and SAPSigner.open
+            // has no cancellation points. A signer opened against the old one
+            // produces requests naming a machine that no longer exists, so the
+            // result is dropped rather than installed.
+            guard hardware.bytes == identity.bytes else {
+                AppLog.warn("discarding a SAP session opened for a previous "
+                            + "hardware identity", .sap)
+                created.close()
+                signerBuild = nil
+                throw StoreError.noBagEndpoint
+            }
             signer = created
             signerBuild = nil
             return created
@@ -286,6 +314,19 @@ final class AppSession: ObservableObject {
             signerBuild = nil
             throw error
         }
+    }
+
+    /// Drops the cached (account, bag, signer) triple.
+    ///
+    /// ensureSession caches it for the life of the process, and the tuple
+    /// carries the StoreAccount it was built for. Without this, switching
+    /// accounts kept the previous DSID and token while the cookie jar had
+    /// already been reset -- the two halves of the same account mixed, which is
+    /// what P2-2 set out to stop. Deleting the account, or signing in again
+    /// with a fresh token, needs the same treatment.
+    private func invalidateSession() {
+        sessionBuild?.cancel()
+        sessionBuild = nil
     }
 
     private func ensureSession() async throws -> (StoreAccount, StoreBag, SAPSigner) {
