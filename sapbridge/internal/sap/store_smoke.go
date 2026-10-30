@@ -154,12 +154,29 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 	openDuration := time.Since(opened)
 
-	// Every return below has to close this. The runtime is a tenant on the
-	// signer's engine: it patches call sites and installs a hook that survives
-	// Close unless Close is called, and the early returns here used to skip it.
+	// Every return below has to close this, and the last measurement happens
+	// here rather than at the end of the body.
+	//
+	// The runtime is a tenant on the signer's engine: it patches call sites and
+	// installs a hook that survives Close unless Close is called. Close puts the
+	// bytes back, and the only way to know it worked is to sign afterwards on
+	// the engine the SAP machine gets back -- which is what this does, on every
+	// return path. The encoder aborts on most runs, so a probe placed at the end
+	// of the body never runs at all.
 	defer func() {
-		if closeErr := runtime.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "[SAP] store smoke: close failed: %v\n", closeErr)
+		closeStarted := time.Now()
+		closeErr := runtime.Close()
+		closeDuration := time.Since(closeStarted)
+
+		if closeErr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] post-close: runtime close failed: %v\n", closeErr)
+		}
+
+		if signature, signErr := s.signLocked(probe); signErr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] post-close sign: %v\n", signErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "[SAP] post-close sign: %d bytes after a %s close\n",
+				len(signature), closeDuration.Round(time.Millisecond))
 		}
 	}()
 
@@ -384,28 +401,6 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 	s.machine.SetFaultExplainer(nil)
 
-	// Fourth point, and the only one that measures what the diagnostic leaves
-	// behind. Close restores the call sites it patched to `ret`; if the SAP
-	// machine signs afterwards, the engine came back the way it went in. The
-	// deferred Close below then finds engine == nil and does nothing, which is
-	// what makes closing here safe.
-	closeStarted := time.Now()
-	closeErr := runtime.Close()
-	closeDuration := time.Since(closeStarted)
-
-	if closeErr != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] post-close: runtime close failed: %v\n", closeErr)
-	}
-
-	if signature, signErr := s.signLocked(probe); signErr != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] post-close sign: %v\n", signErr)
-	} else {
-		fmt.Fprintf(os.Stderr, "[SAP] post-close sign: %d bytes after a %s close\n",
-			len(signature), closeDuration.Round(time.Millisecond))
-	}
-
-	// Closing belongs to the deferred call, and timing it from here would
-	// measure nothing: it runs after this return.
 	return fmt.Sprintf(
 		"profile %d MB in %s; runtime opened in %s; length=%d equal=%d; session %s; request=%#x; %s",
 		(len(data.Metadata)+len(data.Pages)+len(data.Plugin))/(1<<20),
