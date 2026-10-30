@@ -53,6 +53,7 @@ final class AppStoreClient {
         // handled manually.
         configuration.httpMaximumConnectionsPerHost = 4
         self.session = URLSession(configuration: configuration)
+        restoreCookieJar()
     }
 
     /// Drops everything about the account currently being signed in.
@@ -69,6 +70,7 @@ final class AppStoreClient {
         // X-Token and replayed them with the new account's DSID.
         capturedCookieHeader = ""
         capturedCookieValues = [:]
+        clearPersistedCookieJar()
         guard let storage = session.configuration.httpCookieStorage else { return }
         for cookie in storage.cookies ?? [] {
             storage.deleteCookie(cookie)
@@ -473,6 +475,45 @@ final class AppStoreClient {
     private var capturedCookieHeader = ""
     private var capturedCookieValues: [String: String] = [:]
 
+    /// The jar has to outlive the process.
+    ///
+    /// The account and its tokens are restored from defaults at launch, but the
+    /// cookies were not, so the first download after a restart replayed one
+    /// meaningless cookie and Apple answered 2042 "sign in". A sign-in hands
+    /// over mz_at_ssl-<dsid>, wosid, session-store-id and the rest; without them
+    /// there is no session, however valid the token is.
+    ///
+    /// It lives in the same defaults as the tokens, which is not a strong place
+    /// to keep a credential -- but separating them would put a session cookie in
+    /// a safer store than the token it accompanies, and that is not a
+    /// distinction worth making.
+    private static let cookieJarHeaderKey = "com.a23bc.dliparebuild.cookieJar.header"
+    private static let cookieJarValuesKey = "com.a23bc.dliparebuild.cookieJar.values"
+
+    private func persistCookieJar() {
+        let defaults = UserDefaults.standard
+        defaults.set(capturedCookieHeader, forKey: Self.cookieJarHeaderKey)
+        defaults.set(capturedCookieValues, forKey: Self.cookieJarValuesKey)
+    }
+
+    private func restoreCookieJar() {
+        let defaults = UserDefaults.standard
+        guard let header = defaults.string(forKey: Self.cookieJarHeaderKey),
+              !header.isEmpty else {
+            return
+        }
+        capturedCookieHeader = header
+        capturedCookieValues = defaults.dictionary(forKey: Self.cookieJarValuesKey) as? [String: String] ?? [:]
+        AppLog.info("restored " + String(capturedCookieValues.count)
+                    + " cookies from the previous launch", .network)
+    }
+
+    private func clearPersistedCookieJar() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: Self.cookieJarHeaderKey)
+        defaults.removeObject(forKey: Self.cookieJarValuesKey)
+    }
+
     private func captureCookies(from http: HTTPURLResponse) {
         // Cookies belong to the host that set them. Bag and store endpoints are
         // always Apple's; anything else is either a redirect we should not be
@@ -519,6 +560,8 @@ final class AppStoreClient {
         AppLog.info("Set-Cookie from " + (http.url?.host ?? "?") + ": "
                     + String(exposed) + " header(s), total " + String(total)
                     + " cookies: " + names.joined(separator: ", "), .network)
+
+        persistCookieJar()
     }
 
     /// Header names with the values of anything carrying a credential replaced
