@@ -47,3 +47,17 @@ The DER entitlements slot now reads:
 
 Which is the same three keys, in the same form, as the original. The bundle root
 and the CodeResources manifest are unchanged from the previous build.
+
+## Where the download stands (2026-10-31)
+
+Sign-in, kbsync, signing, search and account handling work. The download does
+not: every attempt at the store's download endpoints is answered `2042
+AuthTokenResumeFreeBuy`. Five hypotheses have been tested on device and none of
+them was the cause, including a request that copies ipatool's header set byte for
+byte.
+
+The state, the evidence, the three remaining differences that cannot be fixed by
+editing a header, and the one experiment that would split the problem in two are
+written down in `PLAN-download-2042.md`. Read that before touching the download
+path again -- it exists so the next round starts from what is already known
+rather than from another guess.
