@@ -98,6 +98,8 @@ type Runtime struct {
 	// `ret` where a real function used to be is not "closed", it is "still
 	// patched". Close puts them back.
 	patchedSites map[uint64][4]byte
+	// Which shims have already been named for returning a host address.
+	hostPointerSaid map[string]bool
 	// Set before the hook is removed, and read at the top of step. The hook has
 	// to stay safe while it is being torn down, and a callback already past
 	// Close would otherwise run against a nil engine.
@@ -1261,6 +1263,7 @@ func (r *Runtime) dispatch(address uint64) bool {
 
 	if call.Selector != "" {
 		r.message(r.arg(0), call.Selector, false)
+		r.reportHostPointer(address, call.Symbol)
 
 		return true
 	}
@@ -1278,8 +1281,41 @@ func (r *Runtime) dispatch(address uint64) bool {
 	}
 
 	r.symbol(strings.TrimLeft(call.Symbol, "_"))
+	r.reportHostPointer(address, call.Symbol)
 
 	return true
+}
+
+// The guest jumped to 0x7ff880000340, which belongs to the host's address space
+// rather than to any mapping this runtime creates. A value like that can only
+// reach the guest through a return value from one of these shims, so naming the
+// shim that produced one answers "who wrote that slot" directly instead of by
+// inference from a backtrace.
+const (
+	hostPointerFloor   = 0x7f0000000000
+	hostPointerCeiling = 0x800000000000
+)
+
+func (r *Runtime) reportHostPointer(address uint64, symbol string) {
+	if r.hostPointerSaid == nil {
+		r.hostPointerSaid = map[string]bool{}
+	}
+
+	for _, reg := range []int{unicorn.RegX0, unicorn.RegX1} {
+		value, err := r.engine.RegRead(reg)
+		if err != nil || value < hostPointerFloor || value >= hostPointerCeiling {
+			continue
+		}
+
+		if r.hostPointerSaid[symbol] {
+			continue
+		}
+
+		r.hostPointerSaid[symbol] = true
+
+		fmt.Fprintf(os.Stderr, "[SAP] host pointer from %q at %#x: %#x\n",
+			symbol, address, value)
+	}
 }
 
 func (r *Runtime) jump(entry, receiver uint64, selector string) {
