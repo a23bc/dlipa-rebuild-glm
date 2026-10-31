@@ -627,6 +627,24 @@ final class AppStoreClient {
         fputs("[DLiPA] " + message + "\n", stderr)
     }
 
+    /// Moves a URL onto the account's store pod, keeping path and query.
+    ///
+    /// Nothing here invents a path: Apple's bag names the endpoint, and the pod
+    /// only changes which host serves it. A host that is already prefixed is
+    /// returned untouched.
+    static func onStorePod(_ url: URL, pod: String) -> URL? {
+        guard !pod.isEmpty,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = components.host,
+              !host.hasPrefix("p" + pod + "-") else {
+            return nil
+        }
+
+        components.host = "p" + pod + "-" + host
+
+        return components.url
+    }
+
     /// Whether a header carries something that authorises the request.
     private static func isCredentialHeader(_ name: String) -> Bool {
         let lower = name.lowercased()
@@ -802,9 +820,18 @@ final class AppStoreClient {
         let podPrefix = account.pod.isEmpty ? "" : "p" + account.pod + "-"
         let fallback = "https://" + podPrefix
             + "buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"
-        guard let url = try? Self.trustedEndpoint(bag.buyProduct ?? fallback) else {
+
+        // The account's store lives on a pod, and authenticate proves it: the
+        // same request answered 404 on the generic host and 200 on p22-buy.
+        // buyProduct still goes to whatever the bag names -- the generic host --
+        // and answers 500 with an empty body, the same shape of rejection that
+        // ent/download gives. The pod prefix was computed and then only used for
+        // the fallback, so it never applied to the URL that actually got sent.
+        guard let bagURL = try? Self.trustedEndpoint(bag.buyProduct ?? fallback) else {
             throw StoreError.noBagEndpoint
         }
+
+        let url = Self.onStorePod(bagURL, pod: account.pod) ?? bagURL
         AppLog.info("buyProduct " + url.absoluteString + " for " + appId
                     + " (storefront "
                     + (account.storefront.isEmpty ? "none" : account.storefront) + ")", .download)
