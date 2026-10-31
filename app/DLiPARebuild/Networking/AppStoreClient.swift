@@ -627,6 +627,19 @@ final class AppStoreClient {
         fputs("[DLiPA] " + message + "\n", stderr)
     }
 
+    /// The query a pod expects on its own endpoints.
+    ///
+    /// authenticate proves it: the same request answered 404 on the generic host
+    /// and 200 on p22-buy, and the URL that worked carried ?Pod=22&PRH=22. The
+    /// three requests that fail against this account -- ent/download,
+    /// buyProduct and volumeStoreDownloadProduct -- carry no Pod at all.
+    static func podQueryItems(_ pod: String) -> [URLQueryItem] {
+        guard !pod.isEmpty else { return [] }
+
+        return [URLQueryItem(name: "Pod", value: pod),
+                URLQueryItem(name: "PRH", value: pod)]
+    }
+
     /// Moves a URL onto the account's store pod, keeping path and query.
     ///
     /// Nothing here invents a path: Apple's bag names the endpoint, and the pod
@@ -1052,6 +1065,7 @@ final class AppStoreClient {
             throw StoreError.untrustedEndpoint(endpoint)
         }
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
+            + Self.podQueryItems(account.pod)
 
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
@@ -1173,6 +1187,7 @@ final class AppStoreClient {
             throw StoreError.untrustedEndpoint(endpoint)
         }
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
+            + Self.podQueryItems(account.pod)
 
         var payload: [String: Any] = [
             "creditDisplay": "",
