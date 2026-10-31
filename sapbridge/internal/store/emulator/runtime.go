@@ -1215,9 +1215,12 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		// 0x7ff880000340 -- so the value either arrived in a register we did not
 		// print or the reads are one step behind the branch. Three instructions
 		// back and every general register answers which.
-		panic(fmt.Sprintf("execution outside the pinned image at %#x; from %#x; prev=[%s %s %s]; regs %s sp=%#x lr=%#x",
+		slot := r.reg(unicorn.RegX0 + 17)
+
+		panic(fmt.Sprintf("execution outside the pinned image at %#x; from %#x; prev=[%s %s %s]; slot=[%#x]=%#x; regs %s sp=%#x lr=%#x",
 			address, previousPC,
 			r.instruction(previousPC-12), r.instruction(previousPC-8), r.instruction(previousPC-4),
+			slot, r.quad(slot),
 			r.registers(), r.reg(unicorn.RegSP), r.reg(unicorn.RegLR)))
 	}
 
@@ -1330,12 +1333,30 @@ func (r *Runtime) instruction(address uint64) string {
 // registers renders x0-x15 in one line; a single blr is unreadable without the
 // register that carried the target.
 func (r *Runtime) registers() string {
-	parts := make([]string, 0, 16)
-	for index := 0; index < 16; index++ {
+	// x16 and x17 are the scratch pair: `adrp x17 / add x17, x17, #imm /
+	// ldr x16, [x17] / blr x16` is how a call through a table looks, and
+	// stopping at x15 printed "blr x2 with x2=0" for exactly that sequence.
+	parts := make([]string, 0, 19)
+	for index := 0; index < 19; index++ {
 		parts = append(parts, fmt.Sprintf("x%d=%#x", index, r.reg(unicorn.RegX0+index)))
 	}
 
 	return strings.Join(parts, " ")
+}
+
+// quad reads eight bytes, or 0 when the address cannot be read.
+func (r *Runtime) quad(address uint64) uint64 {
+	data, err := r.engine.MemRead(address, 8)
+	if err != nil || len(data) != 8 {
+		return 0
+	}
+
+	var value uint64
+	for index := 7; index >= 0; index-- {
+		value = value<<8 | uint64(data[index])
+	}
+
+	return value
 }
 
 func (r *Runtime) reg(register int) uint64 {
