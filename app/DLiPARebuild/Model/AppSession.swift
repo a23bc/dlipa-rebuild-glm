@@ -52,6 +52,11 @@ final class AppSession: ObservableObject {
         status = "Preparing the SAP session..."
         defer { busy = false }
 
+        // Drop the previous account's cookies here, where a sign-in actually
+        // begins. beginNewSignIn runs when the sheet opens, and clearing there
+        // meant cancelling the sheet left the current account with no session.
+        client.resetSession()
+
         // The bag carries the SAP endpoints and the protocol version. It needs
         // no signature, so it is fetched before any guest code runs.
         if bag == nil {
@@ -139,9 +144,14 @@ final class AppSession: ObservableObject {
             // The selected account went away; fall back to whatever is left.
             self.activeID = accounts.first?.id
         }
-        // Whatever was captured belongs to an account that may no longer exist.
-        client.resetSession()
-        invalidateSession()
+        // Only when the account being removed is the one whose session is in
+        // hand. This used to run unconditionally, so deleting an account you
+        // were not using took the current account's cookies with it and the
+        // next download answered 2042.
+        if let activeID, removed.contains(activeID) || accounts.isEmpty {
+            client.resetSession()
+            invalidateSession()
+        }
         // And so do anything keyed by that account: a password an earlier build
         // wrote to the keychain, and the kbsync blob, which is keyed by dsid.
         for account in removedAccounts {
@@ -172,7 +182,9 @@ final class AppSession: ObservableObject {
     /// The SAP signer stays: it is a machine-level session, not an account
     /// one, and closing it would break the accounts already signed in.
     func beginNewSignIn() {
-        client.resetSession()
+        // The jar is cleared when a sign-in actually starts, not here: this runs
+        // when the sheet opens, and cancelling it used to leave the current
+        // account with no session at all.
         invalidateSession()
         hardware = HardwareIdentity.current()
     }

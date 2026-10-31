@@ -32,6 +32,16 @@ final class AppStoreClient {
     static let downloadUserAgent =
         "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6"
 
+    /// The UA every other store request carries.
+    ///
+    /// internal/store/backend.go injects this whenever a request arrives without
+    /// a User-Agent, so it is what the reference implementation sends on the
+    /// classic download. Ours went out as whatever URLSession stamps on it
+    /// (DLiPARebuild/… CFNetwork/…), which is a client Apple has never seen.
+    /// The purchase operation is the one exception upstream: it uses 2.18.
+    static let storeUserAgent =
+        "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
+
     init() {
         let configuration = URLSessionConfiguration.default
         // Automatic cookie handling is off on purpose.
@@ -844,6 +854,9 @@ final class AppStoreClient {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+            // The purchase operation is the one place upstream departs from the
+            // default agent: backend.go switches to 2.18 for "purchase".
+            request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
             request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
             request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
@@ -865,7 +878,6 @@ final class AppStoreClient {
                 "hasBeenAuthedForBuy": "true",
                 "creditDisplay": "",
                 "serialNumber": "0",
-                "buyWithoutAuthorization": "true",
                 "hasDoneAgeCheck": "true",
                 "guid": guid,
                 "needDiv": "0",
@@ -1261,6 +1273,8 @@ final class AppStoreClient {
             var request = URLRequest(url: components.url!)
             request.httpMethod = "POST"
             request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+            // upstream's purchase operation uses 2.18 rather than the default.
+            request.setValue(Self.storeUserAgent, forHTTPHeaderField: "User-Agent")
             request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
             if !attempt.token.isEmpty {
