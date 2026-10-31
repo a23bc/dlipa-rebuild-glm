@@ -449,12 +449,23 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, errors.New("profile page exceeds data")
 		}
 
-		// Same rule as the cache pages: a page the machine already holds is newer
-		// than the snapshot that was taken before the handshake.
+		// A page that is already here came from the cache blob, which was read
+		// out of the dyld cache file. The profile's copy was taken after the
+		// store framework realized its Swift metadata, so for these pages the
+		// profile is the newer of the two -- the opposite of what the cache rule
+		// assumes, and the reason the encoder kept reading a page that shipped
+		// as 4096 zeroes while the generator had 1512 nonzero bytes in it.
+		//
+		// The exception is a page the handshake wrote to: those are not zero and
+		// must not be replaced. So an existing page is only overwritten when it
+		// holds nothing at all.
 		if r.engine != nil && r.engine.IsMapped(page.Address, 4096) {
-			skippedProfilePages++
+			current, readErr := r.engine.MemRead(page.Address, 4096)
+			if readErr != nil || !allZero(current) {
+				skippedProfilePages++
 
-			continue
+				continue
+			}
 		}
 
 		if err = r.MemWrite(page.Address, pageData[page.Offset:page.Offset+4096]); err != nil {
@@ -827,6 +838,20 @@ func (r *Runtime) alloc(size uint64) uint64 {
 
 	return address
 }
+// allZero reports whether every byte is zero.
+//
+// Used to tell "the cache file had nothing here" from "something wrote here":
+// only the former may be replaced by the profile's copy.
+func allZero(data []byte) bool {
+	for _, b := range data {
+		if b != 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (r *Runtime) read64(address uint64) uint64 {
 	b, e := r.engine.MemRead(address, 8)
 	if e != nil {
