@@ -1211,11 +1211,14 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		// The branch already happened, so the useful evidence is behind: which
 		// instruction branched, and what the registers held. A `blr x8` and a
 		// `ret` mean different things, and x8's value names the slot.
-		panic(fmt.Sprintf("execution outside the pinned image at %#x; from %#x %s; regs x0=%#x x1=%#x x2=%#x x3=%#x x8=%#x x9=%#x sp=%#x lr=%#x",
-			address, previousPC, r.instruction(previousPC),
-			r.reg(unicorn.RegX0), r.reg(unicorn.RegX1), r.reg(unicorn.RegX2),
-			r.reg(unicorn.RegX3), r.reg(unicorn.RegX8), r.reg(unicorn.RegX0+9), // x9: RegX9 is not exported
-			r.reg(unicorn.RegSP), r.reg(unicorn.RegLR)))
+		// `blr x2` with x2=0 is what the registers show, yet the target is
+		// 0x7ff880000340 -- so the value either arrived in a register we did not
+		// print or the reads are one step behind the branch. Three instructions
+		// back and every general register answers which.
+		panic(fmt.Sprintf("execution outside the pinned image at %#x; from %#x; prev=[%s %s %s]; regs %s sp=%#x lr=%#x",
+			address, previousPC,
+			r.instruction(previousPC-12), r.instruction(previousPC-8), r.instruction(previousPC-4),
+			r.registers(), r.reg(unicorn.RegSP), r.reg(unicorn.RegLR)))
 	}
 
 	r.steps++
@@ -1322,6 +1325,17 @@ func (r *Runtime) instruction(address uint64) string {
 	}
 
 	return fmt.Sprintf("%02x%02x%02x%02x", word[3], word[2], word[1], word[0])
+}
+
+// registers renders x0-x15 in one line; a single blr is unreadable without the
+// register that carried the target.
+func (r *Runtime) registers() string {
+	parts := make([]string, 0, 16)
+	for index := 0; index < 16; index++ {
+		parts = append(parts, fmt.Sprintf("x%d=%#x", index, r.reg(unicorn.RegX0+index)))
+	}
+
+	return strings.Join(parts, " ")
 }
 
 func (r *Runtime) reg(register int) uint64 {
