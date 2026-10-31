@@ -1231,7 +1231,11 @@ final class AppStoreClient {
                 status = (r as? HTTPURLResponse)?.statusCode ?? -1
             }
 
-            let preview = String(data: responseData.prefix(500), encoding: .utf8) ?? "<binary>"
+            // The whole body, not the first 500 bytes. A 1633-byte error dialog
+            // is small, and truncating it cut exactly the field that matters:
+            // Apple puts the continuation URL in actionUrl, which sits below the
+            // cut, so the answer shipped truncated every time.
+            let preview = String(data: responseData.prefix(4096), encoding: .utf8) ?? "<binary>"
             AppLog.info("download attempt [" + attempt.label + "] HTTP " + String(status)
                         + ", " + String(responseData.count) + " bytes", .download)
             mirror("download attempt [" + attempt.label + "] HTTP " + String(status)
