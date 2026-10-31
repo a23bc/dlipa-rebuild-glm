@@ -250,6 +250,8 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// fails however well formed it is. See the session line below.
 	guid := strings.ToUpper(hex.EncodeToString(s.hardware))
 
+	encodeStarted := time.Now()
+
 	address, err := runtime.EncodeProbe(
 		"https://p52-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid="+guid,
 		map[string]any{
@@ -262,17 +264,20 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		return "", fmt.Errorf("store smoke: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP] store smoke: encoder produced request at %#x\n", address)
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: encoder produced request at %#x after %s\n",
+		address, time.Since(encodeStarted).Round(time.Millisecond))
 
 	// E1-c: the request object exists; this says whether it is usable. A URL, a
 	// method and a body of the right shape are what Execute needs before wiring
 	// it is worth doing.
+	inspectStarted := time.Now()
 	summary, inspectErr := runtime.InspectRequest(address)
 	if inspectErr != nil {
 		summary = "inspect failed: " + inspectErr.Error()
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", summary)
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s (inspected in %s)\n",
+		summary, time.Since(inspectStarted).Round(time.Millisecond))
 
 	// E2, first step: hand the request the encoder built to the real transport
 	// and see whether a response comes back. There is no session cookie here, so
@@ -348,7 +353,24 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// deadlocks once the encoder gets far enough to sign the request, which is
 	// downstream of where it currently stops, so the device run has not hit it
 	// yet. Execute calls input.Sign when it signs the body.
+	// The encoder got past the Swift metadata this round, and the run grew from
+	// seconds to minutes: the screen stopped drawing and the watchdog killed the
+	// process. A wall-clock budget turns "it hangs" into a line that says which
+	// phase spent the time.
+	const smokeBudget = 150 * time.Second
+
+	if spent := time.Since(started); spent > smokeBudget {
+		fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s spent before Execute, over the %s budget; skipping it\n",
+			spent.Round(time.Second), smokeBudget)
+
+		return "", fmt.Errorf("store smoke: budget of %s reached before Execute", smokeBudget)
+	}
+
+	executeStarted := time.Now()
 	response, execErr := attempt(s.signLocked)
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: Execute returned in %s\n",
+		time.Since(executeStarted).Round(time.Millisecond))
 
 	// The buffered calls are printed after the attempt, not during it: the one
 	// that matters is the last one, and printing as they arrive let objc_retain
