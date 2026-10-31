@@ -627,19 +627,6 @@ final class AppStoreClient {
         fputs("[DLiPA] " + message + "\n", stderr)
     }
 
-    /// The query a pod expects on its own endpoints.
-    ///
-    /// authenticate proves it: the same request answered 404 on the generic host
-    /// and 200 on p22-buy, and the URL that worked carried ?Pod=22&PRH=22. The
-    /// three requests that fail against this account -- ent/download,
-    /// buyProduct and volumeStoreDownloadProduct -- carry no Pod at all.
-    static func podQueryItems(_ pod: String) -> [URLQueryItem] {
-        guard !pod.isEmpty else { return [] }
-
-        return [URLQueryItem(name: "Pod", value: pod),
-                URLQueryItem(name: "PRH", value: pod)]
-    }
-
     /// Moves a URL onto the account's store pod, keeping path and query.
     ///
     /// Nothing here invents a path: Apple's bag names the endpoint, and the pod
@@ -1065,7 +1052,6 @@ final class AppStoreClient {
             throw StoreError.untrustedEndpoint(endpoint)
         }
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
-            + Self.podQueryItems(account.pod)
 
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
@@ -1187,7 +1173,6 @@ final class AppStoreClient {
             throw StoreError.untrustedEndpoint(endpoint)
         }
         components.queryItems = [URLQueryItem(name: "guid", value: guid)]
-            + Self.podQueryItems(account.pod)
 
         var payload: [String: Any] = [
             "creditDisplay": "",
@@ -1217,8 +1202,8 @@ final class AppStoreClient {
         // variable. The variable this round is the Cookie header, which this
         // request has never sent -- only iCloud-DSID, X-Dsid and X-Token, none of
         // which carry a session.
-        let attempts: [(label: String, token: String, signed: Bool)] = [
-            ("cookie+passwordToken", account.passwordToken, false),
+        let attempts: [(label: String, token: String, signed: Bool, sendCookie: Bool)] = [
+            ("cookie+passwordToken", account.passwordToken, false, true),
             // Second attempt, and the first one that changes a single variable.
             //
             // Every attempt so far answered 2042 "sign in" while the jar held
@@ -1228,7 +1213,14 @@ final class AppStoreClient {
             // X-Token set by Apple for this account, and the header above sends
             // a different value under the same name. This attempt sends only the
             // session.
-            ("cookie only", "", false),
+            ("cookie only", "", false, true),
+            // Exactly what ipatool sends, and nothing else:
+            // appstore_download_product.go sets Content-Type, iCloud-DSID and
+            // X-Dsid, and no X-Token, no Cookie, no store-front. Every attempt
+            // above has carried cookies this request was never supposed to
+            // have, and a session cookie on a request that expects only two
+            // DSID headers is a good reason to answer "sign in".
+            ("ipatool headers", "", false, false),
         ]
 
         // Printed once, because a zero-length token silently turns every
@@ -1280,7 +1272,7 @@ final class AppStoreClient {
             // they are captured by hand and replayed here. Without this the
             // request carries three identifiers and no session, which is what
             // 2042 AuthTokenResumeFreeBuy describes.
-            if !capturedCookieHeader.isEmpty {
+            if attempt.sendCookie, !capturedCookieHeader.isEmpty {
                 request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
             }
             request.httpBody = body
