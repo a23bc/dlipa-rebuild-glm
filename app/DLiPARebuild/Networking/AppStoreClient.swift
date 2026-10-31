@@ -830,6 +830,14 @@ final class AppStoreClient {
             let payload: [String: Any] = [
                 "appExtVrsId": "0",
                 "hasAskedToFulfillPreorder": "true",
+                // The 2042 dialog hands back its own buyParams, and this is the
+                // field that carries its meaning: "the account is already
+                // authorised for this buy". We were sending the opposite,
+                // buyWithoutAuthorization, and the store answered "Sign In" to
+                // a session that had just signed in.
+                "hasBeenAuthedForBuy": "true",
+                "creditDisplay": "",
+                "serialNumber": "0",
                 "buyWithoutAuthorization": "true",
                 "hasDoneAgeCheck": "true",
                 "guid": guid,
@@ -904,6 +912,7 @@ final class AppStoreClient {
                                  bag: StoreBag,
                                  signer: SAPSigner) async throws -> [String: Any] {
         var acquiredLicence = false
+        var resumedBuy = false
         var discardedBlob = false
 
         while true {
@@ -921,6 +930,21 @@ final class AppStoreClient {
                 if type == "9610", !acquiredLicence {
                     acquiredLicence = true
                     AppLog.info("download asked for a licence; acquiring one", .download)
+                    try await acquireLicense(appId: appId, guid: guid, account: account,
+                                             bag: bag, signer: signer)
+
+                    continue
+                }
+
+                // 2042 with kind=authorization and okButtonAction.kind=Buy is
+                // not "sign in again": the dialog carries the buy it wants,
+                // complete with buyParams and hasBeenAuthedForBuy=true. Doing
+                // that buy is the resume Apple is offering, so it comes first
+                // and the blob is left alone.
+                if type == "2042", !resumedBuy {
+                    resumedBuy = true
+                    AppLog.info("download answered 2042; performing the buy the "
+                                + "dialog asked for and retrying", .download)
                     try await acquireLicense(appId: appId, guid: guid, account: account,
                                              bag: bag, signer: signer)
 
