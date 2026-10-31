@@ -103,6 +103,8 @@ type Runtime struct {
 	// The address the last step was called for, so a guard that fires can say
 	// which instruction branched to the bad target.
 	lastPC uint64
+	// Which host writes have already been reported, keyed by reason.
+	hostWriteSaid map[string]bool
 	// Set before the hook is removed, and read at the top of step. The hook has
 	// to stay safe while it is being torn down, and a callback already past
 	// Close would otherwise run against a nil engine.
@@ -789,11 +791,60 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 }
 
 func (r *Runtime) MemWrite(address uint64, data []byte) error {
+	// Unicorn's write hook does not fire for uc_mem_write, so anything this
+	// program writes -- a page, a string, a return value -- is invisible to the
+	// watch and to the shim check. The slot the encoder calls through ends up
+	// holding a host address that appears in neither data blob, which leaves
+	// exactly this path as the unexplained one.
+	r.reportHostWrite(address, data)
+
 	if err := r.engine.MemWrite(address, data); err != nil {
 		return fmt.Errorf("write guest memory: %w", err)
 	}
 
 	return nil
+}
+
+// The slot the encoder loads a call target from. Named here because a write to
+// it is worth a line even when the value looks ordinary.
+const bagSlotAddress = 0x1e800c958
+
+// reportHostWrite prints writes that carry a host-range qword, and any write to
+// the bag slot regardless of its contents.
+func (r *Runtime) reportHostWrite(address uint64, data []byte) {
+	reason := ""
+
+	if address <= bagSlotAddress && bagSlotAddress+8 <= address+uint64(len(data)) {
+		reason = "bag slot"
+	}
+
+	if reason == "" {
+		for offset := 0; offset+8 <= len(data); offset += 8 {
+			value := uint64(0)
+			for index := 7; index >= 0; index-- {
+				value = value<<8 | uint64(data[offset+index])
+			}
+
+			if value >= hostPointerFloor && value < hostPointerCeiling {
+				reason = "host qword"
+
+				break
+			}
+		}
+	}
+
+	if reason == "" || r.hostWriteSaid[reason] {
+		return
+	}
+
+	if r.hostWriteSaid == nil {
+		r.hostWriteSaid = map[string]bool{}
+	}
+
+	r.hostWriteSaid[reason] = true
+
+	fmt.Fprintf(os.Stderr, "[SAP] host write at %#x (%d bytes, %s): %x\n",
+		address, len(data), reason, data[:min(len(data), 32)])
 }
 
 const zeroChunk = 4096
