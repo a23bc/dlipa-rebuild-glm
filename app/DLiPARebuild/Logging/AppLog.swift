@@ -122,16 +122,6 @@ enum AppLog {
         case .warn: category.logger.warning("\(full)")
         case .error: category.logger.error("\(full)")
         }
-
-        // Also to stderr, because that is the file that gets copied off the
-        // device. OSLog needs Console.app or a cable; the diagnostics the user
-        // can actually hand over are the Go bridge's stderr lines, and until now
-        // the Swift half of a failed download -- cookie counts, HTTP status,
-        // failure type -- lived only on the other side of that divide. One file
-        // that answers the whole question is worth the duplication.
-        if let data = ("[DLiPA] " + category.rawValue + ": " + message + "\n").data(using: .utf8) {
-            FileHandle.standardError.write(data)
-        }
     }
 
     static var entries: [LogEntry] { store.entries }
