@@ -21,9 +21,10 @@ every launch.
 - **Download.** Every request to the store's download endpoints is answered
   `2042 AuthTokenResumeFreeBuy`. Sign-in, cookies, headers, host and query have
   all been ruled out on device, including a request that copies ipatool's header
-  set byte for byte. `PLAN-download-2042.md` has the evidence, the three
-  remaining differences below the request, and the one experiment that would
-  split the problem in two. **Read it before touching the download path.**
+  set byte for byte. The evidence, the three differences that sit below the
+  request and the experiment that would split the problem are in
+  `Archive/plan-download-2042.md` — local working notes, not versioned, so ask
+  for that file rather than looking for it here.
 - **Store runtime** (the emulator that would let the app encode Store requests
   itself): it stops on a Swift type whose metadata the profile does not carry.
   The profile is generated from Apple's binaries on a macOS runner; that run
@@ -52,7 +53,7 @@ install.
 ## Where the rest lives
 
 - `README.md` — how to build, install and sign
-- `PLAN-download-2042.md` — open work, with the judgement criteria for each step
+- `Archive/` — local notes, **not versioned**: the audit and its follow-up
+  reviews, and `plan-download-2042.md`, which holds the open download work with
+  the judgement criteria for each step
 - `sapbridge/VERIFICATION.md` — how the Go side was verified
-- `Archive/` — local notes; **not in version control**, so nothing that must
-  survive a clone belongs there

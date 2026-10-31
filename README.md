@@ -8,8 +8,8 @@ app with both changes, and builds an installable IPA on GitHub Actions.
 **Current state:** sign-in, kbsync, signing, search and account handling work;
 the download does not yet — the store answers `2042 AuthTokenResumeFreeBuy` and
 five candidate causes have been ruled out on device. See `DELIVERY_STATUS.md` for
-what works and `PLAN-download-2042.md` for what is left. The tables below
-describe the design, not a claim that every path is finished.
+what works and what does not. The tables below describe the design, not a claim
+that every path is finished.
 
 **No Apple Developer account is required.** The IPA is sealed but not signed with a certificate, and you
 sign it with your own Apple ID using AltStore or Sideloadly — the same flow the
