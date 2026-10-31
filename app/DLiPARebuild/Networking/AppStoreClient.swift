@@ -867,17 +867,17 @@ final class AppStoreClient {
                 request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
             }
 
+            // Field for field what appstore_purchase.go sends. My previous
+            // version swapped buyWithoutAuthorization for the 2042 dialog's
+            // hasBeenAuthedForBuy and added creditDisplay and serialNumber from
+            // the dialog's buyParams; the store answered 200 with
+            // MZCommerce.SystemError, "Unable to process your request". The
+            // dialog's buyParams describe a different operation than this
+            // endpoint takes, so the reference payload is the one to send.
             let payload: [String: Any] = [
                 "appExtVrsId": "0",
                 "hasAskedToFulfillPreorder": "true",
-                // The 2042 dialog hands back its own buyParams, and this is the
-                // field that carries its meaning: "the account is already
-                // authorised for this buy". We were sending the opposite,
-                // buyWithoutAuthorization, and the store answered "Sign In" to
-                // a session that had just signed in.
-                "hasBeenAuthedForBuy": "true",
-                "creditDisplay": "",
-                "serialNumber": "0",
+                "buyWithoutAuthorization": "true",
                 "hasDoneAgeCheck": "true",
                 "guid": guid,
                 "needDiv": "0",
@@ -932,11 +932,22 @@ final class AppStoreClient {
                 AppLog.error("buyProduct failed: " + failure + " " + message, .download)
                 throw StoreError.failureType(failure, message)
             }
-            if (200..<300).contains(status) && (docType == "purchaseSuccess" || docType.isEmpty) {
+
+            // purchaseWithParams requires jingleDocType == "purchaseSuccess" and
+            // status == 0, and treats anything else as a failure. The old check
+            // here accepted an empty docType, so a 200 carrying
+            // MZCommerce.SystemError and "Unable to process your request" was
+            // reported as "licence granted" -- and the download then retried
+            // against a licence that had never been issued.
+            let jingleStatus = (plist["status"] as? Int) ?? 0
+            if docType == "purchaseSuccess", jingleStatus == 0 {
                 AppLog.info("licence granted", .download)
                 return
             }
-            lastError = StoreError.failureType("purchase", "apple did not confirm the purchase")
+
+            let detail = message.isEmpty ? "no purchaseSuccess in the response" : message
+            AppLog.error("buyProduct did not confirm the purchase: " + detail, .download)
+            lastError = StoreError.failureType("purchase", detail)
         }
 
         throw lastError ?? StoreError.failureType("purchase", "no purchase response")
