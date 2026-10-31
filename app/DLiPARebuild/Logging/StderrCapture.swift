@@ -79,12 +79,37 @@ enum StderrCapture {
         //    here, which tells us exactly where Unicorn crashed.
         if let prevData = try? Data(contentsOf: previousLogURL),
            !prevData.isEmpty {
-            let prev = String(data: prevData, encoding: .utf8) ?? "<binary>"
-            AppLog.error("===== PREVIOUS LAUNCH STDERR (black-box recorder) =====", .app)
+            // Bounded, because this runs on the launch path with no ceiling on
+            // the file it reads. The Go bridge writes hundreds of lines per run
+            // and one bug made it write millions: 41k lines became 41k AppLog
+            // calls at start, on the main thread, and the app died before it
+            // drew a frame. The tail is what a crash report needs anyway.
+            let byteCap = 256 * 1024
+            let lineCap = 600
+
+            // suffix returns a slice, not Data; String(data:) wants Data.
+            let tail = prevData.count > byteCap ? Data(prevData.suffix(byteCap)) : prevData
+            let prev = String(data: tail, encoding: .utf8) ?? "<binary>"
+
+            if prevData.count > byteCap {
+                AppLog.error("===== PREVIOUS LAUNCH STDERR (last "
+                             + String(byteCap / 1024) + " KB of "
+                             + String(prevData.count) + " bytes) =====", .app)
+            } else {
+                AppLog.error("===== PREVIOUS LAUNCH STDERR (black-box recorder) =====", .app)
+            }
+
+            var lines = prev.split(separator: "\n", omittingEmptySubsequences: false)
+            if lines.count > lineCap {
+                AppLog.error("  prev.stderr | ... " + String(lines.count - lineCap)
+                             + " earlier lines omitted ...", .app)
+                lines = Array(lines.suffix(lineCap))
+            }
+
             // Split on newlines so each line is its own AppLog entry;
             // keeps the in-app log view readable and avoids any per-line
             // size limits in os.Logger.
-            for line in prev.split(separator: "\n", omittingEmptySubsequences: false) {
+            for line in lines {
                 AppLog.error("  prev.stderr | " + String(line), .app)
             }
             AppLog.error("===== END PREVIOUS STDERR =====", .app)

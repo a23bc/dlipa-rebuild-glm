@@ -504,6 +504,7 @@ final class AppStoreClient {
         }
         capturedCookieHeader = header
         capturedCookieValues = defaults.dictionary(forKey: Self.cookieJarValuesKey) as? [String: String] ?? [:]
+        mirror("restored " + String(capturedCookieValues.count) + " cookies")
         // A local because AppLog's message is an escaping autoclosure, and a
         // property reference inside one needs explicit self.
         let restored = capturedCookieValues.count
@@ -613,6 +614,17 @@ final class AppStoreClient {
         return parts.isEmpty
             ? "<" + String(data.count) + " bytes, no failure keys>"
             : parts.joined(separator: " ")
+    }
+
+    /// One line to stderr, for the file that can be copied off the device.
+    ///
+    /// Deliberately not a global AppLog mirror: the black-box recorder replays
+    /// the previous launch's stderr *through AppLog*, so mirroring every entry
+    /// there fed the recorder its own output, doubled the file on every launch
+    /// and killed the app at start -- 17 MB and 41k lines of "prev.stderr |".
+    /// This writes only what is named here.
+    private func mirror(_ message: String) {
+        fputs("[DLiPA] " + message + "\n", stderr)
     }
 
     /// Whether a header carries something that authorises the request.
@@ -1180,6 +1192,9 @@ final class AppStoreClient {
         AppLog.info("replayed cookie header: "
                     + String(replayHeaderLength) + " chars, "
                     + String(replayValueCount) + " values", .download)
+        mirror("download: pod " + (account.pod.isEmpty ? "none" : account.pod)
+               + ", cookies " + String(replayValueCount) + ", "
+               + String(replayHeaderLength) + " chars")
 
         var licenceFailure: (String, String)?
         var lastError: Error = StoreError.failureType("download", "every attempt failed")
@@ -1219,6 +1234,8 @@ final class AppStoreClient {
             let preview = String(data: responseData.prefix(500), encoding: .utf8) ?? "<binary>"
             AppLog.info("download attempt [" + attempt.label + "] HTTP " + String(status)
                         + ", " + String(responseData.count) + " bytes", .download)
+            mirror("download attempt [" + attempt.label + "] HTTP " + String(status)
+                   + ", " + String(responseData.count) + " bytes")
             if !preview.isEmpty {
                 AppLog.info("  body: " + preview, .download)
             }
