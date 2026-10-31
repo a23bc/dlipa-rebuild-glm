@@ -100,6 +100,9 @@ type Runtime struct {
 	patchedSites map[uint64][4]byte
 	// Which shims have already been named for returning a host address.
 	hostPointerSaid map[string]bool
+	// The address the last step was called for, so a guard that fires can say
+	// which instruction branched to the bad target.
+	lastPC uint64
 	// Set before the hook is removed, and read at the top of step. The hook has
 	// to stay safe while it is being torn down, and a callback already past
 	// Close would otherwise run against a nil engine.
@@ -1164,6 +1167,9 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		return
 	}
 
+	previousPC := r.lastPC
+	r.lastPC = address
+
 	// Dispatch first, whoever is driving. Call sites and callbacks are keyed by
 	// address, so they are unambiguous on a shared engine -- and the guest that
 	// needs them is often the other tenant: the SAP machine's Execute calls Sign,
@@ -1202,7 +1208,14 @@ func (r *Runtime) step(address uint64, _ uint32) {
 	}
 
 	if !allowed {
-		panic(fmt.Sprintf("execution outside the pinned image at %#x", address))
+		// The branch already happened, so the useful evidence is behind: which
+		// instruction branched, and what the registers held. A `blr x8` and a
+		// `ret` mean different things, and x8's value names the slot.
+		panic(fmt.Sprintf("execution outside the pinned image at %#x; from %#x %s; regs x0=%#x x1=%#x x2=%#x x3=%#x x8=%#x x9=%#x sp=%#x lr=%#x",
+			address, previousPC, r.instruction(previousPC),
+			r.reg(unicorn.RegX0), r.reg(unicorn.RegX1), r.reg(unicorn.RegX2),
+			r.reg(unicorn.RegX3), r.reg(unicorn.RegX8), r.reg(unicorn.RegX0+9), // x9: RegX9 is not exported
+			r.reg(unicorn.RegSP), r.reg(unicorn.RegLR)))
 	}
 
 	r.steps++
@@ -1295,6 +1308,30 @@ const (
 	hostPointerFloor   = 0x7f0000000000
 	hostPointerCeiling = 0x800000000000
 )
+
+// instruction renders the four bytes at an address, or "?" when they cannot be
+// read. Enough to tell blr from br from ret without symbolising.
+func (r *Runtime) instruction(address uint64) string {
+	if address == 0 {
+		return "?"
+	}
+
+	word, err := r.engine.MemRead(address, 4)
+	if err != nil || len(word) != 4 {
+		return "?"
+	}
+
+	return fmt.Sprintf("%02x%02x%02x%02x", word[3], word[2], word[1], word[0])
+}
+
+func (r *Runtime) reg(register int) uint64 {
+	value, err := r.engine.RegRead(register)
+	if err != nil {
+		return 0
+	}
+
+	return value
+}
 
 func (r *Runtime) reportHostPointer(address uint64, symbol string) {
 	if r.hostPointerSaid == nil {
