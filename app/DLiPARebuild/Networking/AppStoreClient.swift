@@ -528,6 +528,27 @@ final class AppStoreClient {
         defaults.removeObject(forKey: Self.cookieJarValuesKey)
     }
 
+    /// POSTs without the SAP signature.
+    ///
+    /// Neither appstore_purchase.go nor appstore_kbsync.go signs these: the
+    /// store is expected to take them on the session alone. Ours attach
+    /// X-Apple-ActionSignature to both, and both come back with errors the store
+    /// would not otherwise produce -- an empty-bodied 500 from ent/download and
+    /// MZCommerce.SystemError from buyProduct.
+    private func sendUnsigned(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw StoreError.httpError(-1, "not an HTTP response")
+        }
+
+        captureCookies(from: http)
+        AppLog.info("unsigned request to " + (request.url?.absoluteString ?? "?")
+                    + " returned " + String(http.statusCode)
+                    + ", body " + String(data.count) + " bytes", .network)
+
+        return (data, http)
+    }
+
     private func captureCookies(from http: HTTPURLResponse) {
         // Cookies belong to the host that set them. Bag and store endpoints are
         // always Apple's; anything else is either a redirect we should not be
@@ -896,8 +917,8 @@ final class AppStoreClient {
             // and sent by the emulated Store framework, which brings its own
             // session. Posted raw, the same request gets 400 unsigned and 500
             // signed, and 500 is the code ipatool reads as "licence exists".
-            let (data, signedResponse) = try await signedRequest(
-                request, signer: signer, redirects: 3)
+            // Unsigned, as appstore_purchase.go sends it.
+            let (data, signedResponse) = try await sendUnsigned(request)
             let status = signedResponse.statusCode
             let bodyText = String(data: data, encoding: .utf8) ?? ""
             AppLog.info("buyProduct " + pricing + " returned HTTP " + String(status)
@@ -1137,7 +1158,10 @@ final class AppStoreClient {
             }
 
             // Upstream sets NoRedirects for ent/download: X-Token must not be
-            // forwarded to wherever a redirect points.
+            // forwarded to wherever a redirect points. Left signed and
+            // redirect-limited for now: changing the signature and the redirect
+            // policy together would make the result unreadable, and this round
+            // is about the purchase.
             let (data, http) = try await signedRequest(attempt, signer: signer,
                                                        redirects: 0)
             lastStatus = http.statusCode
