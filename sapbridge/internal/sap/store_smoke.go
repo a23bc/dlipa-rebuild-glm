@@ -488,6 +488,12 @@ func (s *Signer) watchGuestWrites(engine *unicorn.Engine) ([]*unicorn.Hook, erro
 	}{
 		{"probe global", guestProbeGlobal},
 		{"callee", guestProbeCallee},
+		// The slot the encoder loads a function pointer from and calls. The
+		// profile has a guest address there (0x180888cf0) and neither the
+		// profile nor the cache blob contains the value the guest ends up
+		// calling (0x7ff880000340), so something stores it at run time. This
+		// watch names that store and its pc.
+		{"bag slot", 0x1e800c958},
 	} {
 		seen := 0
 
