@@ -365,6 +365,9 @@ func (e *Engine) MemReadInto(data []byte, address uint64) error {
 	return e.err(e.api.memRead(handle, address, unsafe.Pointer(&data[0]), uint64(len(data))))
 }
 
+// The slot the store encoder loads a call target from.
+const engineWatchAddress = 0x1e800c958
+
 func (e *Engine) MemWrite(address uint64, data []byte) error {
 	handle, done, err := e.beginOperation()
 	if err != nil {
@@ -374,6 +377,20 @@ func (e *Engine) MemWrite(address uint64, data []byte) error {
 
 	if len(data) == 0 {
 		return nil
+	}
+
+	// One diagnostic, at the only choke point every guest write passes through.
+	//
+	// Runtime.MemWrite was instrumented first and reported nothing, because
+	// twenty-nine call sites write through this function directly -- machine
+	// trampolines, register spills, page loads. The slot the encoder calls
+	// through ends up holding a host address that exists in no data blob, so the
+	// writer has to be found here or nowhere.
+	if address <= engineWatchAddress && engineWatchAddress+8 <= address+uint64(len(data)) {
+		offset := engineWatchAddress - address
+
+		fmt.Fprintf(os.Stderr, "[SAP] engine write: [%#x] <- %x (write at %#x, %d bytes)\n",
+			engineWatchAddress, data[offset:offset+8], address, len(data))
 	}
 
 	return e.err(e.api.memWrite(handle, address, unsafe.Pointer(&data[0]), uint64(len(data))))
