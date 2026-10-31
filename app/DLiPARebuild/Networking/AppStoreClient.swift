@@ -1141,6 +1141,16 @@ final class AppStoreClient {
         // which carry a session.
         let attempts: [(label: String, token: String, signed: Bool)] = [
             ("cookie+passwordToken", account.passwordToken, false),
+            // Second attempt, and the first one that changes a single variable.
+            //
+            // Every attempt so far answered 2042 "sign in" while the jar held
+            // the full nineteen-cookie session Apple had just issued, and
+            // ent/download answered 500 with an empty body. Both read as a
+            // contradiction rather than a gap: the jar already carries an
+            // X-Token set by Apple for this account, and the header above sends
+            // a different value under the same name. This attempt sends only the
+            // session.
+            ("cookie only", "", false),
         ]
 
         // Printed once, because a zero-length token silently turns every
