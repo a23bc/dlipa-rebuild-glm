@@ -69,6 +69,14 @@ jobs:
           cp scripts/export-cache-pages/main.go \
              /tmp/ipatool/cmd/export-cache-pages/main.go
 
+          # Prints what the generator has in memory before it dumps, because the
+          # one question that matters cannot be asked from outside: collect.go
+          # reads a page from the cache file when the guest never mapped it, and
+          # a metadata page that only exists because something realized it is
+          # zero in that file. The probe writes [probe] lines to stderr and
+          # changes nothing else.
+          python3 scripts/profilegen-probe.py /tmp/ipatool
+
       - name: Dump the cache and the feature flags
         run: |
           mkdir -p "$RUNNER_TEMP/dyld"
