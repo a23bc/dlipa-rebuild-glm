@@ -1274,6 +1274,21 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		return
 	}
 
+	// Code also lives outside this runtime's images: the shared-cache pages the
+	// profile points at carry whole functions, and the encoder's ent/download
+	// path calls into them (0x1a8113350 was the first one it reached). The rule
+	// is therefore "mapped and below the heap", not "inside a pinned image":
+	// anything we mapped may execute, while a jump into the heap, the stack or
+	// nothing at all is still a fault.
+	//
+	// The heap starts at 0x4000_0000_0000 and TLS at 0x6000_0000_0000; the shim
+	// area above them is handled before this point.
+	const heapBase = uint64(0x400000000000)
+
+	if r.engine != nil && address < heapBase && r.engine.IsMapped(address, 4) {
+		return
+	}
+
 	// Not a recorded call site, so it has to be inside one of this runtime's
 	// images. Anything else means the guest wandered off.
 	allowed := false
