@@ -473,7 +473,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	case len(s.hardware) != 6:
 		entExecuted = "no hardware id"
 	default:
-		entExecuted = smokeEntDownload(runtime, s.hardware, guid, entKBSync, externalVersionID, headers, client)
+		// Two runs, one variable. A 500 with an empty body is the server
+		// failing rather than answering, and kbsync is the one opaque blob in
+		// this request that we produce ourselves: if the server chokes parsing
+		// it, the answer changes when it is absent. If both runs answer 500, the
+		// blob is not the trigger and the difference is somewhere else.
+		withBlob := smokeEntDownload(runtime, s.hardware, guid, entKBSync, externalVersionID, headers, client)
+		without := smokeEntDownload(runtime, s.hardware, guid, nil, externalVersionID, headers, client)
+
+		entExecuted = "with kbsync: " + withBlob + " || without: " + without
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
@@ -771,10 +779,15 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, b
 
 	endpoint := "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download?guid=" + guid
 
+	kbsync := ""
+	if len(blob) > 0 {
+		kbsync = base64.StdEncoding.EncodeToString(blob)
+	}
+
 	address, err := runtime.EncodeProbe(endpoint, map[string]any{
 		"creditDisplay":     "",
 		"guid":              guid,
-		"kbsync":            base64.StdEncoding.EncodeToString(blob),
+		"kbsync":            kbsync,
 		"salableAdamId":     int64(389801252),
 		"serialNumber":      serial,
 		"externalVersionId": externalVersionID,
