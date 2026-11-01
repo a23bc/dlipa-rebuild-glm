@@ -219,7 +219,7 @@ func (s *Signer) kbsync(dsid string) ([]byte, error) {
 // StoreSmoke opens the Store runtime on this signer's machine and reports how
 // long each half took. It runs on the existing guest rather than creating one,
 // because a second emulator cannot be allocated on this platform.
-func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEndpoint string) (report string, err error) {
+func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEndpoint string, cookieHeader string) (report string, err error) {
 	if s == nil {
 		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
@@ -257,6 +257,7 @@ func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEnd
 		Token:         token,
 		StoreFront:    storefront,
 		EntEndpoint:   entEndpoint,
+		CookieHeader:  cookieHeader,
 	})
 }
 

@@ -449,7 +449,8 @@ func diagnosticStoreSmoke() async -> String {
             // the real download path posts to, and the pod it names is the one
             // this account's session is routed through.
             try signer.storeSmoke(dsid: dsid, token: token, storefront: storefront,
-                                  entEndpoint: bag.volumeStoreDownloadProduct ?? "")
+                                  entEndpoint: bag.volumeStoreDownloadProduct ?? "",
+                                  cookieHeader: client.sessionCookieHeader)
         }
         let seconds = Int(Date().timeIntervalSince(started))
         AppLog.info("store smoke: " + result + " (wall \(seconds)s)", .sap)

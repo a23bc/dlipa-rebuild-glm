@@ -48,6 +48,10 @@ type StoreAccount struct {
 	// answered 401; the bag value is the only one known to be routed to this
 	// account's pod.
 	EntEndpoint string
+	// CookieHeader is the session cookie header the classic path replays.
+	// downloaddispatch answers 401 without it: the token alone is not the
+	// session, the cookies are.
+	CookieHeader string
 }
 
 func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, returnedErr error) {
@@ -490,7 +494,7 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent endpoint: %s\n", endpoint)
 
-		entExecuted = smokeEntDownload(runtime, s.hardware, guid, endpoint, entKBSync, externalVersionID, headers, client)
+		entExecuted = smokeEntDownload(runtime, s.hardware, guid, endpoint, entKBSync, externalVersionID, headers, client, account.CookieHeader)
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
@@ -783,7 +787,7 @@ func hexHead(data []byte, limit int) string {
 // Separate from the smoke's body because it is the E3 measurement: the pass line
 // is a 200 whose plist carries a songList, and everything before that line is
 // only worth reporting as context.
-func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, endpoint string, blob []byte, externalVersionID string, headers http.Header, client *http.Client) string {
+func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, endpoint string, blob []byte, externalVersionID string, headers http.Header, client *http.Client, cookieHeader string) string {
 	serial := base64.StdEncoding.EncodeToString(append([]byte{0x54, 0xc8, 0xb0, 0xa9, 0x88}, hardware[2:]...))
 
 	if strings.Contains(endpoint, "?") {
@@ -835,6 +839,12 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, e
 	// this emulator sets one at all: the classic request's UA comes from the
 	// bag, which is a different client than the one Apple expects here.
 	entHeaders.Set("User-Agent", "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6")
+
+	if cookieHeader != "" {
+		entHeaders.Set("Cookie", cookieHeader)
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] ent cookie: %d chars\n", len(cookieHeader))
 
 	keys := make([]string, 0, len(entHeaders))
 	for key := range entHeaders {

@@ -483,6 +483,11 @@ final class AppStoreClient {
     /// removes the storage question from the picture, and the log names them so
     /// an empty set is visible rather than inferred.
     private var capturedCookieHeader = ""
+
+    /// The cookie header the classic path replays, for callers that need the
+    /// same session elsewhere. downloaddispatch answers 401 to a request that
+    /// carries the token but not the session's cookies.
+    var sessionCookieHeader: String { capturedCookieHeader }
     private var capturedCookieValues: [String: String] = [:]
 
     /// The jar has to outlive the process.
