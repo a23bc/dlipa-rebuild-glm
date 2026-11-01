@@ -366,14 +366,6 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 	return machine, exports, nil
 }
 
-// hostAddress reports whether a resolved value belongs to the host rather than
-// the guest. Guest addresses in this machine are images at 0x1a2…, heap at
-// 0x4000_0000_0000, TLS at 0x6000_0000_0000 and shims just below the heap;
-// nothing legitimate starts above 0x7000_0000_0000.
-func hostAddress(value uint64) bool {
-	return value >= 0x700000000000
-}
-
 func loadPrelinkedFunctions(engine *unicorn.Engine, functions map[uint64]string, resolve func(string) (uint64, error)) error {
 	pages := make(map[uint64]struct{})
 	for address := range functions {
@@ -392,12 +384,6 @@ func loadPrelinkedFunctions(engine *unicorn.Engine, functions map[uint64]string,
 		target, err := resolve(name)
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", name, err)
-		}
-
-		if hostAddress(target) {
-			fmt.Fprintf(os.Stderr, "[SAP] function %s resolved to host address %#x; left empty\n", name, target)
-
-			continue
 		}
 
 		trampoline := make([]byte, 16)
@@ -429,15 +415,6 @@ func loadPrelinkedSlots(engine *unicorn.Engine, slots map[uint64]string, resolve
 		value, err := resolve(name)
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", name, err)
-		}
-
-		// A slot holds a guest address. A host one stored here becomes a call
-		// target the guest can never execute, and by the time it is called the
-		// only trace left is a jump to an address outside every image.
-		if hostAddress(value) {
-			fmt.Fprintf(os.Stderr, "[SAP] slot %s resolved to host address %#x; left empty\n", name, value)
-
-			continue
 		}
 
 		var data [8]byte

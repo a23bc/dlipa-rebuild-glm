@@ -1257,6 +1257,23 @@ func (r *Runtime) step(address uint64, _ uint32) {
 		}
 	}()
 
+	// The SAP machine's shims live in their own code area and the guest calls
+	// them like any other function. This runtime drives the same engine and its
+	// step hook runs first, so without this a call to ___chkstk_darwin reads as
+	// "outside the pinned image" and the run stops -- which is exactly what the
+	// 0x7ff880000340 fault was, for four rounds of diagnostics.
+	//
+	// The constants mirror machine/shims.go; they are duplicated rather than
+	// imported because that package imports this one.
+	const (
+		shimBase = uint64(0x00007ff880000000)
+		shimSize = uint64(0x0000000000080000)
+	)
+
+	if address >= shimBase && address < shimBase+shimSize {
+		return
+	}
+
 	// Not a recorded call site, so it has to be inside one of this runtime's
 	// images. Anything else means the guest wandered off.
 	allowed := false
