@@ -337,6 +337,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	r.probeWord("after images")
 
+	r.logBagSlot("after images")
+
 	// The profile's prepared pages point into the dyld shared cache, which the host
 	// had mapped and the guest does not. Bring in the pages those pointers
 	// reference before writing the profile's own pages, or every absolute pointer
@@ -410,6 +412,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	r.probeWord("after cache pages")
 
+	r.logBagSlot("after cache pages")
+
 	pageData := prepared.Pages
 	addresses := make([]uint64, 0, len(profile.Pages))
 
@@ -427,7 +431,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	// shows a host one, the loader put it there, and if it shows the guest
 	// address then something overwrote it during the run -- two different bugs
 	// that have been indistinguishable from the fault line alone.
-	fmt.Fprintf(os.Stderr, "[SAP] open(): bag slot after pages = %#x\n", r.quad(bagSlotAddress))
+	r.logBagSlot("after profile pages")
 
 	for _, call := range profile.Calls {
 		page := call.Address &^ 4095
@@ -1415,6 +1419,15 @@ func (r *Runtime) quad(address uint64) uint64 {
 	}
 
 	return value
+}
+
+// logBagSlot prints the call target the encoder will load, at a named stage.
+//
+// The writer cannot be caught -- it goes through none of the write paths this
+// package can instrument -- so the value is read instead, once per stage. The
+// stage that changes it is the answer.
+func (r *Runtime) logBagSlot(stage string) {
+	fmt.Fprintf(os.Stderr, "[SAP] open(): bag slot %s = %#x\n", stage, r.quad(bagSlotAddress))
 }
 
 func (r *Runtime) reg(register int) uint64 {
