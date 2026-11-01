@@ -100,6 +100,8 @@ type Runtime struct {
 	patchedSites map[uint64][4]byte
 	// Which shims have already been named for returning a host address.
 	hostPointerSaid map[string]bool
+	// Cast targets already reported as absent from the profile.
+	castSaid map[uint64]bool
 	// The address the last step was called for, so a guard that fires can say
 	// which instruction branched to the bad target.
 	lastPC uint64

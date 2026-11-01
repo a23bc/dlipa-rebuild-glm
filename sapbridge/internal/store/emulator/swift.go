@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -86,7 +87,26 @@ func (r *Runtime) swiftSymbol(name string) bool {
 		} else if targetType == r.profile.Symbols["$sSSN"] && (sourceType == r.profile.Symbols["$sSiN"] || sourceType == r.profile.Symbols["$sSbN"] || sourceType == r.profile.Symbols["$sSdN"]) && r.arg(4)&1 == 0 {
 			r.set(0)
 		} else {
-			panic(fmt.Sprintf("unsupported Swift cast metadata %#x -> %#x flags=%d", sourceType, targetType, r.arg(4)))
+			// A cast to a type this profile does not describe is a failed cast,
+			// not a broken runtime: the real swift_dynamicCast answers "no" and
+			// the caller takes its own path. Panicking here stopped the whole
+			// encoder on the first type the generator never realized, which is
+			// the same gap that produced the zero metadata page.
+			//
+			// Logged once per pair, because a silent nil is easy to mistake for
+			// success when reading a trace.
+			if !r.castSaid[targetType] {
+				if r.castSaid == nil {
+					r.castSaid = map[uint64]bool{}
+				}
+
+				r.castSaid[targetType] = true
+
+				fmt.Fprintf(os.Stderr, "[SAP] cast: %#x -> %#x is not in the profile; answering false\n",
+					sourceType, targetType)
+			}
+
+			r.set(0)
 		}
 	case "$ss17CodingUserInfoKeyVwCP", "$sSSwCP", "$sSSwcp", "$sSSwca":
 		// The pinned runtime shares this witness with String: two words,
