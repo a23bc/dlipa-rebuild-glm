@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -796,12 +797,35 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, b
 
 	method, url, body, _ := runtime.RequestParts(address)
 
+	// Print what will actually go out, not what was asked for. The 500 has
+	// survived every field fix so far, and the only way to compare against the
+	// reference is to read this request the way the reference builds it: method,
+	// URL, header names and the body's keys and types.
+	if partsMethod, partsURL, partsBody, _ := runtime.RequestParts(address); partsBody != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] ent request: %s %s body=%d %s\n",
+			partsMethod, partsURL, len(partsBody), firstLine(string(partsBody), 400))
+	}
+
 	// The encoder leaves the content type at application/x-apple-plist; upstream
 	// overrides it to form-urlencoded for this endpoint, and that override is
 	// part of the request the Store accepts. Redirects are off because X-Token
 	// must not travel to wherever a redirect points.
 	entHeaders := headers.Clone()
 	entHeaders.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+
+	// The reference sets this endpoint's user agent explicitly, and nothing in
+	// this emulator sets one at all: the classic request's UA comes from the
+	// bag, which is a different client than the one Apple expects here.
+	entHeaders.Set("User-Agent", "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6")
+
+	keys := make([]string, 0, len(entHeaders))
+	for key := range entHeaders {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	fmt.Fprintf(os.Stderr, "[SAP] ent headers: %v\n", keys)
 
 	response, execErr := runtime.Execute(emulator.Request{
 		URL:         url,
