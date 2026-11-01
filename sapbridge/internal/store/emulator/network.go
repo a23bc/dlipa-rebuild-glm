@@ -553,6 +553,23 @@ func (r *Runtime) networkMessage(receiver uint64, class, selector string, meta b
 			}
 
 			return true
+		// The ent/download path builds its URL through NSURLComponents and sets
+		// the query after the fact. Without this the bridge stopped the run on
+		// "unsupported instance message -[NSURLComponents setQuery:]", which is
+		// the same kind of gap as a missing Swift type: the framework uses one
+		// more selector than the profile has seen.
+		case "setQuery:":
+			if r.arg(2) == 0 {
+				u.RawQuery = ""
+			} else {
+				u.RawQuery = r.String(r.arg(2))
+			}
+
+			u.ForceQuery = false
+
+			r.set(0)
+
+			return true
 		case "setFragment:":
 			u.Fragment = r.String(r.arg(2))
 			u.RawFragment = ""
