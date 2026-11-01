@@ -267,18 +267,11 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: encoder produced request at %#x after %s\n",
 		address, time.Since(encodeStarted).Round(time.Millisecond))
 
-	// E1-c: the request object exists; this says whether it is usable. A URL, a
-	// method and a body of the right shape are what Execute needs before wiring
-	// it is worth doing.
-	inspectStarted := time.Now()
-	summary, inspectErr := runtime.InspectRequest(address)
-	if inspectErr != nil {
-		summary = "inspect failed: " + inspectErr.Error()
-	}
-
-	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s (inspected in %s)\n",
-		summary, time.Since(inspectStarted).Round(time.Millisecond))
-
+	// Inspection used to run here and cost 3m32s on the run that first got the
+	// encoder working -- it walks the request object's lazy getters, and every
+	// read is a message send into the guest. It is diagnostic only, so it now
+	// runs after the transport attempt: the measurement that matters is whether
+	// a response comes back, not whether the fields can be printed first.
 	// E2, first step: hand the request the encoder built to the real transport
 	// and see whether a response comes back. There is no session cookie here, so
 	// the Store will refuse it; the status is the measurement, not a pass line.
@@ -357,7 +350,7 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// seconds to minutes: the screen stopped drawing and the watchdog killed the
 	// process. A wall-clock budget turns "it hangs" into a line that says which
 	// phase spent the time.
-	const smokeBudget = 150 * time.Second
+	const smokeBudget = 10 * time.Minute
 
 	if spent := time.Since(started); spent > smokeBudget {
 		fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s spent before Execute, over the %s budget; skipping it\n",
@@ -375,6 +368,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// The buffered calls are printed after the attempt, not during it: the one
 	// that matters is the last one, and printing as they arrive let objc_retain
 	// fill the quota long before the signer reached malloc.
+	inspectStarted := time.Now()
+	summary, inspectErr := runtime.InspectRequest(address)
+	if inspectErr != nil {
+		summary = "inspect failed: " + inspectErr.Error()
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s (inspected in %s)\n",
+		summary, time.Since(inspectStarted).Round(time.Millisecond))
+
 	runtime.DumpSymbolTrace()
 	runtime.DumpTrace()
 
@@ -455,10 +457,10 @@ const guestProbeGlobal = uint64(0x1e4d3bcc0)
 // guestProbeCall is the indirect call whose result becomes 0x200, and
 // guestProbeCallee is the stub it jumps to. Both temporary, like the global.
 //
-//	  ldr   x8, [x23, w10, uxtw #3]   the callee, out of a dispatch table
-//	  mov   w0, #0x200                the argument
-//	  blraa x8, x17                   <- the call
-//	  str   x0, [x8]                  the result, stored into a VM register
+//	ldr   x8, [x23, w10, uxtw #3]   the callee, out of a dispatch table
+//	mov   w0, #0x200                the argument
+//	blraa x8, x17                   <- the call
+//	str   x0, [x8]                  the result, stored into a VM register
 //
 // The callee reads as `ret` in the guest while the page blob has `mov x1, x0`
 // there, so the call returns its argument and the register ends up holding one.
