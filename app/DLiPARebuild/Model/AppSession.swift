@@ -443,14 +443,19 @@ func diagnosticStoreSmoke() async -> String {
         let token = account?.passwordToken ?? ""
         let storefront = account?.storefront ?? ""
 
+        // Both read off self here: the work runs in an escaping closure, where a
+        // property reference needs an explicit self and this one is simpler to
+        // take first.
+        let entEndpoint = bag.volumeStoreDownloadProduct ?? ""
+        let cookieHeader = client.sessionCookieHeader
+
         let started = Date()
         let result = try await runOffMain {
             // The endpoint comes from the bag, not from a constant: it is what
             // the real download path posts to, and the pod it names is the one
             // this account's session is routed through.
             try signer.storeSmoke(dsid: dsid, token: token, storefront: storefront,
-                                  entEndpoint: bag.volumeStoreDownloadProduct ?? "",
-                                  cookieHeader: client.sessionCookieHeader)
+                                  entEndpoint: entEndpoint, cookieHeader: cookieHeader)
         }
         let seconds = Int(Date().timeIntervalSince(started))
         AppLog.info("store smoke: " + result + " (wall \(seconds)s)", .sap)
