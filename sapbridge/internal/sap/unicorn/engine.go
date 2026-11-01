@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -389,8 +390,16 @@ func (e *Engine) MemWrite(address uint64, data []byte) error {
 	if address <= engineWatchAddress && engineWatchAddress+8 <= address+uint64(len(data)) {
 		offset := engineWatchAddress - address
 
-		fmt.Fprintf(os.Stderr, "[SAP] engine write: [%#x] <- %x (write at %#x, %d bytes)\n",
-			engineWatchAddress, data[offset:offset+8], address, len(data))
+		// The call site is the answer, and it is one frame up: this write comes
+		// from Go during image loading, not from the guest.
+		caller := "?"
+
+		if _, file, line, ok := runtime.Caller(2); ok {
+			caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] engine write: [%#x] <- %x (write at %#x, %d bytes) from %s\n",
+			engineWatchAddress, data[offset:offset+8], address, len(data), caller)
 	}
 
 	return e.err(e.api.memWrite(handle, address, unsafe.Pointer(&data[0]), uint64(len(data))))
