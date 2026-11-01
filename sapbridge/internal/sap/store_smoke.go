@@ -11,10 +11,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	goruntime "runtime"
 	"strconv"
@@ -457,13 +459,21 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// left empty and the answer will say whether that matters.
 	entExecuted := "not attempted"
 
+	// ent/download wants a concrete externalVersionId; upstream looks it up
+	// first and only then sends the request. Leaving it empty produced 500 with
+	// an empty body -- from the framework's own request, so the empty field is
+	// the remaining difference rather than the request's shape.
+	externalVersionID := latestExternalVersionID(389801252, "tr")
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: externalVersionId %q\n", externalVersionID)
+
 	switch {
 	case len(entKBSync) == 0:
 		entExecuted = "no kbsync (see the line above)"
 	case len(s.hardware) != 6:
 		entExecuted = "no hardware id"
 	default:
-		entExecuted = smokeEntDownload(runtime, s.hardware, guid, entKBSync, headers, client)
+		entExecuted = smokeEntDownload(runtime, s.hardware, guid, entKBSync, externalVersionID, headers, client)
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
@@ -756,7 +766,7 @@ func hexHead(data []byte, limit int) string {
 // Separate from the smoke's body because it is the E3 measurement: the pass line
 // is a 200 whose plist carries a songList, and everything before that line is
 // only worth reporting as context.
-func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, blob []byte, headers http.Header, client *http.Client) string {
+func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, blob []byte, externalVersionID string, headers http.Header, client *http.Client) string {
 	serial := base64.StdEncoding.EncodeToString(append([]byte{0x54, 0xc8, 0xb0, 0xa9, 0x88}, hardware[2:]...))
 
 	endpoint := "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download?guid=" + guid
@@ -767,7 +777,7 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, b
 		"kbsync":            base64.StdEncoding.EncodeToString(blob),
 		"salableAdamId":     int64(389801252),
 		"serialNumber":      serial,
-		"externalVersionId": "",
+		"externalVersionId": externalVersionID,
 	})
 	if err != nil {
 		return "encode failed: " + err.Error()
@@ -805,4 +815,69 @@ func firstLine(text string, limit int) string {
 	}
 
 	return text
+}
+
+// latestExternalVersionID asks the storefront catalog for the current version of
+// an app, the way appstore_platform_version_lookup.go does.
+//
+// Plain HTTP, no session: this endpoint is the public one, and it is the step
+// upstream performs before ent/download rather than something the Store does for
+// us. The country code comes from the account's storefront in the real path; the
+// probe is pinned to one storefront and says so.
+func latestExternalVersionID(appID int64, countryCode string) string {
+	endpoint := fmt.Sprintf(
+		"https://uclient-api.itunes.apple.com/WebObjects/MZStorePlatform.woa/wa/lookup?version=2&id=%d&p=mdm-lockup&caller=MDM&platform=iphone&cc=%s&l=en",
+		appID, strings.ToLower(countryCode))
+
+	client := &http.Client{Timeout: 20 * time.Second}
+
+	response, err := client.Get(endpoint)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] version lookup: %v\n", err)
+
+		return ""
+	}
+
+	defer response.Body.Close()
+
+	payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+
+	var result struct {
+		Results map[string]struct {
+			Offers []struct {
+				BuyParams string `json:"buyParams"`
+				Version   struct {
+					Display    string          `json:"display"`
+					ExternalID json.RawMessage `json:"externalId"`
+				} `json:"version"`
+			} `json:"offers"`
+		} `json:"results"`
+	}
+
+	if err = json.Unmarshal(payload, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] version lookup: HTTP %d, %v\n", response.StatusCode, err)
+
+		return ""
+	}
+
+	for _, item := range result.Results {
+		for _, offer := range item.Offers {
+			id := strings.Trim(string(offer.Version.ExternalID), "\"")
+
+			if id != "" && id != "null" {
+				return id
+			}
+
+			// Some storefronts only carry the version inside buyParams.
+			if values, perr := url.ParseQuery(offer.BuyParams); perr == nil {
+				if id := values.Get("appExtVrsId"); id != "" {
+					return id
+				}
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] version lookup: HTTP %d, no externalId in the answer\n", response.StatusCode)
+
+	return ""
 }
