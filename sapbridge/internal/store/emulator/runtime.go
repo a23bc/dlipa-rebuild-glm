@@ -422,6 +422,13 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	fmt.Fprintf(os.Stderr, "[SAP] open(): %d recorded call sites, %d with symbols\n",
 		len(r.calls), countSymbols(r.calls))
 
+	// The slot the encoder calls through, read once the pages are in place and
+	// before anything runs. The profile has a guest address there; if this line
+	// shows a host one, the loader put it there, and if it shows the guest
+	// address then something overwrote it during the run -- two different bugs
+	// that have been indistinguishable from the fault line alone.
+	fmt.Fprintf(os.Stderr, "[SAP] open(): bag slot after pages = %#x\n", r.quad(bagSlotAddress))
+
 	for _, call := range profile.Calls {
 		page := call.Address &^ 4095
 		if !r.pages[page] {
