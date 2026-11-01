@@ -7,6 +7,7 @@ package sap
 // inferred, because the answer decides whether the emulator path is viable here.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -827,13 +828,39 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, b
 
 	fmt.Fprintf(os.Stderr, "[SAP] ent headers: %v\n", keys)
 
+	// The transport is wrapped so the answer is recorded whatever the guest does
+	// with it: "framework rejected response" is a verdict from inside the guest,
+	// and without this line there is nothing to judge it against.
+	transport := func(request *http.Request) (*http.Response, error) {
+		reply, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+
+		payload, readErr := io.ReadAll(io.LimitReader(reply.Body, 1<<20))
+		_ = reply.Body.Close()
+
+		reply.Body = io.NopCloser(bytes.NewReader(payload))
+
+		if readErr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] ent response: %d, body unreadable: %v\n", reply.StatusCode, readErr)
+
+			return reply, nil
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent response: %d %s %dB %s\n",
+			reply.StatusCode, reply.Header.Get("Content-Type"), len(payload), firstLine(string(payload), 300))
+
+		return reply, nil
+	}
+
 	response, execErr := runtime.Execute(emulator.Request{
 		URL:         url,
 		Method:      method,
 		Body:        body,
 		Headers:     entHeaders,
 		HardwareID:  hardware,
-		Transport:   client.Do,
+		Transport:   transport,
 		Raw:         true,
 		NoRedirects: true,
 	})
