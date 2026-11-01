@@ -9,12 +9,15 @@ package sap
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
 	"io"
 	"net/http"
 	"os"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -423,6 +426,35 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s\n", executed)
 
+	// E3: the same encoder, aimed at ent/download.
+	//
+	// The classic endpoint answers 2042 for a session that has just signed in,
+	// and every hand-built variation of that request answered the same thing.
+	// The Store's own code is now able to send requests, so the next question is
+	// whether its own request for this endpoint is served -- which is the E3
+	// pass line: 200 with a songList in it.
+	//
+	// Three details differ from the classic call and all three come from
+	// appstore_kbsync.go: the body carries kbsync, serialNumber is the hardware
+	// serial in base64 rather than "0", and externalVersionId must be present.
+	// The version id needs a catalog lookup this probe does not do yet, so it is
+	// left empty and the answer will say whether that matters.
+	entExecuted := "not attempted"
+
+	if dsid, parseErr := strconv.ParseUint(account.DSID, 10, 64); parseErr == nil && dsid != 0 && len(s.hardware) == 6 {
+		blob, kerr := machine.GenerateKBSyncOn(context.Background(), s.machine, s.hardware, dsid)
+
+		if kerr != nil {
+			entExecuted = "kbsync failed: " + kerr.Error()
+		} else {
+			entExecuted = smokeEntDownload(runtime, s.hardware, guid, dsid, blob, headers, client)
+		}
+	} else {
+		entExecuted = "no account or no hardware id"
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
+
 	s.machine.SetFaultExplainer(nil)
 
 	return fmt.Sprintf(
@@ -703,4 +735,61 @@ func hexHead(data []byte, limit int) string {
 	}
 
 	return string(data)
+}
+
+// smokeEntDownload encodes and sends the ent/download request the way
+// appstore_kbsync.go builds it, and reports what came back.
+//
+// Separate from the smoke's body because it is the E3 measurement: the pass line
+// is a 200 whose plist carries a songList, and everything before that line is
+// only worth reporting as context.
+func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, dsid uint64, blob []byte, headers http.Header, client *http.Client) string {
+	serial := base64.StdEncoding.EncodeToString(append([]byte{0x54, 0xc8, 0xb0, 0xa9, 0x88}, hardware[2:]...))
+
+	endpoint := "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download?guid=" + guid
+
+	address, err := runtime.EncodeProbe(endpoint, map[string]any{
+		"creditDisplay":     "",
+		"guid":              guid,
+		"kbsync":            base64.StdEncoding.EncodeToString(blob),
+		"salableAdamId":     int64(389801252),
+		"serialNumber":      serial,
+		"externalVersionId": "",
+	})
+	if err != nil {
+		return "encode failed: " + err.Error()
+	}
+
+	method, url, body, _ := runtime.RequestParts(address)
+
+	response, execErr := runtime.Execute(emulator.Request{
+		URL:        url,
+		Method:     method,
+		Body:       body,
+		Headers:    headers,
+		HardwareID: hardware,
+		Transport:  client.Do,
+		Raw:        true,
+	})
+	if execErr != nil {
+		return "execute failed: " + execErr.Error()
+	}
+
+	defer response.Body.Close()
+
+	payload, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
+	text := string(payload)
+
+	return fmt.Sprintf("status=%d bytes=%d songList=%v body=%s",
+		response.StatusCode, len(payload), strings.Contains(text, "songList"), firstLine(text, 240))
+}
+
+// firstLine keeps log lines readable: plists arrive with newlines inside.
+func firstLine(text string, limit int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > limit {
+		return text[:limit] + "…"
+	}
+
+	return text
 }
