@@ -36,13 +36,30 @@ def main() -> int:
 
     missing = []
 
-    # ObjC methods: - (NSData*)generateKBSync:(NSString*)dsid error:...
-    for match in re.finditer(r"^[-+]\s*\([^)]*\)\s*(\w+):", generated, re.M):
-        selector = match.group(1)
-        if selector in IGNORED:
+    def labels(line: str) -> list[str]:
+        """Selector labels in order, ignoring the parameter types."""
+        return re.findall(r"(\w+):\s*\(", line)
+
+    bridging_signatures = [
+        labels(line) for line in bridging.splitlines() if re.match(r"^[-+]\s*\(", line)
+    ]
+
+    # ObjC methods: compare the whole label sequence, not just the first one.
+    #
+    # Checking only the first label let a signature change through: storeSmoke:
+    # gained a parameter, the bridging header still declared three, and this
+    # script reported "matches the generated API" because it found the word
+    # storeSmoke somewhere. The build then failed with "extra argument", which
+    # says nothing about the header being stale.
+    for match in re.finditer(r"^[-+]\s*\([^)]*\)\s*(\w+):.*$", generated, re.M):
+        line = match.group(0)
+        sequence = labels(line)
+
+        if not sequence or sequence[0] in IGNORED:
             continue
-        if not re.search(r"\b" + re.escape(selector) + r":", bridging):
-            missing.append(selector)
+
+        if sequence not in bridging_signatures:
+            missing.append(":".join(sequence) + ":")
 
     # Package-level functions: FOUNDATION_EXPORT NSData* SapbridgeKBSync(...)
     for match in re.finditer(r"^FOUNDATION_EXPORT\b.*?\b(\w+)\(", generated, re.M):
