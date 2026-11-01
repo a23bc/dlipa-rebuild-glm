@@ -149,6 +149,22 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		fmt.Fprintf(os.Stderr, "[SAP] pre-open sign: %d bytes\n", len(signature))
 	}
 
+	// kbsync for E3 is generated here, before the store runtime opens. Once its
+	// pages are in the shared guest, the SAP machine's generator runs into its
+	// own one-minute bound: the run that tried it afterwards stopped at
+	// 0x100000da692c and never came back.
+	var entKBSync []byte
+
+	if dsid, parseErr := strconv.ParseUint(account.DSID, 10, 64); parseErr == nil && dsid != 0 && len(s.hardware) == 6 {
+		if blob, kerr := machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid); kerr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] store smoke: kbsync for E3 failed: %v\n", kerr)
+		} else {
+			entKBSync = blob
+
+			fmt.Fprintf(os.Stderr, "[SAP] store smoke: kbsync for E3: %d bytes\n", len(blob))
+		}
+	}
+
 	runtime, err := emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
 	if err != nil {
 		return "", fmt.Errorf("store smoke: open runtime after %s: %w (image=%d bytes, plugin=%d bytes)",
@@ -441,16 +457,13 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	// left empty and the answer will say whether that matters.
 	entExecuted := "not attempted"
 
-	if dsid, parseErr := strconv.ParseUint(account.DSID, 10, 64); parseErr == nil && dsid != 0 && len(s.hardware) == 6 {
-		blob, kerr := machine.GenerateKBSyncOn(context.Background(), s.machine, s.hardware, dsid)
-
-		if kerr != nil {
-			entExecuted = "kbsync failed: " + kerr.Error()
-		} else {
-			entExecuted = smokeEntDownload(runtime, s.hardware, guid, dsid, blob, headers, client)
-		}
-	} else {
-		entExecuted = "no account or no hardware id"
+	switch {
+	case len(entKBSync) == 0:
+		entExecuted = "no kbsync (see the line above)"
+	case len(s.hardware) != 6:
+		entExecuted = "no hardware id"
+	default:
+		entExecuted = smokeEntDownload(runtime, s.hardware, guid, entKBSync, headers, client)
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
@@ -743,7 +756,7 @@ func hexHead(data []byte, limit int) string {
 // Separate from the smoke's body because it is the E3 measurement: the pass line
 // is a 200 whose plist carries a songList, and everything before that line is
 // only worth reporting as context.
-func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, dsid uint64, blob []byte, headers http.Header, client *http.Client) string {
+func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, blob []byte, headers http.Header, client *http.Client) string {
 	serial := base64.StdEncoding.EncodeToString(append([]byte{0x54, 0xc8, 0xb0, 0xa9, 0x88}, hardware[2:]...))
 
 	endpoint := "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download?guid=" + guid
