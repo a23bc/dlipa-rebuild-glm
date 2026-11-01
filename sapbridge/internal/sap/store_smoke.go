@@ -785,10 +785,14 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, b
 	}
 
 	address, err := runtime.EncodeProbe(endpoint, map[string]any{
-		"creditDisplay":     "",
-		"guid":              guid,
-		"kbsync":            kbsync,
-		"salableAdamId":     int64(389801252),
+		"creditDisplay": "",
+		"guid":          guid,
+		"kbsync":        kbsync,
+		// String, not integer: sendEntDownloadRequest formats the id with
+		// strconv.FormatInt. The classic path takes an integer, this one does
+		// not, and sending the wrong one is a server-side 500 rather than a
+		// readable failure.
+		"salableAdamId":     strconv.FormatInt(389801252, 10),
 		"serialNumber":      serial,
 		"externalVersionId": externalVersionID,
 	})
@@ -798,14 +802,22 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, b
 
 	method, url, body, _ := runtime.RequestParts(address)
 
+	// The encoder leaves the content type at application/x-apple-plist; upstream
+	// overrides it to form-urlencoded for this endpoint, and that override is
+	// part of the request the Store accepts. Redirects are off because X-Token
+	// must not travel to wherever a redirect points.
+	entHeaders := headers.Clone()
+	entHeaders.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+
 	response, execErr := runtime.Execute(emulator.Request{
-		URL:        url,
-		Method:     method,
-		Body:       body,
-		Headers:    headers,
-		HardwareID: hardware,
-		Transport:  client.Do,
-		Raw:        true,
+		URL:         url,
+		Method:      method,
+		Body:        body,
+		Headers:     entHeaders,
+		HardwareID:  hardware,
+		Transport:   client.Do,
+		Raw:         true,
+		NoRedirects: true,
 	})
 	if execErr != nil {
 		return "execute failed: " + execErr.Error()
