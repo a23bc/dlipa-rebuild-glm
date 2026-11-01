@@ -159,6 +159,8 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 	if dsid, parseErr := strconv.ParseUint(account.DSID, 10, 64); parseErr == nil && dsid != 0 && len(s.hardware) == 6 {
 		if blob, kerr := machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid); kerr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] store smoke: build %s\n", buildStamp)
+
 			fmt.Fprintf(os.Stderr, "[SAP] store smoke: kbsync for E3 failed: %v\n", kerr)
 		} else {
 			entKBSync = blob
@@ -473,15 +475,7 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	case len(s.hardware) != 6:
 		entExecuted = "no hardware id"
 	default:
-		// Two runs, one variable. A 500 with an empty body is the server
-		// failing rather than answering, and kbsync is the one opaque blob in
-		// this request that we produce ourselves: if the server chokes parsing
-		// it, the answer changes when it is absent. If both runs answer 500, the
-		// blob is not the trigger and the difference is somewhere else.
-		withBlob := smokeEntDownload(runtime, s.hardware, guid, entKBSync, externalVersionID, headers, client)
-		without := smokeEntDownload(runtime, s.hardware, guid, nil, externalVersionID, headers, client)
-
-		entExecuted = "with kbsync: " + withBlob + " || without: " + without
+		entExecuted = smokeEntDownload(runtime, s.hardware, guid, entKBSync, externalVersionID, headers, client)
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
@@ -906,3 +900,10 @@ func latestExternalVersionID(appID int64, countryCode string) string {
 
 	return ""
 }
+
+// buildStamp identifies the binary that produced a log.
+//
+// Set with -ldflags at bind time. Without it a stderr log cannot be tied to a
+// commit, and that has already cost a round: a run was read as evidence about a
+// build that had not produced it.
+var buildStamp = "unknown"

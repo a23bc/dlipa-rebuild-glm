@@ -183,7 +183,11 @@ jobs:
           echo "==> CGO_LDFLAGS: $(go env CGO_LDFLAGS)"
           # Only the device slice. Simulator targets cannot link an arm64 iOS
           # archive, and gomobile builds every variant of the target.
+          # The commit travels into the binary so a stderr log can be tied to the
+          # build that produced it. Reading a run as evidence about the wrong
+          # commit has already cost one round.
           gomobile bind -target=ios/arm64 \
+            -ldflags "-X github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap.buildStamp=${{ github.sha }}" \
             -o ../app/DLiPARebuild/Frameworks/SapBridge.xcframework .
           echo "==> framework contents"
           ls -laR ../app/DLiPARebuild/Frameworks/ | head -40
