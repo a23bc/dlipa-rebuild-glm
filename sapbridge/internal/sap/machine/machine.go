@@ -23,7 +23,13 @@ func init() {
 	unicorn.ForceLink()
 }
 
-const sapGuestTimeout = time.Minute
+// How long a single guest call may take before the machine gives up.
+//
+// It was one minute, and kbsync measures 54 seconds on device: the download path
+// completed with six seconds to spare and the store smoke -- same call, colder
+// guest -- ran past the bound and reported "exceeded 1m0s". A limit that the
+// normal path nearly hits is not a hang detector, it is a coin flip.
+const sapGuestTimeout = 3 * time.Minute
 
 // sapInstructionChunk bounds a single emulation start. Emulation restarts after
 // every instruction the compatibility layer emulates, so this is also the
