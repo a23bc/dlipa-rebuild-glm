@@ -43,6 +43,11 @@ import (
 // error plist rather than an HTTP failure.
 type StoreAccount struct {
 	DSID, Token, StoreFront string
+	// EntEndpoint is the bag's volumeStoreDownloadProduct URL, which is what the
+	// real download path posts to. The probe used a hardcoded one and the Store
+	// answered 401; the bag value is the only one known to be routed to this
+	// account's pod.
+	EntEndpoint string
 }
 
 func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, returnedErr error) {
@@ -477,7 +482,15 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	case len(s.hardware) != 6:
 		entExecuted = "no hardware id"
 	default:
-		entExecuted = smokeEntDownload(runtime, s.hardware, guid, entKBSync, externalVersionID, headers, client)
+		endpoint := account.EntEndpoint
+
+		if endpoint == "" {
+			endpoint = "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download"
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent endpoint: %s\n", endpoint)
+
+		entExecuted = smokeEntDownload(runtime, s.hardware, guid, endpoint, entKBSync, externalVersionID, headers, client)
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
@@ -770,10 +783,14 @@ func hexHead(data []byte, limit int) string {
 // Separate from the smoke's body because it is the E3 measurement: the pass line
 // is a 200 whose plist carries a songList, and everything before that line is
 // only worth reporting as context.
-func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, blob []byte, externalVersionID string, headers http.Header, client *http.Client) string {
+func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, endpoint string, blob []byte, externalVersionID string, headers http.Header, client *http.Client) string {
 	serial := base64.StdEncoding.EncodeToString(append([]byte{0x54, 0xc8, 0xb0, 0xa9, 0x88}, hardware[2:]...))
 
-	endpoint := "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download?guid=" + guid
+	if strings.Contains(endpoint, "?") {
+		endpoint += "&guid=" + guid
+	} else {
+		endpoint += "?guid=" + guid
+	}
 
 	kbsync := ""
 	if len(blob) > 0 {

@@ -445,7 +445,11 @@ func diagnosticStoreSmoke() async -> String {
 
         let started = Date()
         let result = try await runOffMain {
-            try signer.storeSmoke(dsid: dsid, token: token, storefront: storefront)
+            // The endpoint comes from the bag, not from a constant: it is what
+            // the real download path posts to, and the pod it names is the one
+            // this account's session is routed through.
+            try signer.storeSmoke(dsid: dsid, token: token, storefront: storefront,
+                                  entEndpoint: bag.volumeStoreDownloadProduct ?? "")
         }
         let seconds = Int(Date().timeIntervalSince(started))
         AppLog.info("store smoke: " + result + " (wall \(seconds)s)", .sap)

@@ -166,8 +166,8 @@ final class SAPSigner {
     /// E1-a: opens the Store runtime on the machine this signer already runs on,
 /// and reports how long it took. The runtime shares the guest rather than
 /// creating one, because a second emulator cannot be allocated here.
-func storeSmoke(dsid: String, token: String, storefront: String) throws -> String {
-    try bridge.storeSmoke(dsid, token: token, storefront: storefront)
+func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: String) throws -> String {
+    try bridge.storeSmoke(dsid, token: token, storefront: storefront, entEndpoint: entEndpoint)
 }
 
 func kbsync(dsid: String) throws -> Data {
