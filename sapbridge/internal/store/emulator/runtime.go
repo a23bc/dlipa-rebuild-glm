@@ -464,6 +464,12 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 	}
 
+	var (
+		pending                       bool
+		pendingAddress, pendingOffset uint64
+		pendingPages                  int
+	)
+
 	for _, page := range profile.Pages {
 		if page.Offset+4096 > uint64(len(pageData)) {
 			return nil, errors.New("profile page exceeds data")
@@ -488,9 +494,24 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			}
 		}
 
-		if err = r.MemWrite(page.Address, pageData[page.Offset:page.Offset+4096]); err != nil {
-			return nil, fmt.Errorf("prepare store runtime: %w", err)
+		// Consecutive pages go out in one write. The profile stores its pages in
+		// address order, so most of these 1,900 arrive as a few dozen runs; one
+		// MemWrite per run instead of per page is the difference between seconds
+		// and minutes on device.
+		if pending && page.Address == pendingAddress+4096 && page.Offset == pendingOffset+4096 {
+			pendingPages++
+
+			continue
 		}
+
+		if pending {
+			if err = r.MemWrite(pendingAddress, pageData[pendingOffset:pendingOffset+uint64(pendingPages)*4096]); err != nil {
+				return nil, fmt.Errorf("prepare store runtime: %w", err)
+			}
+		}
+
+		pending = true
+		pendingAddress, pendingOffset, pendingPages = page.Address, page.Offset, 1
 
 		// MemMap records every range it maps, cache pages included, so the
 		// profile's own pages are tracked separately for the fault report.
@@ -499,6 +520,12 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 
 		r.profilePages[page.Address&^0xFFF] = true
+	}
+
+	if pending {
+		if err = r.MemWrite(pendingAddress, pageData[pendingOffset:pendingOffset+uint64(pendingPages)*4096]); err != nil {
+			return nil, fmt.Errorf("prepare store runtime: %w", err)
+		}
 	}
 
 	// Once, after the loop. This line used to sit inside it, so a profile of
@@ -783,16 +810,35 @@ func (r *Runtime) MemMap(address, size uint64) error {
 func (r *Runtime) mapPerPage(address, size uint64) error {
 	var fresh int
 
-	for page := address; page < address+size; page += 4096 {
+	// One MemMap per run of missing pages, not one per page.
+	//
+	// The profile is a sparse table: 1,900 pages spread over a few dozen runs,
+	// and mapping them one at a time cost minutes on device -- a single
+	// 951-page region took 78 seconds. The gaps are what needs mapping; a page
+	// that is already readable belongs to the other tenant and is skipped, so a
+	// run only ever covers pages that are all missing.
+	for page := address; page < address+size; {
 		if _, err := r.engine.MemRead(page, 1); err == nil {
+			page += 4096
+
 			continue
 		}
 
-		if err := r.engine.MemMap(page, 4096); err != nil {
-			return fmt.Errorf("page %#x: %w", page, err)
+		runStart := page
+
+		for page < address+size {
+			if _, err := r.engine.MemRead(page, 1); err == nil {
+				break
+			}
+
+			page += 4096
 		}
 
-		fresh++
+		if err := r.engine.MemMap(runStart, page-runStart); err != nil {
+			return fmt.Errorf("map %#x+%#x: %w", runStart, page-runStart, err)
+		}
+
+		fresh += int((page - runStart) / 4096)
 	}
 
 	// Force the translation caches for this range to be rebuilt. uc_mem_read
@@ -912,6 +958,7 @@ func (r *Runtime) alloc(size uint64) uint64 {
 
 	return address
 }
+
 // allZero reports whether every byte is zero.
 //
 // Used to tell "the cache file had nothing here" from "something wrote here":
