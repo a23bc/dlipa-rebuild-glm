@@ -399,17 +399,31 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 	fmt.Fprintf(os.Stderr, "[SAP] store smoke: Execute returned in %s\n",
 		time.Since(executeStarted).Round(time.Millisecond))
 
-	// The buffered calls are printed after the attempt, not during it: the one
-	// that matters is the last one, and printing as they arrive let objc_retain
-	// fill the quota long before the signer reached malloc.
-	inspectStarted := time.Now()
-	summary, inspectErr := runtime.InspectRequest(address)
-	if inspectErr != nil {
-		summary = "inspect failed: " + inspectErr.Error()
-	}
+	// Inspecting the request walks its lazy getters, and every read is a guest
+	// message send: measured at 3m32s on the run that first got the encoder
+	// working. That is most of a four-minute wait during which the app is
+	// unusable, and it is pure reporting.
+	//
+	// It is off. E3 already answers the question inspection was there to answer
+	// -- whether the request is usable -- by getting 200 and a songList back.
+	// The symbol and call traces stay, because they are cheap and they are what
+	// explains a failure when one happens.
+	const inspectRequest = false
 
-	fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s (inspected in %s)\n",
-		summary, time.Since(inspectStarted).Round(time.Millisecond))
+	summary := "inspection off"
+
+	if inspectRequest {
+		inspectStarted := time.Now()
+		var inspectErr error
+
+		summary, inspectErr = runtime.InspectRequest(address)
+		if inspectErr != nil {
+			summary = "inspect failed: " + inspectErr.Error()
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] store smoke: %s (inspected in %s)\n",
+			summary, time.Since(inspectStarted).Round(time.Millisecond))
+	}
 
 	runtime.DumpSymbolTrace()
 	runtime.DumpTrace()
@@ -497,7 +511,8 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		entExecuted = smokeEntDownload(runtime, s.hardware, guid, endpoint, entKBSync, externalVersionID, headers, client, account.CookieHeader)
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s\n", entExecuted)
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: ent %s (t+%s)\n",
+		entExecuted, time.Since(started).Round(time.Second))
 
 	s.machine.SetFaultExplainer(nil)
 
