@@ -900,9 +900,9 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, e
 	payload, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
 	text := string(payload)
 
-	return fmt.Sprintf("status=%d bytes=%d songList=%v url=%s body=%s",
+	return fmt.Sprintf("status=%d bytes=%d songList=%v url=%s fetch=%s body=%s",
 		response.StatusCode, len(payload), strings.Contains(text, "songList"),
-		firstDownloadURL(text), firstLine(text, 200))
+		shorten(firstDownloadURL(text), 96), fetchPackage(firstDownloadURL(text), client), firstLine(text, 200))
 }
 
 // firstLine keeps log lines readable: plists arrive with newlines inside.
@@ -1014,10 +1014,44 @@ func firstDownloadURL(text string) string {
 		return "none"
 	}
 
-	value := strings.TrimSpace(rest[:end])
-	if len(value) > 96 {
-		value = value[:96] + "…"
+	return strings.TrimSpace(rest[:end])
+}
+
+// shorten keeps a URL readable in a log line without changing what is fetched.
+func shorten(value string, limit int) string {
+	if len(value) > limit {
+		return value[:limit] + "…"
 	}
 
 	return value
+}
+
+// fetchPackage asks the package URL for its first kilobyte.
+//
+// A URL in a plist proves the Store agreed to serve this account; it does not
+// prove the file is reachable. One ranged GET answers that, and it is the only
+// step between E3 and a download that actually writes bytes.
+func fetchPackage(packageURL string, client *http.Client) string {
+	if !strings.HasPrefix(packageURL, "http") {
+		return "no url"
+	}
+
+	request, err := http.NewRequest(http.MethodGet, packageURL, nil)
+	if err != nil {
+		return "bad url: " + err.Error()
+	}
+
+	request.Header.Set("Range", "bytes=0-1023")
+
+	response, err := client.Do(request)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+
+	defer response.Body.Close()
+
+	payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+
+	return fmt.Sprintf("%d %s %dB total=%s", response.StatusCode,
+		response.Header.Get("Content-Type"), len(payload), response.Header.Get("Content-Range"))
 }
