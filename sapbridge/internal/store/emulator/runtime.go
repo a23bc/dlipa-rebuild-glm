@@ -492,9 +492,6 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 
-		fmt.Fprintf(os.Stderr, "[SAP] open(): kept %d cache pages and %d profile pages the machine already had, skipped %d images\n",
-			skippedCachePages, skippedProfilePages, skippedImages)
-
 		// MemMap records every range it maps, cache pages included, so the
 		// profile's own pages are tracked separately for the fault report.
 		if r.profilePages == nil {
@@ -503,6 +500,14 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 		r.profilePages[page.Address&^0xFFF] = true
 	}
+
+	// Once, after the loop. This line used to sit inside it, so a profile of
+	// 1,790 pages printed 1,790 lines -- 1,790 writes through the black-box
+	// recorder, each with its own lock and file I/O, and 1,790 lines for the log
+	// view to lay out. On device that is minutes of a frozen screen for one
+	// number that belongs in a single line.
+	fmt.Fprintf(os.Stderr, "[SAP] open(): kept %d cache pages and %d profile pages the machine already had, skipped %d images\n",
+		skippedCachePages, skippedProfilePages, skippedImages)
 
 	for _, call := range profile.Calls {
 		page := call.Address &^ 4095

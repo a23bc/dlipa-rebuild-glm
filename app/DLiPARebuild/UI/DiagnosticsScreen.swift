@@ -95,7 +95,20 @@ struct DiagnosticsScreen: View {
     }
 
     private func refresh() {
-        logText = AppLog.exportText()
+        // The tail, not everything. The view lays out this string on the main
+        // thread, and the probe can add a thousand lines in one run: rendering
+        // all of them on every refresh is main-thread work that competes with
+        // the very thing it is reporting on. The full log is still exported by
+        // the share button.
+        let text = AppLog.exportText()
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+
+        if lines.count > 400 {
+            logText = "… " + String(lines.count - 400) + " earlier lines omitted …\n"
+                + lines.suffix(400).joined(separator: "\n")
+        } else {
+            logText = text
+        }
     }
 
     /// The question this answers: does the probeapp chain run on this device.
