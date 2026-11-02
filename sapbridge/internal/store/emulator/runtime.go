@@ -477,9 +477,14 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		probeCalls, readBytes         int
 		timeProbe, timeRead, timeZero time.Duration
 		timeWrite                     time.Duration
+		iterations                    int
 	)
 
+	loopStarted := time.Now()
+
 	for _, page := range profile.Pages {
+		iterations++
+
 		if page.Offset+4096 > uint64(len(pageData)) {
 			return nil, errors.New("profile page exceeds data")
 		}
@@ -584,10 +589,18 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		timeWrite += time.Since(writeMark)
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP] open(): page loop probes=%d read=%dKB probe=%s read=%s zero=%s write=%s\n",
-		probeCalls, readBytes/1024,
+	// total minus the parts: whatever is left is this loop's own bookkeeping --
+	// the map insert, the run accumulator, the iteration itself. The parts add up
+	// to 64 ms while the loop takes tens of seconds, so something outside them
+	// owns the time and this line names it.
+	accounted := timeProbe + timeRead + timeZero + timeWrite
+
+	fmt.Fprintf(os.Stderr, "[SAP] open(): page loop iters=%d probes=%d read=%dKB total=%s (probe=%s read=%s zero=%s write=%s bookkeeping=%s)\n",
+		iterations, probeCalls, readBytes/1024,
+		time.Since(loopStarted).Round(time.Millisecond),
 		timeProbe.Round(time.Millisecond), timeRead.Round(time.Millisecond),
-		timeZero.Round(time.Millisecond), timeWrite.Round(time.Millisecond))
+		timeZero.Round(time.Millisecond), timeWrite.Round(time.Millisecond),
+		(time.Since(loopStarted) - accounted).Round(time.Millisecond))
 
 	// Once, after the loop. This line used to sit inside it, so a profile of
 	// 1,790 pages printed 1,790 lines -- 1,790 writes through the black-box
