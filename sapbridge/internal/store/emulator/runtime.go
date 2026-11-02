@@ -610,39 +610,67 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	fmt.Fprintf(os.Stderr, "[SAP] open(): kept %d cache pages and %d profile pages the machine already had, skipped %d images\n",
 		skippedCachePages, skippedProfilePages, skippedImages)
 
+	// A recorded call is patched to `ret` because its implementation lives on the
+	// host and cannot be recreated here. That `ret` is not a fallback: it is the
+	// return half of the mechanism. The code hook fires at this address first,
+	// dispatches to the Go implementation by symbol name and sets x0; the guest
+	// then executes the `ret` and returns to its caller.
+	//
+	// Removing it -- which an earlier change did, one address at a time -- sends
+	// the guest into the real library body instead. For 0x180675ce8 that is
+	// libsystem_malloc, which needs zone state this runtime has no way to build.
+	//
+	// Done one page at a time: 13,370 call sites used to cost two uc_mem calls
+	// each -- a read to save the original bytes and a write to patch -- and the
+	// page is the natural unit for both. The patches for one page go into a
+	// single buffer and land in one write.
+	patchStarted := time.Now()
+
+	byPage := make(map[uint64][]uint64, len(profile.Calls)/4)
+	pageOrder := make([]uint64, 0, len(profile.Calls)/4)
+
 	for _, call := range profile.Calls {
 		page := call.Address &^ 4095
+		if _, seen := byPage[page]; !seen {
+			pageOrder = append(pageOrder, page)
+		}
 
-		// A recorded call is patched to `ret` because its implementation lives on
-		// the host and cannot be recreated here. That `ret` is not a fallback: it
-		// is the return half of the mechanism. The code hook fires at this
-		// address first, dispatches to the Go implementation by symbol name and
-		// sets x0; the guest then executes the `ret` and returns to its caller.
-		//
-		// Removing it -- which an earlier change did, one address at a time --
-		// sends the guest into the real library body instead. For 0x180675ce8
-		// that is libsystem_malloc, which needs zone state this runtime has no
-		// way to build.
+		byPage[page] = append(byPage[page], call.Address)
+	}
+
+	for _, page := range pageOrder {
 		if !r.pages[page] {
 			if err = r.MemMap(page, 4096); err != nil {
 				return nil, fmt.Errorf("prepare store runtime: %w", err)
 			}
 		}
 
-		if original, readErr := r.engine.MemRead(call.Address, 4); readErr == nil {
+		data, readErr := r.engine.MemRead(page, 4096)
+		if readErr != nil {
+			return nil, fmt.Errorf("prepare store runtime: read page %#x: %w", page, readErr)
+		}
+
+		for _, address := range byPage[page] {
+			offset := address - page
+
 			if r.patchedSites == nil {
 				r.patchedSites = make(map[uint64][4]byte, len(profile.Calls))
 			}
 
 			var saved [4]byte
-			copy(saved[:], original)
-			r.patchedSites[call.Address] = saved
+			copy(saved[:], data[offset:offset+4])
+			r.patchedSites[address] = saved
+
+			copy(data[offset:offset+4], []byte{0xc0, 0x03, 0x5f, 0xd6})
 		}
 
-		if err = r.MemWrite(call.Address, []byte{0xc0, 0x03, 0x5f, 0xd6}); err != nil {
+		if err = r.MemWrite(page, data); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] open(): patched %d call sites across %d pages in %s\n",
+		len(profile.Calls), len(pageOrder), time.Since(patchStarted).Round(time.Millisecond))
 	// Non-fragile ivar offsets are fixed by the Objective-C loader on macOS.
 	// The profile's prepared pages are a snapshot of a real process, so they carry
 	// the original pointer-authentication instructions and undo the stripping done
