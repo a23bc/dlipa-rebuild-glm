@@ -176,7 +176,8 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		} else {
 			entKBSync = blob
 
-			fmt.Fprintf(os.Stderr, "[SAP] store smoke: kbsync for E3: %d bytes\n", len(blob))
+			fmt.Fprintf(os.Stderr, "[SAP] store smoke: kbsync for E3: %d bytes (t+%s)\n",
+				len(blob), time.Since(started).Round(time.Second))
 		}
 	}
 

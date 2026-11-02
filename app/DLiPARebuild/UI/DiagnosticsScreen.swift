@@ -12,6 +12,14 @@ struct DiagnosticsScreen: View {
     /// a disabled button with no other change reads as a hang, so the elapsed
     /// time is shown instead.
     @State private var started = Date()
+    /// A main-queue heartbeat while a probe runs.
+    ///
+    /// The store probe leaves the main thread free by design, yet the app becomes
+    /// unusable during it while the spinner keeps animating -- which says the
+    /// main thread is blocked, not that the work is merely slow. These lines make
+    /// that visible: if they stop while the spinner still turns, main is blocked
+    /// and the last one printed marks when.
+    @State private var heartbeat: Timer?
     @State private var recording = AppLog.isRecording
     @State private var logText = ""
 
@@ -134,14 +142,35 @@ struct DiagnosticsScreen: View {
         running = true
         started = Date()
 
+        beginHeartbeat()
+
         Task {
+            let tick = Date()
 
             _ = await AppSession.shared.diagnosticStoreSmoke()
+
+            stopHeartbeat()
+            AppLog.info("store probe returned after "
+                        + String(Int(Date().timeIntervalSince(tick))) + "s", .app)
 
             running = false
 
         }
 
+    }
+
+    /// Logs every two seconds from the main queue.
+    private func beginHeartbeat() {
+        stopHeartbeat()
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            AppLog.info("main alive at t+"
+                        + String(Int(Date().timeIntervalSince(started))) + "s", .app)
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeat?.invalidate()
+        heartbeat = nil
     }
 
     
