@@ -470,6 +470,13 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		pendingPages                  int
 		checkedStart                  uint64
 		checkedData                   []byte
+		// Where the seconds in this loop actually go. Two guesses at the cost
+		// were both wrong -- batching the writes changed nothing measurable, and
+		// chunking the reads changed nothing at all -- so it gets measured
+		// instead of guessed a third time.
+		probeCalls, readBytes         int
+		timeProbe, timeRead, timeZero time.Duration
+		timeWrite                     time.Duration
 	)
 
 	for _, page := range profile.Pages {
@@ -487,7 +494,12 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		// The exception is a page the handshake wrote to: those are not zero and
 		// must not be replaced. So an existing page is only overwritten when it
 		// holds nothing at all.
-		if r.engine != nil && r.engine.IsMapped(page.Address, 4096) {
+		mark := time.Now()
+		mapped := r.engine != nil && r.engine.IsMapped(page.Address, 4096)
+		timeProbe += time.Since(mark)
+		probeCalls++
+
+		if mapped {
 			// Read a chunk and answer for the pages inside it. One uc_mem_read
 			// per page was 3,300 cross-cgo calls on device -- the same cost the
 			// page-at-a-time mapping had, one layer down.
@@ -497,6 +509,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 				page.Address+4096 > checkedStart+uint64(len(checkedData)) {
 				size := uint64(chunkPages) * 4096
 
+				readMark := time.Now()
 				chunk, readErr := r.engine.MemRead(page.Address, size)
 				if readErr != nil {
 					// Short read near the end of a mapping: fall back to the page.
@@ -509,13 +522,20 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 					continue
 				}
 
+				timeRead += time.Since(readMark)
+				readBytes += len(chunk)
+
 				checkedStart, checkedData = page.Address, chunk
 			}
 
 			offset := page.Address - checkedStart
 			current := checkedData[offset : offset+4096]
 
-			if !allZero(current) {
+			zeroMark := time.Now()
+			zero := allZero(current)
+			timeZero += time.Since(zeroMark)
+
+			if !zero {
 				skippedProfilePages++
 
 				continue
@@ -533,9 +553,13 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 
 		if pending {
+			writeMark := time.Now()
+
 			if err = r.MemWrite(pendingAddress, pageData[pendingOffset:pendingOffset+uint64(pendingPages)*4096]); err != nil {
 				return nil, fmt.Errorf("prepare store runtime: %w", err)
 			}
+
+			timeWrite += time.Since(writeMark)
 		}
 
 		pending = true
@@ -551,10 +575,19 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	}
 
 	if pending {
+		writeMark := time.Now()
+
 		if err = r.MemWrite(pendingAddress, pageData[pendingOffset:pendingOffset+uint64(pendingPages)*4096]); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
+
+		timeWrite += time.Since(writeMark)
 	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] open(): page loop probes=%d read=%dKB probe=%s read=%s zero=%s write=%s\n",
+		probeCalls, readBytes/1024,
+		timeProbe.Round(time.Millisecond), timeRead.Round(time.Millisecond),
+		timeZero.Round(time.Millisecond), timeWrite.Round(time.Millisecond))
 
 	// Once, after the loop. This line used to sit inside it, so a profile of
 	// 1,790 pages printed 1,790 lines -- 1,790 writes through the black-box
