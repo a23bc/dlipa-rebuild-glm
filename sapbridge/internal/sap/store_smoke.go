@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
 	"io"
@@ -350,7 +351,17 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		}
 	}
 
+	// The classic endpoint is retired. E3 serves ent/download with its own
+	// request, and this one answers 2042 for a session that has just signed in --
+	// it exists only because there was no way to send Apple's request. Running it
+	// costs a guest round trip and tells us nothing new.
+	const classicAttempt = false
+
 	attempt := func(sign func([]byte) ([]byte, error)) (*http.Response, error) {
+		if !classicAttempt {
+			return nil, errors.New("classic download retired: ent/download serves this app")
+		}
+
 		return runtime.Execute(emulator.Request{
 			URL:        endpoint,
 			Method:     method,
