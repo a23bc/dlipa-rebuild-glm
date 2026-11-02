@@ -162,6 +162,8 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 		fmt.Fprintf(os.Stderr, "[SAP] pre-open sign: %d bytes\n", len(signature))
 	}
 
+	fmt.Fprintf(os.Stderr, "[SAP] store smoke: build %s\n", buildStamp)
+
 	// kbsync for E3 is generated here, before the store runtime opens. Once its
 	// pages are in the shared guest, the SAP machine's generator runs into its
 	// own one-minute bound: the run that tried it afterwards stopped at
@@ -170,8 +172,6 @@ func (s *Signer) StoreSmoke(image []byte, account StoreAccount) (_ string, retur
 
 	if dsid, parseErr := strconv.ParseUint(account.DSID, 10, 64); parseErr == nil && dsid != 0 && len(s.hardware) == 6 {
 		if blob, kerr := machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid); kerr != nil {
-			fmt.Fprintf(os.Stderr, "[SAP] store smoke: build %s\n", buildStamp)
-
 			fmt.Fprintf(os.Stderr, "[SAP] store smoke: kbsync for E3 failed: %v\n", kerr)
 		} else {
 			entKBSync = blob
@@ -900,8 +900,9 @@ func smokeEntDownload(runtime *emulator.Runtime, hardware []byte, guid string, e
 	payload, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
 	text := string(payload)
 
-	return fmt.Sprintf("status=%d bytes=%d songList=%v body=%s",
-		response.StatusCode, len(payload), strings.Contains(text, "songList"), firstLine(text, 240))
+	return fmt.Sprintf("status=%d bytes=%d songList=%v url=%s body=%s",
+		response.StatusCode, len(payload), strings.Contains(text, "songList"),
+		firstDownloadURL(text), firstLine(text, 200))
 }
 
 // firstLine keeps log lines readable: plists arrive with newlines inside.
@@ -985,3 +986,38 @@ func latestExternalVersionID(appID int64, countryCode string) string {
 // commit, and that has already cost a round: a run was read as evidence about a
 // build that had not produced it.
 var buildStamp = "unknown"
+
+// firstDownloadURL pulls the first package URL out of an ent/download plist.
+//
+// The plist nests it as <key>URL</key><string>https://…</string> inside the
+// first songList entry. A real parser is not needed to answer one question: is
+// there a URL in here that we could fetch.
+func firstDownloadURL(text string) string {
+	const marker = "<key>URL</key>"
+
+	index := strings.Index(text, marker)
+	if index < 0 {
+		return "none"
+	}
+
+	rest := text[index+len(marker):]
+
+	start := strings.Index(rest, "<string>")
+	if start < 0 {
+		return "none"
+	}
+
+	rest = rest[start+len("<string>"):]
+
+	end := strings.Index(rest, "</string>")
+	if end < 0 {
+		return "none"
+	}
+
+	value := strings.TrimSpace(rest[:end])
+	if len(value) > 96 {
+		value = value[:96] + "…"
+	}
+
+	return value
+}
