@@ -468,6 +468,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		pending                       bool
 		pendingAddress, pendingOffset uint64
 		pendingPages                  int
+		checkedStart                  uint64
+		checkedData                   []byte
 	)
 
 	for _, page := range profile.Pages {
@@ -486,8 +488,34 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		// must not be replaced. So an existing page is only overwritten when it
 		// holds nothing at all.
 		if r.engine != nil && r.engine.IsMapped(page.Address, 4096) {
-			current, readErr := r.engine.MemRead(page.Address, 4096)
-			if readErr != nil || !allZero(current) {
+			// Read a chunk and answer for the pages inside it. One uc_mem_read
+			// per page was 3,300 cross-cgo calls on device -- the same cost the
+			// page-at-a-time mapping had, one layer down.
+			const chunkPages = 16
+
+			if checkedData == nil || page.Address < checkedStart ||
+				page.Address+4096 > checkedStart+uint64(len(checkedData)) {
+				size := uint64(chunkPages) * 4096
+
+				chunk, readErr := r.engine.MemRead(page.Address, size)
+				if readErr != nil {
+					// Short read near the end of a mapping: fall back to the page.
+					chunk, readErr = r.engine.MemRead(page.Address, 4096)
+				}
+
+				if readErr != nil {
+					skippedProfilePages++
+
+					continue
+				}
+
+				checkedStart, checkedData = page.Address, chunk
+			}
+
+			offset := page.Address - checkedStart
+			current := checkedData[offset : offset+4096]
+
+			if !allZero(current) {
 				skippedProfilePages++
 
 				continue
