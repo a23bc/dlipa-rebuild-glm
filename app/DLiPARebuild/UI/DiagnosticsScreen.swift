@@ -46,6 +46,10 @@ struct DiagnosticsScreen: View {
                             .disabled(running)
                         Button("Open Store runtime (E1-a)") { runStoreSmoke() }
                             .disabled(running)
+                        // The smallest possible engine life cycle, and the only
+                        // measurement that separates "our open is wrong" from
+                        // "this process cannot host an engine at all".
+                        Button("Probe engine (open + one map)") { runEngineProbe() }
                             .disabled(running)
                     }
 
@@ -126,6 +130,35 @@ struct DiagnosticsScreen: View {
         // settles even if a report line never arrives.
         DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
             if running { running = false }
+        }
+    }
+
+    /// Opens and closes a bare emulator: no images, no profile, one page mapped.
+    ///
+    /// The full open dies in code_gen_alloc with "Could not allocate dynamic
+    /// translator buffer". If this probe fails too, the app is the wrong shape
+    /// for an engine on this device; if it succeeds while the full open fails,
+    /// the difference is in what runs beside the open.
+    private func runEngineProbe() {
+        running = true
+        started = Date()
+
+        // Off the main queue: the call runs the C library synchronously, and a
+        // failure takes the process with it, which is what we are measuring.
+        DispatchQueue.global(qos: .userInitiated).async {
+            var report = ""
+            do {
+                let result = try SapbridgeProbeEngine()
+                report = "engine probe: ok (" + (result ?? "no result") + ")"
+            } catch {
+                report = "engine probe FAILED: " + error.localizedDescription
+            }
+
+            let line = report
+            DispatchQueue.main.async {
+                AppLog.info(line, .sap)
+                running = false
+            }
         }
     }
 
