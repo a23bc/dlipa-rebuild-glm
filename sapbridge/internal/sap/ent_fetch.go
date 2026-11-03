@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -112,9 +113,23 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 
 	var blob []byte
 
+	// The blob is reused in this order: memory, disk, generate.
+	//
+	// Generation runs the engine and costs about a minute; Apple accepts the same
+	// blob for the same (DSID, device) pair across launches, which is why ipatool
+	// keeps one in the keychain. Disk is the same idea without the keychain: the
+	// file lives under the app's cache directory and is only written after Apple
+	// has accepted the blob once.
+	fromCache := false
+
 	if runtime == nil {
 		if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
-			blob = s.kbsyncBlob
+			blob, fromCache = s.kbsyncBlob, true
+		} else if stored := loadStoredKBSync(dsid); stored != nil {
+			blob, fromCache = stored, true
+			s.kbsyncBlob, s.kbsyncDSID = stored, dsid
+
+			fmt.Fprintf(os.Stderr, "[SAP] ent download: kbsync from disk (%d bytes)\n", len(stored))
 		} else {
 			blob, err = machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
 			if err != nil {
@@ -265,7 +280,54 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		URL:             firstPackageURL(text),
 	}
 
+	// Apple rejected the blob: drop it so the next attempt generates a fresh one
+	// instead of replaying a value the server has already refused.
+	if result.FailureType != "" && fromCache {
+		clearStoredKBSync(dsid)
+		s.kbsyncBlob, s.kbsyncDSID = nil, 0
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: cached kbsync rejected (%s), discarded\n", result.FailureType)
+	}
+
+	// Only a blob Apple has accepted is worth keeping.
+	if result.FailureType == "" && result.Status == 200 && !fromCache && len(blob) > 0 {
+		storeKBSync(dsid, blob)
+	}
+
 	return result, nil
+}
+
+// kbsyncCachePath is beside the staged assets: writable, already created by the
+// staging step, and wiped with the app.
+func kbsyncCachePath(dsid uint64) string {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		root = os.TempDir()
+	}
+
+	return filepath.Join(root, "dlipa", fmt.Sprintf("kbsync-%d.bin", dsid))
+}
+
+func loadStoredKBSync(dsid uint64) []byte {
+	data, err := os.ReadFile(kbsyncCachePath(dsid))
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+
+	return data
+}
+
+func storeKBSync(dsid uint64, blob []byte) {
+	path := kbsyncCachePath(dsid)
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store kbsync: %v\n", err)
+	}
+}
+
+func clearStoredKBSync(dsid uint64) {
+	_ = os.Remove(kbsyncCachePath(dsid))
 }
 
 // plistString pulls a top-level <key>name</key><string>value</string> pair.
