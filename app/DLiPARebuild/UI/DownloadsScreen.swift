@@ -194,8 +194,7 @@ private struct FinishedRow: View {
                 Text(metadata?.name ?? parts.bundleID)
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
-                Text((metadata?.bundleID ?? parts.bundleID)
-                     + (metadata.map { " · " + $0.version } ?? (parts.version.isEmpty ? "" : " · " + parts.version)))
+                Text(metadata?.bundleID ?? parts.bundleID)
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -203,11 +202,16 @@ private struct FinishedRow: View {
 
             Spacer(minLength: 8)
 
-            // One trailing line, like a search row: a second line here made the
-            // downloads list taller than the results list for the same content.
-            Text(FinishedRow.size(of: file))
-                .font(.system(size: 13))
-                .foregroundColor(.secondary)
+            // Version above size, both on the trailing edge. Putting the
+            // version beside the bundle id lost it behind long identifiers.
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(metadata?.version ?? parts.version)
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                Text(FinishedRow.size(of: file))
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
         }
         .padding(.vertical, 12)
     }
