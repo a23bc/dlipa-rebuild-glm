@@ -142,7 +142,6 @@ private struct AccountRow: View {
 
                 Button(action: onToggleExpand) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")
-                .animation(.easeInOut(duration: 0.18), value: isExpanded)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.secondary)
                         .frame(width: 32, height: 32)
