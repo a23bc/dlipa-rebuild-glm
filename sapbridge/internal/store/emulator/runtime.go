@@ -178,6 +178,16 @@ func OpenWithEngineAt(ctx context.Context, engine *unicorn.Engine, imageData []b
 // open optionally guards accesses against the exported page set. Validation and
 // production use the same grouped mappings to stay within Unicorn section limits.
 func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64, strict bool) (*Runtime, error) {
+	// Phases are timed here rather than inferred from log timestamps: stderr is
+	// drained in batches, so two lines a second apart on the clock can arrive
+	// forty seconds apart, and every attribution made from those gaps was wrong.
+	openStarted := time.Now()
+
+	mark := func(label string) {
+		fmt.Fprintf(os.Stderr, "[SAP] open(): phase %-12s at %s\n",
+			label, time.Since(openStarted).Round(time.Millisecond))
+	}
+
 	if ctx == nil {
 		return nil, errors.New("emulator context is nil")
 	}
@@ -412,6 +422,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds(), dropped, stripped)
 	}
 
+	mark("cache pages")
+
 	r.probeWord("after cache pages")
 
 	r.logBagSlot("after cache pages")
@@ -448,6 +460,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	// fork from having to touch the engine at all, which matters because the SAP
 	// path already works on the same engine kbsync uses.
 	_ = strict
+
+	mark("page table")
 
 	regions, err := groupPages(addresses)
 	if err != nil {
@@ -669,8 +683,12 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 	}
 
+	mark("region maps")
+
 	fmt.Fprintf(os.Stderr, "[SAP] open(): patched %d call sites across %d pages in %s\n",
 		len(profile.Calls), len(pageOrder), time.Since(patchStarted).Round(time.Millisecond))
+	mark("call sites")
+
 	// Non-fragile ivar offsets are fixed by the Objective-C loader on macOS.
 	// The profile's prepared pages are a snapshot of a real process, so they carry
 	// the original pointer-authentication instructions and undo the stripping done
@@ -746,16 +764,22 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		}
 	}
 
+	mark("pac strip")
+
 	for _, patch := range profile.MetadataPatches {
 		if e := r.MemWrite(patch.Address, patch.Data); e != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", e)
 		}
 	}
 
+	mark("metadata")
+
 	r.hook, err = engine.AddCodeHook(0, ^uint64(0), r.step)
 	if err != nil {
 		return nil, fmt.Errorf("prepare store runtime: %w", err)
 	}
+
+	mark("hooks")
 
 	ready = true
 
