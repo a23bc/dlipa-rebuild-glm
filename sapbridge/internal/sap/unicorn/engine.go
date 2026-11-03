@@ -44,7 +44,7 @@ const (
 	// prints errno on mmap failure so we can see the real reason if
 	// this still fails.
 	controlTCGBufferSize = uint32(13 | 1<<26 | 1<<30)
-	tcgBufferSizeIOS     = uint32(8 << 20) // 8 MiB
+	tcgBufferSizeIOS     = uint32(4 << 20) // 4 MiB
 )
 
 const (
@@ -218,7 +218,13 @@ func newEngine(ctx context.Context, loadLibrary func(context.Context) (library, 
 	// UC_CTL_TCG_BUFFER_SIZE just stores the value; it does not init.
 	// Without this, iOS refuses the 1 GiB mmap and Unicorn exits with
 	// "Could not allocate dynamic translator buffer".
-	fmt.Fprintf(os.Stderr, "[SAP]   uc_ctl tcg_buffer_size=%d\n", tcgBufferSizeIOS)
+	// The size is printed next to the process footprint because the failure it
+	// guards against -- "Could not allocate dynamic translator buffer" -- is an
+	// allocation refusal. With both numbers on the line, a failing run says
+	// whether the request was small and the address space tight, or the request
+	// was the 1 GiB default because the control never landed.
+	fmt.Fprintf(os.Stderr, "[SAP]   uc_ctl tcg_buffer_size=%d rss=%dMB\n",
+		tcgBufferSizeIOS, maxResidentMB())
 
 	if err := engine.err(engine.api.ctl(engine.handle, controlTCGBufferSize, tcgBufferSizeIOS)); err != nil {
 		_ = engine.api.close(engine.handle)
