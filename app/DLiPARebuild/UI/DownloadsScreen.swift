@@ -32,7 +32,7 @@ struct DownloadsScreen: View {
                         ForEach(files, id: \.self) { file in
                             FinishedRow(file: file)
                                 .contentShape(Rectangle())
-                                .onTapGesture { target = DownloadTarget(file: file) }
+                                .onTapGesture { target = DownloadTarget(url: file) }
                         }
                         .onDelete { offsets in
                             for index in offsets {
