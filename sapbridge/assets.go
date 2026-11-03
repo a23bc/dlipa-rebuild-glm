@@ -120,5 +120,28 @@ func readBundleDir(dir string) (assets.Bundle, error) {
 		return assets.Bundle{}, err
 	}
 
-	return bundle, nil
+	// Sliced after validation, not before: the digest is the whole file's, and the
+	// engine only ever reads the arm64 slice. CoreFP is 95 MB, 31 MB of which are
+	// used -- and the open that follows is where memory runs out.
+	coreFP, err = assets.SliceArm64(coreFP)
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("slice CoreFP: %w", err)
+	}
+
+	appleMediaServices, err = assets.SliceArm64(appleMediaServices)
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("slice AppleMediaServices: %w", err)
+	}
+
+	commerce, err = assets.SliceArm64(commerce)
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("slice commerce: %w", err)
+	}
+
+	return assets.Bundle{
+		AppleMediaServices: appleMediaServices,
+		Commerce:           commerce,
+		CoreFP:             coreFP,
+		CoreFPICXS:         coreFPICXS,
+	}, nil
 }
