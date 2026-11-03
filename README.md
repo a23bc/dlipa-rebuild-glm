@@ -2,14 +2,20 @@
 
 DLiPA stopped working because Apple now requires App Store private-API requests
 to carry an `X-Apple-ActionSignature` header, and because the download endpoint
- advertised in `bag.xml` moved to `ent/download`. This repository rebuilds the
+advertised in `bag.xml` moved to `ent/download`. This repository rebuilds the
 app with both changes, and builds an installable IPA on GitHub Actions.
 
-**Current state:** sign-in, kbsync, signing, search and account handling work;
-the download does not yet — the store answers `2042 AuthTokenResumeFreeBuy` and
-five candidate causes have been ruled out on device. See `DELIVERY_STATUS.md` for
-what works and what does not. The tables below describe the design, not a claim
-that every path is finished.
+**Current state:** sign-in, kbsync, signing, search, account handling, version
+history and **download** all work on device. The download no longer goes through
+the classic `volumeStoreDownloadProduct` request — the Store's own code builds the
+`ent/download` request inside an emulated guest, which is what Apple now requires
+and what this project spent most of its effort arriving at. See
+[`docs/architecture.md`](docs/architecture.md) for how that works and why each
+piece is shaped the way it is.
+
+Downloads run in the background: starting one returns immediately, progress is on
+the Downloads tab, and the app stays usable while the emulated Store runtime does
+its minutes of work.
 
 **No Apple Developer account is required.** The IPA is sealed but not signed with a certificate, and you
 sign it with your own Apple ID using AltStore or Sideloadly — the same flow the
@@ -21,10 +27,11 @@ original DLiPA README recommended.
 
 | Problem | Evidence | Fix here |
 |---|---|---|
-| Requests were unsigned | Signed request -> HTTP 200 + session cookie; unsigned -> **HTTP 403** | `sapbridge` signs every body |
+| Requests were unsigned | Signed request → HTTP 200 + session cookie; unsigned → **HTTP 403** | `sapbridge` signs every body |
 | authenticate URL lacked a trailing slash | Without it Apple answers **HTTP 204** empty; with it, HTTP 200 | `AppStoreClient.authenticate` appends `/` |
-| Download URL was hardcoded to the legacy MZFinance path | Live bag now returns `downloaddispatch.itunes.apple.com/.../ent/download` for `volumeStoreDownloadProduct` | `AppStoreClient.requestDownload` uses the bag value |
-| No kbsync blob | `ent/download` requires FairPlay kbsync | `SAPSigner.kbsync` |
+| The classic download request was refused | `volumeStoreDownloadProduct` answers **2042** (`AuthTokenResumeFreeBuy`), and its `buyProduct` fallback answers `MZCommerce.SystemError` | the request is no longer built by hand: the Store's own encoder builds it inside the emulated guest |
+| That request was signed but still refused | 500 with an empty body, through five field-level attempts | `Content-Type: x-www-form-urlencoded`, `User-Agent: Configurator/2.18`, the **session cookies**, `salableAdamId` as a *string*, and a non-empty `externalVersionId` |
+| No kbsync blob | `ent/download` binds the download to account and device through kbsync | `internal/sap/ent_fetch.go` generates it *before* the runtime opens |
 | guid was a random UUID | `ent/download` requires a 6-byte GUID | `HardwareIdentity.stable()` |
 | dsid was a string | `ent/download` requires a decimal DSID | `SAPSigner.parseDSID` |
 
@@ -36,32 +43,55 @@ The controlled experiment behind the first two rows is in
 ## Layout
 
     app/                        Xcode project (XcodeGen) + Swift sources
-      project.yml
-      DLiPA/
-        Info.plist
-        LaunchScreen.storyboard
-        SapBridge.h             contract for the Go framework
-        AppDelegate.swift
-        SceneDelegate.swift
-        MainViewController.swift
+      project.yml               target DLiPARebuild, iOS 15, name auto-picked
+      DLiPARebuild/
+        DLiPA-Bridging-Header.h  hand-written declarations for the Go archive
         Networking/
           AppStoreClient.swift   signed transport, bag, login, download
           StoreBag.swift         bag.xml parsing (handles loc- prefix)
           SAPSigner.swift        wraps the Go bridge
-          AssetStaging.swift     copies the 119 MB assets out of the bundle
-    sapbridge/                  Go module: the Apple SAP signing stack
-      sapbridge.go             Sign / SignatureHeaderValue / KBSync / SerialNumber
-      internal/sap/...         vendored from majd/ipatool v2 (MIT)
-      *_test.go                9 unit tests, all passing
-      VERIFICATION.md          build/test matrix
+          AssetStaging.swift     copies the 126 MB assets out of the bundle
+        Model/
+          AppSession.swift       session, account, the download primitive
+          DownloadManager.swift  jobs that outlive the screen that started them
+          StoreApp.swift         catalogue entry
+        UI/
+          SearchScreen.swift     search, download, version sheet
+          VersionListView.swift  version ids, tap to download that build
+          DownloadsScreen.swift  running and finished downloads, one list
+          AccountsScreen.swift  SettingsScreen.swift  DiagnosticsScreen.swift
+        Logging/
+          StderrCapture.swift    previous launch's stderr, shareable from the app
+    sapbridge/                  Go module
+      sapbridge.go              Sign / KBSync / StoreSmoke / EntDownload (bridge)
+      internal/sap/
+        signer_local.go         the machine, the session, one store runtime
+        ent_fetch.go            production ent/download through the encoder
+        store_smoke.go          the diagnostic probe (E1-E4 live here first)
+        machine/ machimage/     the arm64 guest and the Mach-O loader
+      internal/store/
+        emulator/               Store runtime: mapping, hooks, encoder, Execute
+        profile/ cachepages/    recorded pages, and the dyld cache slice
     scripts/
-      build-unicorn-ios.sh     cross-compiles Unicorn TCI (guest x86-64)
-      stage-assets.sh          copies + SHA-256 verifies the Apple binaries
-      package-ipa.sh           sealed .app -> .ipa
-      make-coderesources.py    writes _CodeSignature/CodeResources
-    VendorAssets/              the four Apple binaries, git-lfs
+      check-bridging-header.py  generated header vs the hand-written one
+      build-unicorn-ios.sh      cross-compiles Unicorn TCI
+      stage-assets.sh           copies + SHA-256 verifies the Apple binaries
+      package-ipa.sh            sealed .app -> .ipa
+    docs/architecture.md        how the pieces fit and why
+    VendorAssets/               the four Apple binaries, git-lfs
     .github/workflows/
-      build-ios.yml            macOS runner: bridge -> app -> IPA -> release
+      build-ios.yml             macOS runner: bridge -> app -> IPA -> artifact
+
+---
+
+## Documentation
+
+* **[docs/architecture.md](docs/architecture.md)** — how the pieces fit: the two
+  tenants on one guest, why the Store runtime can only be opened once, the
+  download flow end to end, the decisions that were forced by specific failures,
+  and where the minutes go on device.
+* `DELIVERY_STATUS.md` — what works today, what does not, and the evidence.
+* `sapbridge/VERIFICATION.md` — build and test matrix for the Go side.
 
 ---
 
@@ -89,7 +119,7 @@ Run it manually from the Actions tab with **Run workflow**.
     # 2. bind the Go bridge
     cd sapbridge
     CGO_ENABLED=1 GOOS=ios GOARCH=arm64 gomobile bind \
-      -target=ios -o ../app/DLiPA/Frameworks/SapBridge.framework .
+      -target=ios/arm64 -o ../app/DLiPARebuild/Frameworks/SapBridge.xcframework .
     cd ..
 
     # 3. stage the assets
@@ -98,17 +128,17 @@ Run it manually from the Actions tab with **Run workflow**.
     # 4. generate the project and build
     cd app
     xcodegen generate
-    xcodebuild -project DLiPA.xcodeproj -scheme DLiPA \
+    xcodebuild -project DLiPARebuild.xcodeproj -scheme DLiPARebuild \
       -configuration Release -sdk iphoneos \
       -destination "generic/platform=iOS" \
       CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
     # 5. package
-    ./scripts/package-ipa.sh build/Build/Products/Release-iphoneos/DLiPA.app DLiPA.ipa
+    ./scripts/package-ipa.sh build/Build/Products/Release-iphoneos/DLiPARebuild.app DLiPARebuild.ipa
 
 ## Installing
 
-Download the `DLiPA-<digest>.ipa` artifact from the workflow run - the name
+Download the `DLiPARebuild-<digest>.ipa` artifact from the workflow run - the name
 carries a short digest of the binary, so a stale copy cannot be mistaken for the
 current build (or a release), then:
 
@@ -123,8 +153,18 @@ account lasts a year.
 ## Scope
 
 This is a **functional core**, not a full UI recreation of DLiPA 1.4. It
-implements sign-in, search, and the signed download path — the parts that
-needed fixing. The original app's 100 Objective-C classes, 12 localisations,
+implements sign-in, search, version history and the signed download path — the
+parts that needed fixing.
+
+Known gaps, in the order they are likely to matter:
+
+* the classic `volumeStoreDownloadProduct` path is still present as a fallback.
+  It answers `2042` and its `buyProduct` fallback answers `SystemError`, so it
+  contributes nothing; it goes once the encoder path has run in the field.
+* purchases, and therefore apps the account does not already own, are not
+  supported. This downloads, not buys.
+* the store runtime is opened once per process, so the first download of a
+  session pays about two minutes of emulated startup (see the architecture note). The original app's 100 Objective-C classes, 12 localisations,
 CocoaHTTPServer install flow and SSZipArchive packaging are not reproduced;
 the source was never published, only the compiled IPA.
 
