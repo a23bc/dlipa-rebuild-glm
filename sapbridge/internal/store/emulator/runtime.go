@@ -487,15 +487,30 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	r.deferFlush = true
 
+	var regionTime time.Duration
+
 	for _, region := range regions {
 		if err = ctx.Err(); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 
+		regionMark := time.Now()
+
 		if err = r.MemMap(region.address, region.size); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
+
+		spent := time.Since(regionMark)
+		regionTime += spent
+
+		if spent > 200*time.Millisecond {
+			fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x took %s\n",
+				region.address, region.size, spent.Round(time.Millisecond))
+		}
 	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] open(): %d regions mapped in %s\n",
+		len(regions), regionTime.Round(time.Millisecond))
 
 	r.deferFlush = false
 
@@ -971,6 +986,11 @@ func (r *Runtime) MemMap(address, size uint64) error {
 func (r *Runtime) mapPerPage(address, size uint64) error {
 	var fresh int
 
+	var (
+		probeTime, mapTime time.Duration
+		mapCalls           int
+	)
+
 	// One MemMap per run of missing pages, not one per page.
 	//
 	// The profile is a sparse table: 1,900 pages spread over a few dozen runs,
@@ -979,7 +999,11 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 	// that is already readable belongs to the other tenant and is skipped, so a
 	// run only ever covers pages that are all missing.
 	for page := address; page < address+size; {
-		if _, err := r.engine.MemRead(page, 1); err == nil {
+		probeMark := time.Now()
+		_, probeErr := r.engine.MemRead(page, 1)
+		probeTime += time.Since(probeMark)
+
+		if probeErr == nil {
 			page += 4096
 
 			continue
@@ -988,21 +1012,32 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 		runStart := page
 
 		for page < address+size {
-			if _, err := r.engine.MemRead(page, 1); err == nil {
+			innerMark := time.Now()
+			_, innerErr := r.engine.MemRead(page, 1)
+			probeTime += time.Since(innerMark)
+
+			if innerErr == nil {
 				break
 			}
 
 			page += 4096
 		}
 
-		if err := r.engine.MemMap(runStart, page-runStart); err != nil {
-			return fmt.Errorf("map %#x+%#x: %w", runStart, page-runStart, err)
+		mapMark := time.Now()
+		mapErr := r.engine.MemMap(runStart, page-runStart)
+		mapTime += time.Since(mapMark)
+		mapCalls++
+
+		if mapErr != nil {
+			return fmt.Errorf("map %#x+%#x: %w", runStart, page-runStart, mapErr)
 		}
 
 		fresh += int((page - runStart) / 4096)
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x mapped per page (%d new)\n", address, size, fresh)
+	fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x mapped per page (%d new, %d maps, probe %s, map %s)\n",
+		address, size, fresh, mapCalls,
+		probeTime.Round(time.Millisecond), mapTime.Round(time.Millisecond))
 
 	return nil
 }
