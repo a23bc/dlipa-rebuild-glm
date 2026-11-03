@@ -269,8 +269,20 @@ func (s *Signer) Close() error {
 		s.context = 0
 	}
 
+	// The engine is not closed.
+	//
+	// uc_close releases the engine, but QEMU's TCG state -- the translation
+	// buffer above all -- is process-global and survives it. Every open/close
+	// cycle therefore leaked a few megabytes: the diagnostics probe, opened and
+	// closed fifteen times in a row, walked the process from 37 MB to 67 MB of
+	// resident memory. That growth is what eventually made a later open fail in
+	// code_gen_alloc with "Could not allocate dynamic translator buffer", which
+	// QEMU turns into exit(1).
+	//
+	// Leaving the engine alone costs one engine's worth of memory for the life of
+	// the process -- which is what the app had anyway, since a second engine
+	// cannot exist -- and removes the leak entirely."
 	if s.machine != nil {
-		closeErrors = append(closeErrors, s.machine.Close())
 		s.machine = nil
 	}
 
