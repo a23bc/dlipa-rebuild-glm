@@ -14,21 +14,29 @@ ipatool v2: the two-leg sign-sap-setup handshake, the FairPlay kbsync blob, the
 ent/download request shape, and the CoreFP guest execution. The iOS W^X patch
 for Unicorn comes from the same place.
 
-## Unicorn CPU emulator
+## Unicorn CPU emulator (TCI fork)
 
-- **Source** <https://github.com/unicorn-engine/unicorn>
-- **Copyright** (c) 2013-2021 Nguyen Anh Quynh and other contributors
+- **Source** <https://github.com/1rhino2/unicorn-tci> -- a fork of
+  <https://github.com/unicorn-engine/unicorn> with the QEMU TCI interpreter
+  restored, pinned at commit `e3f075a627`
+- **Copyright** (c) 2013-2021 Nguyen Anh Quynh and other contributors; the TCI
+  fork is maintained by 1rhino2
 - **Licence** GNU GPL v2, with a linking exception permitting static linking of
   the bundled qemu and glib sources
 
-Built for iOS arm64 by `scripts/build-unicorn-ios.sh` from the pinned 2.1.4
-release and statically linked into the app. Nothing from the Unicorn source is
-vendored into this repository; it is fetched at build time.
+Built for iOS arm64 by `scripts/build-unicorn-ios.sh`, which fetches that fork at
+the pinned commit and statically links the archive into the app. Nothing from the
+Unicorn source is vendored into this repository; it is fetched at build time.
+
+The fork is not optional. Upstream 2.1.4 ships only the JIT, and iOS refuses
+executable anonymous memory on a non-jailed device, so the translation cache
+cannot be allocated at all (`Could not allocate dynamic translator buffer`). The
+TCI build makes the backend a virtual machine that is interpreted, and this fork
+ships the QEMU tree with `tci.c` already restored.
 
 > **Note for anyone redistributing.** Unicorn is statically linked, so its GPL
-> terms travel with the binary. The MIT licence on this repository does not and
-> cannot override that. Confirm the linking exception covers your use before
-> shipping.
+> terms travel with the binary. The AGPL on this repository does not and cannot
+> override that. Confirm the linking exception covers your use before shipping.
 
 ## Go dependencies
 

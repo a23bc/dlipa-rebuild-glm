@@ -1,50 +1,42 @@
 import SwiftUI
+import UIKit
 
 /// Downloads, running and finished, in one list.
 ///
-/// There is no separate database: a file in the Downloads folder is a finished
-/// download, a job in DownloadManager is one still going. Both render with the
-/// same row so the list reads as one thing rather than two.
+/// A running job and a file on disk render with the same row, and a tap opens the
+/// same menu the search results use. The row is deliberately **not** a Button:
+/// wrapping it in one swallowed the swipe gesture, so swipe-to-delete only worked
+/// once the list had reloaded from disk and the rows were no longer buttons.
 struct DownloadsScreen: View {
     @State private var files: [URL] = []
     @State private var shareURL: URL?
+    @State private var target: DownloadTarget?
 
-    /// Jobs run here whether or not the screen that started them still exists,
-    /// so this is the one place their progress can be seen.
     @ObservedObject private var manager = DownloadManager.shared
 
     var body: some View {
         NavigationView {
             Group {
-                if files.isEmpty && manager.jobs.isEmpty {
+                if files.isEmpty && manager.activeJobs.isEmpty {
                     EmptyStateView(
                         title: "No Downloads",
                         systemImage: "arrow.down.app",
-                        detail: "Finished downloads land here and can be shared or opened in TrollStore."
+                        detail: "Finished downloads land here and can be installed or shared."
                     )
                 } else {
                     List {
-                        ForEach(manager.jobs) { job in
-                            if let saved = job.savedURL {
-                                // The job that produced the file is the file's
-                                // row: a finished download does not get a second
-                                // entry beside the job that made it.
-                                Button { shareURL = saved } label: {
-                                    DownloadJobRow(job: job)
-                                }
-                            } else {
-                                DownloadJobRow(job: job)
-                            }
+                        ForEach(manager.activeJobs) { job in
+                            DownloadJobRow(job: job)
                         }
 
-                        ForEach(visibleFiles, id: \.self) { file in
-                            Button { shareURL = file } label: {
-                                FinishedRow(file: file)
-                            }
+                        ForEach(files, id: \.self) { file in
+                            FinishedRow(file: file)
+                                .contentShape(Rectangle())
+                                .onTapGesture { target = DownloadTarget(file: file) }
                         }
                         .onDelete { offsets in
                             for index in offsets {
-                                try? FileManager.default.removeItem(at: visibleFiles[index])
+                                delete(files[index])
                             }
                             reload()
                         }
@@ -64,6 +56,13 @@ struct DownloadsScreen: View {
                 }
             }
             .onAppear { reload() }
+            .actionSheet(item: $target) { item in
+                ActionSheet(title: Text(item.title), buttons: [
+                    .default(Text("Install")) { InstallMenu.present(item.url) },
+                    .default(Text("Share")) { shareURL = item.url },
+                    .cancel()
+                ])
+            }
             .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
                                  set: { if $0 == nil { shareURL = nil } })) { item in
                 ActivityView(activityItems: [item.url])
@@ -71,14 +70,24 @@ struct DownloadsScreen: View {
         }
     }
 
-    /// Files on disk that no finished job is already showing.
-    private var visibleFiles: [URL] {
-        let shown = Set(manager.jobs.compactMap { $0.savedURL?.lastPathComponent })
-        return files.filter { !shown.contains($0.lastPathComponent) }
+    private func delete(_ file: URL) {
+        try? FileManager.default.removeItem(at: file)
+        try? FileManager.default.removeItem(at: DownloadMetadataStore.sidecar(for: file))
     }
 
     private func reload() {
         files = AppSession.downloadedFiles()
+    }
+}
+
+/// What the tap menu acts on.
+private struct DownloadTarget: Identifiable {
+    let id = UUID()
+    let url: URL
+
+    var title: String {
+        DownloadMetadataStore.read(for: url)?.name
+            ?? url.deletingPathExtension().lastPathComponent
     }
 }
 
@@ -91,35 +100,26 @@ private struct DownloadJobRow: View {
             Artwork(url: job.artworkURL, size: 44)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(job.appName)
-                    .lineLimit(1)
+                Text(job.appName).lineLimit(1)
                 Text(job.bundleID)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
 
-                if job.isActive {
-                    // Indeterminate while the size is unknown: the request half
-                    // reports no bytes at all, and a zero-width bar there reads
-                    // as "nothing is happening".
-                    if job.expected > 0 {
-                        ProgressView(value: job.fraction)
-                            .progressViewStyle(.linear)
-                    } else {
-                        ProgressView()
-                            .progressViewStyle(.linear)
-                    }
+                if job.expected > 0 {
+                    ProgressView(value: job.fraction)
+                        .progressViewStyle(.linear)
+                } else {
+                    // The request half reports no bytes at all; a bar at zero
+                    // there would read as "nothing is happening".
+                    ProgressView()
+                        .progressViewStyle(.linear)
                 }
 
-                // Only while there is something to say. Once the file exists the
-                // row is a result, and a "Saved …" line under the bundle id was
-                // repeating what the row already shows.
-                if job.isActive {
-                    Text(job.statusText)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
+                Text(job.statusText)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 8)
@@ -128,11 +128,7 @@ private struct DownloadJobRow: View {
                 Text(job.versionText)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                if let saved = job.savedURL {
-                    Text(FinishedRow.size(of: saved))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                } else if job.expected > 0 {
+                if job.expected > 0 {
                     Text(DownloadJob.size(job.expected))
                         .font(.caption2)
                         .foregroundColor(.secondary)
@@ -143,21 +139,23 @@ private struct DownloadJobRow: View {
     }
 }
 
-/// A package on disk. The name carries the bundle id and the version, so the row
-/// reads them back out of it rather than keeping a side table.
+/// A package on disk. Everything shown comes from the sidecar written when the
+/// download finished, so a relaunch shows the same name, icon and version as the
+/// job that produced it.
 private struct FinishedRow: View {
     let file: URL
 
     var body: some View {
+        let metadata = DownloadMetadataStore.read(for: file)
         let parts = FinishedRow.split(file.deletingPathExtension().lastPathComponent)
 
         HStack(spacing: 12) {
-            Artwork(url: nil, size: 44)
+            Artwork(url: metadata?.artwork.flatMap(URL.init(string:)), size: 44)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(parts.bundleID.isEmpty ? file.lastPathComponent : parts.bundleID)
+                Text(metadata?.name ?? parts.bundleID)
                     .lineLimit(1)
-                Text(file.lastPathComponent)
+                Text(metadata?.bundleID ?? parts.bundleID)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -166,7 +164,7 @@ private struct FinishedRow: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text(parts.version)
+                Text(metadata?.version ?? parts.version)
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Text(FinishedRow.size(of: file))
@@ -174,7 +172,6 @@ private struct FinishedRow: View {
                     .foregroundColor(.secondary)
             }
         }
-        .contentShape(Rectangle())
         .padding(.vertical, 2)
     }
 
@@ -219,5 +216,24 @@ private struct Artwork: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// "Open in…" for a local package. The document interaction controller is the
+/// only supported way to hand a file to another app (TrollStore among them);
+/// opening a file URL directly is refused.
+enum InstallMenu {
+    /// Held while the menu is up: the controller must outlive the call.
+    private static var current: UIDocumentInteractionController?
+
+    static func present(_ url: URL) {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let root = scene.keyWindow?.rootViewController else {
+            return
+        }
+
+        let controller = UIDocumentInteractionController(url: url)
+        current = controller
+        controller.presentOpenInMenu(from: root.view.bounds, in: root.view, animated: true)
     }
 }

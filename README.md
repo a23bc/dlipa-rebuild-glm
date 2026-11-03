@@ -175,12 +175,20 @@ ipatool stays under MIT; see [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIR
 
 Components it depends on keep their own terms, and some of them matter:
 **Unicorn is GNU GPL v2 and is statically linked**, so its terms travel with
-the binary. The full breakdown - ipatool, Unicorn, the Go dependencies, the
+the binary. It is not upstream Unicorn: the build uses
+[1rhino2/unicorn-tci](https://github.com/1rhino2/unicorn-tci), a fork with the
+QEMU TCI interpreter restored, pinned at a commit. Upstream ships only the JIT,
+and iOS refuses executable anonymous memory on a non-jailed device, so the
+translation cache cannot be allocated at all. The full breakdown - ipatool, Unicorn, the Go dependencies, the
 Apple binaries, and the resources taken from the original DLiPA 1.4 - is in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Acknowledgements
 
+- [unicorn-tci](https://github.com/1rhino2/unicorn-tci) by 1rhino2 — the TCI fork
+  of Unicorn this app is built against, GPL v2 with a linking exception
+- [Unicorn](https://github.com/unicorn-engine/unicorn) by Nguyen Anh Quynh and
+  contributors — the CPU emulator that fork derives from
 - [ipatool](https://github.com/majd/ipatool) by Majd Alfhaily — the SAP signing
   stack this project vendors, MIT licensed
 - [DLiPA](https://github.com/AhmedBafkir/DLiPA) by Ahmed Bafkir — the original app

@@ -145,6 +145,7 @@ final class DownloadManager: ObservableObject {
                     Task { @MainActor in job.update(received: received, expected: expected) }
                 }
 
+                DownloadMetadataStore.write(app, versionID: versionID, for: file)
                 job.finish(file.lastPathComponent, url: file)
                 AppLog.info("download finished: " + file.lastPathComponent, .download)
                 NotificationCenter.default.post(name: .downloadFinished, object: nil)
@@ -177,4 +178,37 @@ final class DownloadManager: ObservableObject {
 extension Notification.Name {
     /// Posted when a package lands on disk, so the Downloads list can reload.
     static let downloadFinished = Notification.Name("com.a23bc.dliparebuild.downloadFinished")
+}
+
+/// What a finished file should look like after a relaunch.
+///
+/// The row needs a name, an icon and a version, and none of that survives in a
+/// filename. Written beside the package as `<name>.json` so the Downloads list
+/// reads the same for a file downloaded five minutes ago and one from last week.
+struct DownloadMetadata: Codable {
+    var name: String
+    var bundleID: String
+    var version: String
+    var artwork: String?
+}
+
+enum DownloadMetadataStore {
+    static func write(_ app: StoreApp, versionID: String?, for file: URL) {
+        let metadata = DownloadMetadata(name: app.trackName,
+                                        bundleID: app.bundleId,
+                                        version: app.version ?? versionID ?? "latest",
+                                        artwork: app.artworkUrl100 ?? app.artworkUrl60)
+
+        guard let data = try? JSONEncoder().encode(metadata) else { return }
+        try? data.write(to: sidecar(for: file))
+    }
+
+    static func read(for file: URL) -> DownloadMetadata? {
+        guard let data = try? Data(contentsOf: sidecar(for: file)) else { return nil }
+        return try? JSONDecoder().decode(DownloadMetadata.self, from: data)
+    }
+
+    static func sidecar(for file: URL) -> URL {
+        file.deletingPathExtension().appendingPathExtension("json")
+    }
 }
