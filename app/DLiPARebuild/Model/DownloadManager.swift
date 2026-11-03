@@ -16,15 +16,29 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     let id = UUID()
-    let appName: String
+    let app: StoreApp
+    /// nil means "whatever the store hands out today".
+    let versionID: String?
     let fileName: String
+
+    var appName: String { app.trackName }
+    var bundleID: String { app.bundleId }
+    /// The human version when the catalogue has one, else the id we asked for.
+    var versionText: String {
+        if let version = app.version, !version.isEmpty { return version }
+        return versionID ?? "latest"
+    }
+    var artworkURL: URL? {
+        URL(string: app.artworkUrl100 ?? app.artworkUrl60 ?? "")
+    }
 
     @Published private(set) var state: State = .requesting
     @Published private(set) var received: Int64 = 0
     @Published private(set) var expected: Int64 = 0
 
-    init(appName: String, fileName: String) {
-        self.appName = appName
+    init(app: StoreApp, versionID: String?, fileName: String) {
+        self.app = app
+        self.versionID = versionID
         self.fileName = fileName
     }
 
@@ -65,7 +79,7 @@ final class DownloadJob: ObservableObject, Identifiable {
     fileprivate func finish(_ name: String) { state = .finished(name) }
     fileprivate func fail(_ message: String) { state = .failed(message) }
 
-    private static func size(_ bytes: Int64) -> String {
+    static func size(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
@@ -89,7 +103,7 @@ final class DownloadManager: ObservableObject {
     @discardableResult
     func start(_ app: StoreApp, versionID: String?) -> DownloadJob {
         let name = app.bundleId + "-" + (versionID ?? "latest") + ".ipa"
-        let job = DownloadJob(appName: app.trackName, fileName: name)
+        let job = DownloadJob(app: app, versionID: versionID, fileName: name)
 
         jobs.insert(job, at: 0)
 

@@ -29,19 +29,27 @@ struct VersionListView: View {
                 } else if let versions {
                     List {
                         ForEach(Array(versions.identifiers.enumerated()), id: \.offset) { entry in
+                            // Tapping always starts that version's download, in
+                            // history as well: the list is the only place a
+                            // specific build can be chosen, and doing nothing on
+                            // tap made it look broken.
                             Button {
-                                guard allowsDownload else { return }
                                 onPick(entry.element)
+                                dismiss()
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.element == versions.latest ? "Latest" : entry.element)
+                                        // The id is the identity of a build; the
+                                        // label says whether it is the newest.
+                                        // Replacing the id with "Latest" hid the
+                                        // only value a caller can use.
+                                        Text(entry.element)
                                             .foregroundColor(.primary)
-                                        if entry.element == versions.latest {
-                                            Text(entry.element)
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                        }
+                                        Text(entry.element == versions.latest
+                                             ? "Latest version"
+                                             : "Older version")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
                                     }
                                     Spacer()
                                     if entry.element == versions.latest {
@@ -51,7 +59,6 @@ struct VersionListView: View {
                                 }
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
