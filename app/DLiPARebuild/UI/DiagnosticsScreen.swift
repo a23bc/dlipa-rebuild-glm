@@ -146,12 +146,16 @@ struct DiagnosticsScreen: View {
         // Off the main queue: the call runs the C library synchronously, and a
         // failure takes the process with it, which is what we are measuring.
         DispatchQueue.global(qos: .userInitiated).async {
-            var report = ""
-            do {
-                let result = try SapbridgeProbeEngine()
+            // The bridge exposes the NSError out-parameter directly rather than
+            // Swift's throws form, so it is passed by pointer.
+            var failure: NSError?
+            let result = SapbridgeProbeEngine(&failure)
+
+            var report: String
+            if let failure {
+                report = "engine probe FAILED: " + failure.localizedDescription
+            } else {
                 report = "engine probe: ok (" + (result ?? "no result") + ")"
-            } catch {
-                report = "engine probe FAILED: " + error.localizedDescription
             }
 
             let line = report
