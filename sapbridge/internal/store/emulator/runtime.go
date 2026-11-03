@@ -494,18 +494,31 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 
-		regionMark := time.Now()
+		// One map per 4 MiB. The device spends about 100 ms per MiB on these
+		// and the cost is not linear: a single 19 MiB region measured 38.3 s
+		// while the 2-4 MiB ones around it took 0.2-3.6 s, so a smaller unit is
+		// worth trying before assuming the engine's map is simply slow.
+		const regionChunk = 4 << 20
 
-		if err = r.MemMap(region.address, region.size); err != nil {
-			return nil, fmt.Errorf("prepare store runtime: %w", err)
-		}
+		for offset := uint64(0); offset < region.size; offset += regionChunk {
+			size := uint64(regionChunk)
+			if offset+size > region.size {
+				size = region.size - offset
+			}
 
-		spent := time.Since(regionMark)
-		regionTime += spent
+			regionMark := time.Now()
 
-		if spent > 200*time.Millisecond {
-			fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x took %s\n",
-				region.address, region.size, spent.Round(time.Millisecond))
+			if err = r.MemMap(region.address+offset, size); err != nil {
+				return nil, fmt.Errorf("prepare store runtime: %w", err)
+			}
+
+			spent := time.Since(regionMark)
+			regionTime += spent
+
+			if spent > 200*time.Millisecond {
+				fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x took %s\n",
+					region.address+offset, size, spent.Round(time.Millisecond))
+			}
 		}
 	}
 
