@@ -47,4 +47,4 @@ FOUNDATION_EXPORT NSString * _Nonnull SapbridgeSerialNumber(NSData * _Nullable h
 FOUNDATION_EXPORT void SapbridgeSetBundleDir(NSString * _Nullable path);
 
 NS_ASSUME_NONNULL_END
-FOUNDATION_EXPORT NSString * _Nullable SapbridgeProbeEngine(NSError * _Nullable * _Nullable error);
+

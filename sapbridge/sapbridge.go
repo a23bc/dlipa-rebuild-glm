@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -420,18 +419,3 @@ func ParseDSID(value string) (int64, error) {
 	return int64(parsed), nil
 }
 
-// ProbeEngine opens and closes a bare emulator: no images, no profile, one page
-// mapped. It reports whether this process can host an engine at all.
-//
-// The full open fails intermittently with "Could not allocate dynamic translator
-// buffer", and three explanations have been wrong so far. Running this first
-// separates the engine from everything around it: if the probe fails, the
-// problem is the platform; if it succeeds while the full open fails, the
-// difference is in what runs beside it.
-func ProbeEngine() (result string, err error) {
-	if probeErr := unicorn.ProbeEngine(context.Background()); probeErr != nil {
-		return "", probeErr
-	}
-
-	return "ok", nil
-}
