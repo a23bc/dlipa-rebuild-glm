@@ -1089,115 +1089,69 @@ final class AppStoreClient {
                                          bag: bag, signer: signer)
     }
 
-    /// The signed ent/download call.
+    /// ent/download, built and sent by the Store's own encoder.
+    ///
+    /// Everything this used to construct by hand -- the plist body, the content
+    /// type override, the Configurator agent, the cookie replay -- now happens
+    /// inside the bridge, because that is the only construction Apple's endpoint
+    /// answered with 200. What comes back is the raw plist, parsed here so the
+    /// callers keep reading the same keys.
     private func entDownload(appId: String,
                              externalVersionId: String?,
                              guid: String,
                              account: Account,
                              endpoint: String,
                              signer: SAPSigner) async throws -> [String: Any] {
-        guard var components = URLComponents(url: try Self.trustedEndpoint(endpoint),
-                                             resolvingAgainstBaseURL: false) else {
-            throw StoreError.untrustedEndpoint(endpoint)
+        guard let numericID = Int64(appId) else {
+            throw StoreError.failureType("badAppID", "app id " + appId + " is not numeric")
         }
-        components.queryItems = [URLQueryItem(name: "guid", value: guid)]
 
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8",
-                         forHTTPHeaderField: "Content-Type")
-        request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
-        // ent/download does want the store-front. ipatool sets it from the
-        // account (appstore_kbsync.go:122) alongside the Configurator agent and
-        // the store token; the earlier note here claiming otherwise was written
-        // while the request was still missing kbsync and everything else.
-        // ent/download exists because of kbsync: the blob is what binds the
-        // download to this account and device. Without it the request is the
-        // classic one wearing a different URL. Field by field this mirrors
-        // appstore_kbsync.go:124.
-        let blob = try signer.kbsync(dsid: account.dsid)
-        let serial = try signer.serialNumber()
-        let payload: [String: Any] = [
-            "creditDisplay": "",
-            "guid": guid,
-            "kbsync": blob.base64EncodedString(),
-            // A string upstream (strconv.FormatInt), not a number.
-            "salableAdamId": appId,
-            "serialNumber": serial,
-            // Always present, empty when unpinned.
-            "externalVersionId": externalVersionId ?? "",
-        ]
-        let body = try PropertyListSerialization.data(
-            fromPropertyList: payload, format: .xml, options: 0)
+        // The bridge call blocks for as long as the guest runs -- minutes on
+        // device -- so it cannot be made from the main actor. Locals first: the
+        // closure below must not read properties off self.
+        let dsid = account.dsid
+        let token = account.passwordToken
+        let storefront = account.storefront
+        let cookieHeader = capturedCookieHeader
+        let version = externalVersionId ?? ""
 
-        // Which credential ent/download wants is not settled by reading the
-        // source. Upstream sends PasswordToken plus both DSID headers
-        // (appstore_kbsync.go:112-131 layered on downloadProductRequest), but an
-        // earlier run here saw the DSID headers turn this into an empty 500 --
-        // with a body that was still missing kbsync, so the observation does not
-        // transfer. Rather than spend a build per variable, send the
-        // combinations once and let the log say which one was answered.
-        // One attempt: upstream's shape, plus the replayed cookies. The
-        // four-way credential matrix is gone -- every combination returned the
-        // same 500 with an empty body, so the credential was never the variable.
-        let variants: [(String, String, Bool)] = [
-            ("cookie+passwordToken+dsid", account.passwordToken, true),
-        ]
+        let json = try await Task.detached(priority: .userInitiated) {
+            try signer.entDownload(dsid: dsid, token: token, storefront: storefront,
+                                   endpoint: endpoint, cookieHeader: cookieHeader,
+                                   appID: numericID, externalVersionID: version)
+        }.value
 
-        var rejected: (failure: String, message: String) = ("", "")
-        var lastStatus = -1
+        guard let raw = json.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
+            throw StoreError.failureType("badBridgeResult", "ent/download result was not JSON")
+        }
 
-        for (name, token, sendDSID) in variants {
-            var attempt = request
-            attempt.httpBody = body
-            attempt.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-            if !token.isEmpty {
-                attempt.setValue(token, forHTTPHeaderField: "X-Token")
-            }
-            if sendDSID {
-                attempt.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
-                attempt.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
-            }
-            if !capturedCookieHeader.isEmpty {
-                attempt.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
-            }
+        let status = object["status"] as? Int ?? 0
+        let body = object["body"] as? String ?? ""
+        let failure = object["failureType"] as? String ?? ""
+        let message = object["customerMessage"] as? String ?? ""
 
-            // Upstream sets NoRedirects for ent/download: X-Token must not be
-            // forwarded to wherever a redirect points. Left signed and
-            // redirect-limited for now: changing the signature and the redirect
-            // policy together would make the result unreadable, and this round
-            // is about the purchase.
-            let (data, http) = try await signedRequest(attempt, signer: signer,
-                                                       redirects: 0)
-            lastStatus = http.statusCode
+        AppLog.info("ent/download (encoder) HTTP " + String(status)
+                    + ", " + String(body.utf8.count) + " bytes"
+                    + (failure.isEmpty ? "" : ", failureType " + failure), .download)
+
+        // A 200 with a plist and no failureType is the only success. A gateway
+        // error arrives as a short non-plist body that any looser check would
+        // accept.
+        if failure.isEmpty && status == 200 && !body.isEmpty {
             let plist = (try? PropertyListSerialization.propertyList(
-                from: data, options: [], format: nil)) as? [String: Any] ?? [:]
-            let failure = plist["failureType"] as? String ?? ""
-            AppLog.info("ent/download[" + name + "] HTTP " + String(http.statusCode)
-                        + ", " + String(data.count) + " bytes"
-                        + (failure.isEmpty ? "" : ", failureType " + failure), .download)
+                from: Data(body.utf8), options: [], format: nil)) as? [String: Any]
 
-            // A 502 from Apple's edge arrives as a short HTML or plain-text
-            // body with no failureType, so "no failureType and some bytes" is
-            // not success -- it is a gateway error that reads like a plist-shaped
-            // answer to anything that does not check the status. Require 200.
-            if failure.isEmpty && http.statusCode == 200 && !data.isEmpty {
+            if let plist {
                 return plist
             }
-            if !failure.isEmpty {
-                rejected = (failure, plist["customerMessage"] as? String ?? "")
-            } else if http.statusCode != 200 {
-                // Kept so the caller falls back to the classic endpoint with a
-                // status in hand rather than an empty dictionary.
-                rejected = ("http" + String(http.statusCode),
-                            "ent/download returned " + String(http.statusCode))
-            }
+
+            throw StoreError.failureType("unparsable",
+                                         "ent/download body was not a property list")
         }
 
-        if !rejected.failure.isEmpty {
-            throw StoreError.failureType(rejected.failure, rejected.message)
-        }
-        throw StoreError.httpError(lastStatus, "ent/download returned an empty body")
+        throw StoreError.failureType(failure.isEmpty ? "http" + String(status) : failure,
+                                     message.isEmpty ? "ent/download returned " + String(status) : message)
     }
 
     private func classicDownload(appId: String,

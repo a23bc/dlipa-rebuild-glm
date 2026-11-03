@@ -166,6 +166,18 @@ final class SAPSigner {
     /// E1-a: opens the Store runtime on the machine this signer already runs on,
 /// and reports how long it took. The runtime shares the guest rather than
 /// creating one, because a second emulator cannot be allocated here.
+/// One ent/download request through the Store's own encoder.
+///
+/// Returns the JSON the bridge built: status plus the raw plist body. The
+/// hand-built request this replaces is gone from the client because the encoder
+/// is the only construction Apple's endpoint accepted.
+func entDownload(dsid: String, token: String, storefront: String, endpoint: String,
+                 cookieHeader: String, appID: Int64, externalVersionID: String) throws -> String {
+    try bridge.entDownload(dsid, token: token, storefront: storefront, endpoint: endpoint,
+                           cookieHeader: cookieHeader, appID: appID,
+                           externalVersionID: externalVersionID)
+}
+
 func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: String, cookieHeader: String) throws -> String {
     try bridge.storeSmoke(dsid, token: token, storefront: storefront, entEndpoint: entEndpoint, cookieHeader: cookieHeader)
 }
