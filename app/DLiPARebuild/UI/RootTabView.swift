@@ -3,6 +3,23 @@ import SwiftUI
 /// The app shell. Structure follows the dlipa-next attempt: one tab per job,
 /// each with its own navigation stack, and an empty state that says what the
 /// screen will show rather than a blank page.
+/// Fades a screen in when its tab becomes visible.
+///
+/// TabView has no transition hook of its own -- switching tabs is a jump cut no
+/// matter what is attached to the content -- so the fade runs on appearance
+/// instead, which is the part that can be animated without replacing the bar.
+private struct FadeIn: ViewModifier {
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.18)) { shown = true }
+            }
+    }
+}
+
 struct RootTabView: View {
     /// Diagnostics is hidden until it is unlocked from Settings. SwiftUI gives
     /// no callback for tapping the tab bar itself, so the unlock lives on a
@@ -13,16 +30,16 @@ struct RootTabView: View {
 
     var body: some View {
         TabView {
-            SearchScreen()
+            SearchScreen().modifier(FadeIn())
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
-            DownloadsScreen()
+            DownloadsScreen().modifier(FadeIn())
                 .tabItem { Label("Downloads", systemImage: "arrow.down.app") }
-            AccountsScreen()
+            AccountsScreen().modifier(FadeIn())
                 .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
-            SettingsScreen()
+            SettingsScreen().modifier(FadeIn())
                 .tabItem { Label("Settings", systemImage: "gearshape") }
             if showDiagnostics {
-                DiagnosticsScreen()
+                DiagnosticsScreen().modifier(FadeIn())
                     .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
             }
         }

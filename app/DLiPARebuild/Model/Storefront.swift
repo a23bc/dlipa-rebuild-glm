@@ -170,9 +170,13 @@ enum Storefront {
             let trimmed = raw?.trimmingCharacters(in: .whitespaces) ?? ""
             return trimmed.isEmpty ? "Unknown" : trimmed
         }
+        // The code is stable across languages, the name is not: it comes from
+        // Locale, not from this app's strings, which is why an English UI shows
+        // the country in the device's language. Both are shown so the value can
+        // be read either way.
         if let code = countries[id],
            let name = Locale.current.localizedString(forRegionCode: code) {
-            return name
+            return code + " · " + name
         }
         return "Region " + id
     }

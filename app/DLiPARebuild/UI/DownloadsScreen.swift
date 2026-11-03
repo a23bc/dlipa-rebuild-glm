@@ -11,6 +11,7 @@ struct DownloadsScreen: View {
     @State private var files: [URL] = []
     @State private var shareURL: URL?
     @State private var target: DownloadTarget?
+    @State private var activeTarget: DownloadJob?
 
     @ObservedObject private var manager = DownloadManager.shared
 
@@ -27,6 +28,8 @@ struct DownloadsScreen: View {
                     List {
                         ForEach(manager.activeJobs) { job in
                             DownloadJobRow(job: job)
+                                .contentShape(Rectangle())
+                                .onTapGesture { activeTarget = job }
                         }
 
                         ForEach(files, id: \.self) { file in
@@ -47,19 +50,22 @@ struct DownloadsScreen: View {
             .onReceive(NotificationCenter.default.publisher(for: .downloadFinished)) { _ in
                 reload()
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { reload() } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .accessibilityLabel("Refresh")
-                }
-            }
             .onAppear { reload() }
             .actionSheet(item: $target) { item in
-                ActionSheet(title: Text(item.title), buttons: [
-                    .default(Text("Install")) { InstallMenu.present(item.url) },
-                    .default(Text("Share")) { shareURL = item.url },
+                ActionSheet(title: Text(item.title),
+                            message: Text(item.subtitle),
+                            buttons: [
+                                .default(Text("Install")) { InstallMenu.present(item.url) },
+                                .default(Text("Share")) { shareURL = item.url },
+                                .cancel()
+                            ])
+            }
+            .actionSheet(item: $activeTarget) { job in
+                ActionSheet(title: Text(job.appName), message: Text(job.bundleID), buttons: [
+                    job.isPaused
+                        ? .default(Text("Resume")) { job.resume() }
+                        : .default(Text("Pause")) { job.pause() },
+                    .destructive(Text("Cancel download")) { manager.cancel(job) },
                     .cancel()
                 ])
             }
@@ -88,6 +94,16 @@ private struct DownloadTarget: Identifiable {
     var title: String {
         DownloadMetadataStore.read(for: url)?.name
             ?? url.deletingPathExtension().lastPathComponent
+    }
+
+    /// Bundle id and version on one line, the way the search sheet does it.
+    var subtitle: String {
+        if let metadata = DownloadMetadataStore.read(for: url) {
+            return metadata.bundleID + " · " + metadata.version
+        }
+
+        let parts = FinishedRow.split(url.deletingPathExtension().lastPathComponent)
+        return parts.bundleID + (parts.version.isEmpty ? "" : " · " + parts.version)
     }
 }
 

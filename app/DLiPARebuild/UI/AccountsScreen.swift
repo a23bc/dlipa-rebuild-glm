@@ -32,7 +32,11 @@ struct AccountsScreen: View {
                                 isExpanded: expandedID == account.id,
                                 onSelect: { model.select(account.id) },
                                 onToggleExpand: {
-                                    expandedID = (expandedID == account.id) ? nil : account.id
+                                    // Animated: the detail block is a lot of rows appearing at
+                    // once, and doing it without a transition read as a jump.
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        expandedID = (expandedID == account.id) ? nil : account.id
+                    }
                                 })
                         }
                         .onDelete { model.remove(at: $0) }

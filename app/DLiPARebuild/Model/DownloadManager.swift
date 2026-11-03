@@ -34,6 +34,10 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     @Published private(set) var state: State = .requesting
+    @Published private(set) var isPaused = false
+
+    /// Pause / cancel, once the task exists.
+    let control = DownloadControl()
     /// Set when the package lands. The row turns into the finished row rather
     /// than a second entry being created for the same download.
     @Published private(set) var savedURL: URL?
@@ -59,6 +63,8 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     var statusText: String {
+        if isPaused { return "Paused" }
+
         switch state {
         case .requesting:
             return "Requesting"
@@ -78,6 +84,16 @@ final class DownloadJob: ObservableObject, Identifiable {
         self.received = received
         if expected > 0 { self.expected = expected }
         if case .requesting = state { state = .downloading }
+    }
+
+    func pause() {
+        isPaused = true
+        control.pause()
+    }
+
+    func resume() {
+        isPaused = false
+        control.resume()
     }
 
     fileprivate func finish(_ name: String, url: URL) {
@@ -114,7 +130,10 @@ final class DownloadManager: ObservableObject {
     /// the job's published state.
     @discardableResult
     func start(_ app: StoreApp, versionID: String?) -> DownloadJob {
-        let name = app.bundleId + "-" + (versionID ?? "latest") + ".ipa"
+        // bundle id and the version a person would recognise, not the numeric
+        // identifier the catalogue uses internally.
+        let version = app.version ?? versionID ?? "latest"
+        let name = app.bundleId + "-" + version + ".ipa"
         let job = DownloadJob(app: app, versionID: versionID, fileName: name)
 
         jobs.insert(job, at: 0)
@@ -129,7 +148,8 @@ final class DownloadManager: ObservableObject {
 
                 let file = try await AppSession.shared.download(app,
                                                                 externalVersionId: versionID,
-                                                                fileName: name) { received, expected in
+                                                                fileName: name,
+                                                                control: job.control) { received, expected in
                     ticks += 1
 
                     // First tick and every two hundred after it: enough to prove
@@ -169,6 +189,11 @@ final class DownloadManager: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             if toast == message { toast = nil }
         }
+    }
+
+    func cancel(_ job: DownloadJob) {
+        job.control.cancel()
+        jobs.removeAll { $0.id == job.id }
     }
 
     /// The jobs still running, newest first, for the Downloads tab.

@@ -558,6 +558,7 @@ func diagnosticKBSync() async -> String {
     func download(_ app: StoreApp,
                   externalVersionId: String?,
                   fileName: String,
+                  control: DownloadControl? = nil,
                   progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
         let url = try await downloadURL(for: app, externalVersionId: externalVersionId)
         AppLog.info("downloading " + url.absoluteString, .download)
@@ -574,7 +575,8 @@ func diagnosticKBSync() async -> String {
         // reports totalBytesExpectedToWrite, which arrives as -1 for these
         // package URLs and leaves a progress bar with no denominator. Reading the
         // response's Content-Length ourselves gives a real total and real ticks.
-        try await FileDownloader.run(request: request, to: destination, progress: progress)
+        try await FileDownloader.run(request: request, to: destination,
+                                     control: control, progress: progress)
         AppLog.info("saved " + destination.lastPathComponent, .download)
         return destination
     }
@@ -641,6 +643,7 @@ private final class FileDownloader: NSObject, URLSessionDataDelegate {
 
     static func run(request: URLRequest,
                     to destination: URL,
+                    control: DownloadControl?,
                     progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let downloader = FileDownloader(destination: destination, progress: progress) { result in
@@ -655,7 +658,10 @@ private final class FileDownloader: NSObject, URLSessionDataDelegate {
             // The session retains its delegate; invalidating after completion
             // releases it and closes the sockets.
             downloader.session = session
-            session.dataTask(with: request).resume()
+
+            let task = session.dataTask(with: request)
+            control?.attach(task)
+            task.resume()
         }
     }
 
@@ -751,5 +757,39 @@ private func runOffMain<T>(_ work: @escaping () throws -> T) async throws -> T {
                 continuation.resume(throwing: error)
             }
         }
+    }
+}
+
+/// Pause and cancel handle for one transfer.
+///
+/// URLSession already supports both on the task; the task is created deep inside
+/// FileDownloader, so it is handed back here instead of the screen reaching into
+/// the session.
+final class DownloadControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+
+    func attach(_ task: URLSessionDataTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.task = task
+    }
+
+    func pause() {
+        lock.lock()
+        defer { lock.unlock() }
+        task?.suspend()
+    }
+
+    func resume() {
+        lock.lock()
+        defer { lock.unlock() }
+        task?.resume()
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        task?.cancel()
     }
 }

@@ -109,7 +109,15 @@ enum AppLog {
         let name = (file as NSString).lastPathComponent
         let entry = LogEntry(timestamp: Date(), level: level, category: category,
                              message: message, source: name + ":" + String(line))
-        store.append(entry)
+
+        // The switch is labelled "Record log", so off has to mean the in-app
+        // buffer stays empty. Raising the level alone still recorded everything
+        // at .info and up, which is exactly what the switch appeared not to do.
+        // os_log still receives the line either way: Console.app does not need
+        // this switch, the share-it-from-the-phone flow does.
+        if isRecording {
+            store.append(entry)
+        }
 
         // os.Logger takes a format string, so a literal percent sign has to be
         // escaped or the message is truncated at the first one.
