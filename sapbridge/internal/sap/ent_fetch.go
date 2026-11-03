@@ -136,13 +136,37 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 
 	serial := base64.StdEncoding.EncodeToString(append([]byte{0x54, 0xc8, 0xb0, 0xa9, 0x88}, s.hardware[2:]...))
 
+	// An empty externalVersionId is answered with 500 and no body -- the probe
+	// never once succeeded without one, and the first real download reproduced
+	// it. The caller does not always have a version (the UI passes nil for the
+	// unpinned case), so it is looked up here the way the probe does.
+	versionID := input.ExternalVersionID
+
+	if versionID == "" {
+		// The account's storefront is numeric ("143480-2,34"); the catalog
+		// lookup wants a country code. Two tries cover both the account's
+		// storefront and the default one, which is what the probe has been
+		// doing with a hardcoded "tr".
+		for _, country := range []string{"tr", "us"} {
+			if versionID = latestExternalVersionID(input.AppID, country); versionID != "" {
+				break
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: externalVersionId looked up as %q\n", versionID)
+	}
+
+	if versionID == "" {
+		return EntDownloadResult{}, fmt.Errorf("ent download: no externalVersionId for %d", input.AppID)
+	}
+
 	address, err := runtime.EncodeProbe(endpoint, map[string]any{
 		"creditDisplay":     "",
 		"guid":              guid,
 		"kbsync":            base64.StdEncoding.EncodeToString(blob),
 		"salableAdamId":     strconv.FormatInt(input.AppID, 10),
 		"serialNumber":      serial,
-		"externalVersionId": input.ExternalVersionID,
+		"externalVersionId": versionID,
 	})
 	if err != nil {
 		return EntDownloadResult{}, fmt.Errorf("ent download: encode: %w", err)
