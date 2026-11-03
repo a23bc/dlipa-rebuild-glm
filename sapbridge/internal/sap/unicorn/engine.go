@@ -233,6 +233,12 @@ func newEngine(ctx context.Context, loadLibrary func(context.Context) (library, 
 		return nil, fmt.Errorf("set TCG buffer size: %w", err)
 	}
 
+	// The next call into Unicorn triggers UC_INIT, which asks for this buffer.
+	// Probing the same allocation here, before QEMU does, is the only way to see
+	// why a refusal happens: the failure path prints a message and calls exit(1),
+	// so nothing after it can report anything.
+	fmt.Fprintf(os.Stderr, "[SAP]   alloc probe: %s\n", probeTranslationAlloc(int(tcgBufferSizeIOS)))
+
 	// Select Unicorn's most capable ARM64 model. The compatibility layer handles
 	// modern instructions that this Unicorn build does not implement.
 	if err := engine.err(engine.api.ctl(engine.handle, controlCPUModel, arm64CPUModelMax)); err != nil {
