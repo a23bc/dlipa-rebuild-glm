@@ -86,7 +86,18 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // Opening on first use moves that risk to the one action that needs
             // the store, where a failure at least follows something the user
             // asked for.
-            AppLog.info("SAP pre-warm skipped: the engine opens on first use", .sap)
+            // A switch, not a policy. Opening the engine at launch is the one
+            // step that can end the process before a screen is drawn; not opening
+            // it costs two minutes on the first thing that needs the store.
+            let prewarm = UserDefaults.standard.bool(forKey: SettingsScreen.prewarmKey)
+
+            if prewarm {
+                Task { @MainActor in
+                    await AppSession.shared.prewarmSAPRuntime()
+                }
+            } else {
+                AppLog.info("SAP pre-warm off: the engine opens on first use", .sap)
+            }
         }
         print("[DLiPA] AppDelegate.didFinishLaunchingWithOptions returning true")
         return true

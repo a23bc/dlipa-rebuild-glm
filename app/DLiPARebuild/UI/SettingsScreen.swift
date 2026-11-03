@@ -20,10 +20,19 @@ struct SettingsScreen: View {
     /// Set once the Diagnostics tab has been unlocked. Shared with RootTabView.
     static let showDiagnosticsKey = "com.a23bc.dliparebuild.showDiagnostics"
 
+    /// Whether the SAP runtime opens at launch.
+    ///
+    /// Off is safer: the engine's own initialisation is the one step that can take
+    /// the process down, and at launch that means no screen at all. On is faster:
+    /// the first search or download does not wait for two minutes of emulated
+    /// startup. The trade is the user's to make.
+    static let prewarmKey = "com.a23bc.dliparebuild.prewarmAtLaunch"
+
     /// Taps needed on the About row before the Diagnostics tab appears.
     private static let unlockTaps = 5
 
     @AppStorage(showDiagnosticsKey) private var showDiagnostics = false
+    @AppStorage(prewarmKey) private var prewarmAtLaunch = false
 
     /// Read on appear and again after a regeneration: the value lives in
     /// UserDefaults, not in observable state.
@@ -61,6 +70,7 @@ struct SettingsScreen: View {
 
                 if showDiagnostics {
                     Section {
+                        Toggle("Open the SAP runtime at launch", isOn: $prewarmAtLaunch)
                         Toggle("Show Diagnostics tab", isOn: $showDiagnostics)
                     }
                 }
