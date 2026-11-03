@@ -10,8 +10,7 @@ import UIKit
 struct DownloadsScreen: View {
     @State private var files: [URL] = []
     @State private var shareURL: URL?
-    @State private var target: DownloadTarget?
-    @State private var activeTarget: DownloadJob?
+    @State private var sheetTarget: SheetTarget?
 
     @ObservedObject private var manager = DownloadManager.shared
 
@@ -29,13 +28,13 @@ struct DownloadsScreen: View {
                         ForEach(manager.activeJobs) { job in
                             DownloadJobRow(job: job)
                                 .contentShape(Rectangle())
-                                .onTapGesture { activeTarget = job }
+                                .onTapGesture { sheetTarget = .job(job) }
                         }
 
                         ForEach(files, id: \.self) { file in
                             FinishedRow(file: file)
                                 .contentShape(Rectangle())
-                                .onTapGesture { target = DownloadTarget(url: file) }
+                                .onTapGesture { sheetTarget = .file(file) }
                         }
                         .onDelete { offsets in
                             for index in offsets {
@@ -51,23 +50,32 @@ struct DownloadsScreen: View {
                 reload()
             }
             .onAppear { reload() }
-            .actionSheet(item: $target) { item in
-                ActionSheet(title: Text(item.title),
-                            message: Text(item.subtitle),
-                            buttons: [
-                                .default(Text("Install")) { InstallMenu.present(item.url) },
-                                .default(Text("Share")) { shareURL = item.url },
-                                .cancel()
-                            ])
-            }
-            .actionSheet(item: $activeTarget) { job in
-                ActionSheet(title: Text(job.appName), message: Text(job.bundleID), buttons: [
-                    job.isPaused
-                        ? .default(Text("Resume")) { job.resume() }
-                        : .default(Text("Pause")) { job.pause() },
-                    .destructive(Text("Cancel download")) { manager.cancel(job) },
-                    .cancel()
-                ])
+            // One sheet, not two. Two `.actionSheet` modifiers on the same view
+            // silently keep only the last, which is why finished rows stopped
+            // responding while running ones still did.
+            .actionSheet(item: $sheetTarget) { target in
+                switch target {
+                case .file(let url):
+                    let item = DownloadTarget(url: url)
+                    // Both lines in the title: ActionSheet draws its message
+                    // after a blank row, which is the empty line that was
+                    // showing under the subtitle.
+                    return ActionSheet(title: Text(item.title + "\n" + item.subtitle),
+                                       buttons: [
+                                        .default(Text("Install")) { InstallMenu.present(url) },
+                                        .default(Text("Share")) { shareURL = url },
+                                        .cancel()
+                                       ])
+                case .job(let job):
+                    return ActionSheet(title: Text(job.appName + "\n" + job.bundleID),
+                                       buttons: [
+                                        job.isPaused
+                                            ? .default(Text("Resume")) { job.resume() }
+                                            : .default(Text("Pause")) { job.pause() },
+                                        .destructive(Text("Cancel download")) { manager.cancel(job) },
+                                        .cancel()
+                                       ])
+                }
             }
             .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
                                  set: { if $0 == nil { shareURL = nil } })) { item in
@@ -86,9 +94,21 @@ struct DownloadsScreen: View {
     }
 }
 
-/// What the tap menu acts on.
-private struct DownloadTarget: Identifiable {
-    let id = UUID()
+/// What the tap menu acts on: a file on disk, or a job still running.
+private enum SheetTarget: Identifiable {
+    case file(URL)
+    case job(DownloadJob)
+
+    var id: String {
+        switch self {
+        case .file(let url): return url.path
+        case .job(let job): return job.id.uuidString
+        }
+    }
+}
+
+/// The menu contents for a finished file.
+private struct DownloadTarget {
     let url: URL
 
     var title: String {
@@ -113,12 +133,14 @@ private struct DownloadJobRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Artwork(url: job.artworkURL, size: 44)
+            Artwork(url: job.artworkURL, size: 48)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(job.appName).lineLimit(1)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(job.appName)
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(1)
                 Text(job.bundleID)
-                    .font(.caption)
+                    .font(.system(size: 13))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
 
@@ -166,29 +188,28 @@ private struct FinishedRow: View {
         let parts = FinishedRow.split(file.deletingPathExtension().lastPathComponent)
 
         HStack(spacing: 12) {
-            Artwork(url: metadata?.artwork.flatMap(URL.init(string:)), size: 44)
+            Artwork(url: metadata?.artwork.flatMap(URL.init(string:)), size: 48)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(metadata?.name ?? parts.bundleID)
+                    .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
-                Text(metadata?.bundleID ?? parts.bundleID)
-                    .font(.caption)
+                Text((metadata?.bundleID ?? parts.bundleID)
+                     + (metadata.map { " · " + $0.version } ?? (parts.version.isEmpty ? "" : " · " + parts.version)))
+                    .font(.system(size: 13))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(metadata?.version ?? parts.version)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text(FinishedRow.size(of: file))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
+            // One trailing line, like a search row: a second line here made the
+            // downloads list taller than the results list for the same content.
+            Text(FinishedRow.size(of: file))
+                .font(.system(size: 13))
+                .foregroundColor(.secondary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 12)
     }
 
     /// "com.example.app-1.2.3" -> ("com.example.app", "1.2.3").

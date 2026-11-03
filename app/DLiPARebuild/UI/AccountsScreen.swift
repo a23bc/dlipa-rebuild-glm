@@ -32,11 +32,12 @@ struct AccountsScreen: View {
                                 isExpanded: expandedID == account.id,
                                 onSelect: { model.select(account.id) },
                                 onToggleExpand: {
-                                    // Animated: the detail block is a lot of rows appearing at
-                    // once, and doing it without a transition read as a jump.
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        expandedID = (expandedID == account.id) ? nil : account.id
-                    }
+                                    // Deliberately not animated. The detail block is a dozen
+                    // rows being inserted into a List, and animating that reads
+                    // as a twitch rather than a transition: every row animates
+                    // its own height at once. The chevron animates instead,
+                    // which is the part that can move smoothly.
+                    expandedID = (expandedID == account.id) ? nil : account.id
                                 })
                         }
                         .onDelete { model.remove(at: $0) }
@@ -141,6 +142,7 @@ private struct AccountRow: View {
 
                 Button(action: onToggleExpand) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")
+                .animation(.easeInOut(duration: 0.18), value: isExpanded)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.secondary)
                         .frame(width: 32, height: 32)

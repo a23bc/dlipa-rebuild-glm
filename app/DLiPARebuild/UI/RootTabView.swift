@@ -3,23 +3,6 @@ import SwiftUI
 /// The app shell. Structure follows the dlipa-next attempt: one tab per job,
 /// each with its own navigation stack, and an empty state that says what the
 /// screen will show rather than a blank page.
-/// Fades a screen in when its tab becomes visible.
-///
-/// TabView has no transition hook of its own -- switching tabs is a jump cut no
-/// matter what is attached to the content -- so the fade runs on appearance
-/// instead, which is the part that can be animated without replacing the bar.
-private struct FadeIn: ViewModifier {
-    @State private var shown = false
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(shown ? 1 : 0)
-            .onAppear {
-                withAnimation(.easeOut(duration: 0.18)) { shown = true }
-            }
-    }
-}
-
 struct RootTabView: View {
     /// Diagnostics is hidden until it is unlocked from Settings. SwiftUI gives
     /// no callback for tapping the tab bar itself, so the unlock lives on a
@@ -28,19 +11,42 @@ struct RootTabView: View {
     @AppStorage(SettingsScreen.showDiagnosticsKey) private var showDiagnostics = false
     @ObservedObject private var downloads = DownloadManager.shared
 
+    /// Which tab is showing. Held here so the fade can key off it: an
+    /// `onAppear`-based one only ran the first time a tab was created, which is
+    /// why the effect disappeared after switching back.
+    @State private var selection = 0
+
+    private enum Tab: Int {
+        case search, downloads, accounts, settings, diagnostics
+    }
+
     var body: some View {
-        TabView {
-            SearchScreen().modifier(FadeIn())
+        TabView(selection: $selection) {
+            SearchScreen()
+                .modifier(TabFade(tag: Tab.search.rawValue, selection: selection))
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
-            DownloadsScreen().modifier(FadeIn())
+                .tag(Tab.search.rawValue)
+
+            DownloadsScreen()
+                .modifier(TabFade(tag: Tab.downloads.rawValue, selection: selection))
                 .tabItem { Label("Downloads", systemImage: "arrow.down.app") }
-            AccountsScreen().modifier(FadeIn())
+                .tag(Tab.downloads.rawValue)
+
+            AccountsScreen()
+                .modifier(TabFade(tag: Tab.accounts.rawValue, selection: selection))
                 .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
-            SettingsScreen().modifier(FadeIn())
+                .tag(Tab.accounts.rawValue)
+
+            SettingsScreen()
+                .modifier(TabFade(tag: Tab.settings.rawValue, selection: selection))
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(Tab.settings.rawValue)
+
             if showDiagnostics {
-                DiagnosticsScreen().modifier(FadeIn())
+                DiagnosticsScreen()
+                    .modifier(TabFade(tag: Tab.diagnostics.rawValue, selection: selection))
                     .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
+                    .tag(Tab.diagnostics.rawValue)
             }
         }
         // One toast for the whole app: a download finishes whether or not the
