@@ -105,21 +105,38 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		return EntDownloadResult{}, fmt.Errorf("ent download: no hardware id")
 	}
 
-	blob, err := machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
-	if err != nil {
-		return EntDownloadResult{}, fmt.Errorf("ent download: kbsync: %w", err)
-	}
+	// One runtime per process, reopened never. A second open finds the first
+	// session's pages already mapped and patched, skips restoring them, and the
+	// encoder is handed objects from the previous session.
+	runtime := s.storeRuntime
 
-	runtime, err := emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
-	if err != nil {
-		return EntDownloadResult{}, fmt.Errorf("ent download: open runtime: %w", err)
-	}
+	var blob []byte
 
-	defer func() {
-		if closeErr := runtime.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "[SAP] ent download: close: %v\n", closeErr)
+	if runtime == nil {
+		if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
+			blob = s.kbsyncBlob
+		} else {
+			blob, err = machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
+			if err != nil {
+				return EntDownloadResult{}, fmt.Errorf("ent download: kbsync: %w", err)
+			}
+
+			s.kbsyncBlob, s.kbsyncDSID = blob, dsid
 		}
-	}()
+
+		runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
+		if err != nil {
+			return EntDownloadResult{}, fmt.Errorf("ent download: open runtime: %w", err)
+		}
+
+		s.storeRuntime = runtime
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: store runtime opened\n")
+	} else {
+		blob = s.kbsyncBlob
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing the store runtime\n")
+	}
 
 	guid := fmt.Sprintf("%X", s.hardware)
 

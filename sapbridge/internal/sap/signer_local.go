@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	"net/http"
 	"os"
 	"runtime"
@@ -24,6 +25,22 @@ type Signer struct {
 	// Kept so the Store smoke test can reach AppleMediaServices without
 	// re-reading the bundle from disk.
 	bundle assets.Bundle
+
+	// storeRuntime is the one Store runtime this process may have.
+	//
+	// Opening a second one does not work: the first open's pages are still
+	// mapped and already patched, so the second open finds "everything already
+	// there", skips restoring the profile's pages, and hands the encoder objects
+	// that belong to the previous session. The guest then takes an exception --
+	// observed as "unknown receiver ... for setAccount:" on the first call after
+	// a second open. So it is opened once and reused until Close.
+	storeRuntime *emulator.Runtime
+
+	// kbsyncBlob is the blob generated for kbsyncDSID. Generating one costs the
+	// better part of a minute, and the same account keeps the same blob for the
+	// life of the session.
+	kbsyncBlob []byte
+	kbsyncDSID uint64
 }
 
 // stepRecovered wraps one handshake step so a panic inside the guest
@@ -238,6 +255,15 @@ func (s *Signer) Close() error {
 	s.closed = true
 
 	var closeErrors []error
+
+	// Before the machine: the Store runtime is a tenant on its engine and puts
+	// the bytes it patched back when it closes. Tearing the machine down first
+	// would leave that work with nothing to restore into.
+	if s.storeRuntime != nil {
+		closeErrors = append(closeErrors, s.storeRuntime.Close())
+		s.storeRuntime = nil
+	}
+
 	if s.machine != nil && s.context != 0 {
 		closeErrors = append(closeErrors, s.machine.Teardown(s.context))
 		s.context = 0
