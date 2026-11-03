@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -183,46 +182,13 @@ func Open(ctx context.Context, bundle assets.Bundle) (*Machine, error) {
 	return machine, nil
 }
 
-// One emulator per process, enforced rather than assumed.
-//
-// QEMU's translation buffer is allocated once per process. A second engine does
-// not fail at uc_open -- that returns fine -- it fails at the deferred UC_INIT
-// on the first mem_map, prints "Could not allocate dynamic translator buffer"
-// and calls exit(1). No exception, no crash report: the app simply disappears,
-// which is what the intermittent launch crash looked like.
-//
-// This makes the second attempt an error with a stack instead of a dead process,
-// so the caller is named in the log.
-var engineClaim struct {
-	sync.Mutex
-	created bool
-	at      string
-}
-
-func claimEngine() error {
-	engineClaim.Lock()
-	defer engineClaim.Unlock()
-
-	if engineClaim.created {
-		return fmt.Errorf("this process already hosts an emulator (opened at %s); a second one exits the process:\n%s",
-			engineClaim.at, debug.Stack())
-	}
-
-	engineClaim.created = true
-	engineClaim.at = time.Now().Format("15:04:05.000")
-
-	return nil
-}
-
 func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptions) (*Machine, map[string]uint64, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("SAP runtime context is nil")
 	}
 
-	if err := claimEngine(); err != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] second engine refused: %v\n", err)
-		return nil, nil, err
-	}
+	// No claim: a second Machine on the same engine is how the store runtime has
+	// always worked, and the engine itself is shared now (sharedEngine).
 
 	if err := ctx.Err(); err != nil {
 		return nil, nil, fmt.Errorf("open SAP runtime: %w", err)
@@ -286,7 +252,7 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 		return nil, nil, fmt.Errorf("open SAP runtime: %w", err)
 	}
 
-	engine, err := unicorn.New(ctx)
+	engine, err := sharedEngine(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create Unicorn engine: %w", err)
 	}
@@ -1088,4 +1054,27 @@ func (m *Machine) register(ordinal int) uint64 {
 	value, _ := m.engine.RegRead(ordinal)
 
 	return value
+}
+
+// sharedEngine returns the one engine this process hosts, creating it on first
+// use.
+//
+// The engine is kept for the life of the process on purpose: uc_close releases the
+// engine but not QEMU's global TCG state, so every open/close cycle leaked its
+// translation buffer. Reusing the handle means a second signer -- a second SAP
+// test, a new session -- becomes a second Machine on the same engine instead of a
+// second engine, which is what a process can actually hold. The store runtime
+// already works this way.
+var (
+	engineOnce   sync.Once
+	engineShared *unicorn.Engine
+	engineErr    error
+)
+
+func sharedEngine(ctx context.Context) (*unicorn.Engine, error) {
+	engineOnce.Do(func() {
+		engineShared, engineErr = unicorn.New(ctx)
+	})
+
+	return engineShared, engineErr
 }
