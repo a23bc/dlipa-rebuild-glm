@@ -45,6 +45,13 @@ type Object struct {
 type timer struct{ at, block uint64 }
 type taskLocalBinding struct{ key, value uint64 }
 type Runtime struct {
+	// deferFlush batches the translation-cache invalidation that follows a map.
+	// Every map dropped the whole TLB and TB set: with twenty-five profile
+	// regions that was twenty-five full flushes, and the phase that maps them
+	// measured 63.6 s of a 131 s open. Callers that map in bulk set this and
+	// flush once at the end.
+	deferFlush bool
+
 	lastResponse                             *http.Response
 	transportError                           error
 	streamResponse, noRedirects, authRequest bool
@@ -372,6 +379,10 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	cacheStart := time.Now()
 	runs := cachepages.Runs(cachePages)
 
+	// Same batching as the profile regions: 3,833 runs would otherwise each
+	// invalidate every translation in the engine.
+	r.deferFlush = true
+
 	var stripped int
 
 	for _, run := range runs {
@@ -418,6 +429,12 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	}
 
 	if len(cachePages) > 0 {
+		r.deferFlush = false
+
+		if err = r.engine.FlushTranslations(); err != nil {
+			return nil, fmt.Errorf("prepare store runtime: flush translations: %w", err)
+		}
+
 		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages in %d runs, %d ms (%d dropped: inside a loaded image, %d instructions rewritten)\n",
 			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds(), dropped, stripped)
 	}
@@ -468,6 +485,8 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		return nil, fmt.Errorf("prepare store runtime: %w", err)
 	}
 
+	r.deferFlush = true
+
 	for _, region := range regions {
 		if err = ctx.Err(); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
@@ -476,6 +495,16 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		if err = r.MemMap(region.address, region.size); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
+	}
+
+	r.deferFlush = false
+
+	// One flush for the whole batch, after every region is in place. uc_mem_read
+	// reads physical memory directly and succeeds on a page the guest then faults
+	// on, which is why the flush exists at all -- but it does not have to run
+	// once per region.
+	if err = r.engine.FlushTranslations(); err != nil {
+		return nil, fmt.Errorf("prepare store runtime: flush translations: %w", err)
 	}
 
 	var (
@@ -925,6 +954,12 @@ func (r *Runtime) MemMap(address, size uint64) error {
 		}
 	}
 
+	if !r.deferFlush {
+		if err := r.engine.FlushTranslations(); err != nil {
+			return fmt.Errorf("flush translations: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -965,14 +1000,6 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 		}
 
 		fresh += int((page - runStart) / 4096)
-	}
-
-	// Force the translation caches for this range to be rebuilt. uc_mem_read
-	// reads physical memory directly and succeeds on a page the guest then faults
-	// on, which means the translations still say "not present"; reapplying the
-	// same protection is what makes Unicorn drop them.
-	if err := r.engine.FlushTranslations(); err != nil {
-		return fmt.Errorf("flush translations after %#x+%#x: %w", address, size, err)
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x mapped per page (%d new)\n", address, size, fresh)
