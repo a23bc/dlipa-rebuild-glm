@@ -89,14 +89,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // A switch, not a policy. Opening the engine at launch is the one
             // step that can end the process before a screen is drawn; not opening
             // it costs two minutes on the first thing that needs the store.
-            let prewarm = UserDefaults.standard.bool(forKey: SettingsScreen.prewarmKey)
+            // Unset means on: the switch defaults to true, and bool(forKey:)
+            // would read the absence as false.
+            let stored = UserDefaults.standard.object(forKey: SettingsScreen.prewarmKey)
+            let prewarm = (stored as? Bool) ?? true
 
             if prewarm {
                 Task { @MainActor in
                     await AppSession.shared.prewarmSAPRuntime()
                 }
             } else {
-                AppLog.info("SAP pre-warm off: the engine opens on first use", .sap)
+                AppLog.info("SAP pre-warm off by switch: the engine opens on first use", .sap)
             }
         }
         print("[DLiPA] AppDelegate.didFinishLaunchingWithOptions returning true")

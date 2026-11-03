@@ -22,17 +22,20 @@ struct SettingsScreen: View {
 
     /// Whether the SAP runtime opens at launch.
     ///
-    /// Off is safer: the engine's own initialisation is the one step that can take
-    /// the process down, and at launch that means no screen at all. On is faster:
-    /// the first search or download does not wait for two minutes of emulated
-    /// startup. The trade is the user's to make.
+    /// On by default, because it is what makes the download work.
+    ///
+    /// Verified on device: with the engine opened at launch, the download reuses
+    /// that session and succeeds; opening it later, after staging, fails. The open
+    /// is not cheaper at launch, it is merely early enough that the process is
+    /// still small. The remaining problem is that the open itself can fail at
+    /// launch, and that is what is being worked on.
     static let prewarmKey = "com.a23bc.dliparebuild.prewarmAtLaunch"
 
     /// Taps needed on the About row before the Diagnostics tab appears.
     private static let unlockTaps = 5
 
     @AppStorage(showDiagnosticsKey) private var showDiagnostics = false
-    @AppStorage(prewarmKey) private var prewarmAtLaunch = false
+    @AppStorage(prewarmKey) private var prewarmAtLaunch = true
 
     /// Read on appear and again after a regeneration: the value lives in
     /// UserDefaults, not in observable state.
