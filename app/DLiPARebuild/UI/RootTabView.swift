@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// Fades the tab that just became visible.
+///
+/// Keyed on the selection rather than on appearance: an `onAppear` fade only ran
+/// the first time a tab was created, so switching away and back showed nothing.
+/// The outgoing tab is already off screen by the time this runs, so zeroing its
+/// opacity costs nothing.
+private struct TabFade: ViewModifier {
+    let tag: Int
+    let selection: Int
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(selection == tag ? 1 : 0)
+            .animation(.easeOut(duration: 0.18), value: selection)
+    }
+}
+
 /// The app shell. Structure follows the dlipa-next attempt: one tab per job,
 /// each with its own navigation stack, and an empty state that says what the
 /// screen will show rather than a blank page.
