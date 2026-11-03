@@ -74,12 +74,19 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
             AppLog.info("SAP assets staged for the arm64 bridge", .assets)
 
-            // Open the emulator now, while the process is smallest. Doing it
-            // lazily, at whatever the user taps first, is what made the version
-            // list die inside machine.Open.
-            Task { @MainActor in
-                await AppSession.shared.prewarmSAPRuntime()
-            }
+            // Pre-warming at launch is off.
+            //
+            // It was here to keep the 2 minutes of emulated startup off the
+            // first tap, but the engine's own initialisation is what crashes at
+            // launch: uc_open succeeds, then the deferred UC_INIT on the first
+            // mem_map fails to allocate its translator buffer and QEMU calls
+            // exit(1). No exception, no crash report. Doing it at launch meant
+            // every launch could die before the user saw anything.
+            //
+            // Opening on first use moves that risk to the one action that needs
+            // the store, where a failure at least follows something the user
+            // asked for.
+            AppLog.info("SAP pre-warm skipped: the engine opens on first use", .sap)
         }
         print("[DLiPA] AppDelegate.didFinishLaunchingWithOptions returning true")
         return true
