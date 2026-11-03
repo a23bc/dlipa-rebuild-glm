@@ -82,3 +82,53 @@ ipatool 的 build-ios.sh 已经设了 CGO_ENABLED=1，这点是对的。
 | unicorn/library_windows.go | 改为 stub（本 trim 构建不支持 Windows） |
 | unicorn/engine_config_windows.go | 新增 stub |
 | 全部 | import 路径改成模块自己的路径 |
+
+---
+
+## 5. 设备侧验证（2026-11-04 更新）
+
+### 已确认可用
+
+| 项 | 证据 |
+|---|---|
+| SAP 握手 | `handshake complete!` |
+| 签名 | `sign: 15 bytes in, 377ms, 393 emulation starts` |
+| 下载链接 | `ent/download (encoder) HTTP 200, ~29 KB`，随后文件落盘 |
+| 版本列表 | `versions for 284815942: 555, latest 894179259` |
+| arm64 切片 | `machimage.Open CoreFP: input=31076816 slice=31076816`（原 95 MB） |
+| kbsync 跨启动复用 | 首次写入 `kbsync-<dsid>.bin`，之后日志出现 `kbsync from disk (NNN bytes)` |
+
+### kbsync 缓存语义（对齐 ipatool `appstore_kbsync_cache.go`）
+
+- 只有 `ent/download` 返回 200 且无 `failureType` 才写盘
+- 命中的 blob 被拒 → 删除文件并清空内存，下一次重新生成
+- **未实现**：ipatool 的“作废旧 blob 后原地重发一次”；我们让调用方重试一次
+
+### 已知失败
+
+`UC_INIT`（第一次 `mem_map` 触发）偶发分配失败：
+
+```
+[SAP] uc_ctl tcg_buffer_size=4194304 rss=NNN MB
+[SAP] mem_map 0x100000000 size=4096 (triggers UC_INIT on the first)
+→ Could not allocate dynamic translator buffer → QEMU exit(1)
+```
+
+| 场景 | `uc_ctl` 时 rss | 结果 |
+|---|---|---|
+| 成功 | 207 MB | 通 |
+| 失败 | 216–228 MB | 崩 |
+
+已排除：第二个引擎、缓冲区尺寸、探针、镜像整块读取（已切片）。
+**未排除**：进程在 open 时的基线（staging 之后的持有者）。
+
+### 本地验证命令（Windows）
+
+```powershell
+cd sapbridge
+go build ./...
+go vet ./internal/sap/...
+go test ./internal/sap/...
+```
+
+三项全绿。iOS 构建只能在 GitHub Actions 的 macOS runner 上完成（需要 clang + iPhoneOS SDK）。
