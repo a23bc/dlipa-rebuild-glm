@@ -111,10 +111,15 @@ private struct DownloadJobRow: View {
                     }
                 }
 
-                Text(job.statusText)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                // Only while there is something to say. Once the file exists the
+                // row is a result, and a "Saved …" line under the bundle id was
+                // repeating what the row already shows.
+                if job.isActive {
+                    Text(job.statusText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 8)

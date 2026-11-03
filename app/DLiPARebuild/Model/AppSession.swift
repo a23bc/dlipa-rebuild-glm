@@ -600,7 +600,9 @@ func diagnosticKBSync() async -> String {
                 at: directory, includingPropertiesForKeys: [.contentModificationDateKey]) else {
             return []
         }
-        return names.sorted {
+        // Anything that is not a package is a transfer still in flight (".part")
+        // or a leftover; neither belongs in the list.
+        return names.filter { $0.pathExtension.lowercased() == "ipa" }.sorted {
             let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast
             let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
@@ -619,6 +621,7 @@ func diagnosticKBSync() async -> String {
 /// running count.
 private final class FileDownloader: NSObject, URLSessionDataDelegate {
     private let destination: URL
+    private lazy var partial = destination.appendingPathExtension("part")
     private let progress: @Sendable (Int64, Int64) -> Void
     private let completion: (Result<Void, Error>) -> Void
 
@@ -672,8 +675,11 @@ private final class FileDownloader: NSObject, URLSessionDataDelegate {
 
         expected = max(0, response.expectedContentLength)
 
-        FileManager.default.createFile(atPath: destination.path, contents: nil)
-        handle = try? FileHandle(forWritingTo: destination)
+        // Written beside the destination, renamed only when the transfer ends.
+        // Writing straight to `destination` made a half-downloaded file look like
+        // a finished one: the Downloads list picks up any .ipa in the folder.
+        FileManager.default.createFile(atPath: partial.path, contents: nil)
+        handle = try? FileHandle(forWritingTo: partial)
 
         completionHandler(.allow)
     }
@@ -699,20 +705,29 @@ private final class FileDownloader: NSObject, URLSessionDataDelegate {
         session.finishTasksAndInvalidate()
 
         if let failure {
-            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.removeItem(at: partial)
             completion(.failure(failure))
             return
         }
 
         if let error {
-            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.removeItem(at: partial)
             completion(.failure(error))
             return
         }
 
         guard written > 0 else {
-            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.removeItem(at: partial)
             completion(.failure(StoreError.httpError(-1, "download wrote nothing")))
+            return
+        }
+
+        try? FileManager.default.removeItem(at: destination)
+        do {
+            try FileManager.default.moveItem(at: partial, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: partial)
+            completion(.failure(error))
             return
         }
 

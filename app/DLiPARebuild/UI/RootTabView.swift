@@ -9,6 +9,7 @@ struct RootTabView: View {
     /// row inside Settings instead of on the tab, which cannot be intercepted
     /// without replacing the whole tab bar.
     @AppStorage(SettingsScreen.showDiagnosticsKey) private var showDiagnostics = false
+    @ObservedObject private var downloads = DownloadManager.shared
 
     var body: some View {
         TabView {
@@ -25,5 +26,19 @@ struct RootTabView: View {
                     .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
             }
         }
+        // One toast for the whole app: a download finishes whether or not the
+        // tab that started it is on screen.
+        .overlay(alignment: .bottom) {
+            if let toast = downloads.toast {
+                Text(toast)
+                    .font(.subheadline)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 68)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: downloads.toast)
     }
 }

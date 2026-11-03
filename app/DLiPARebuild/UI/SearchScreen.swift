@@ -88,6 +88,9 @@ private struct SearchBody: View {
     let onSelect: (StoreApp) -> Void
 
     @Environment(\.isSearching) private var isSearching
+    /// Closes the search UI, which is what actually puts the keyboard away:
+    /// showing results does not do it on its own.
+    @Environment(\.dismissSearch) private var dismissSearch
 
     var body: some View {
         Group {
@@ -108,6 +111,11 @@ private struct SearchBody: View {
             } else {
                 historyList
             }
+        }
+        // Results arriving means the user is done typing. Leaving the keyboard up
+        // covers half of the list they just asked for.
+        .onChange(of: model.results.count) { count in
+            if count > 0 { dismissSearch() }
         }
     }
 
@@ -134,7 +142,10 @@ private struct SearchBody: View {
         List {
             Section {
                 ForEach(model.history, id: \.self) { entry in
-                    Button { model.useHistory(entry) } label: {
+                    Button {
+                        model.useHistory(entry)
+                        dismissSearch()
+                    } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "clock.arrow.circlepath")
                                 .foregroundColor(.secondary)

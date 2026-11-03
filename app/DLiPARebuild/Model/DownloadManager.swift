@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// One download, owned by the manager rather than by a screen.
 ///
@@ -99,6 +100,11 @@ final class DownloadManager: ObservableObject {
 
     @Published private(set) var jobs: [DownloadJob] = []
 
+    /// Short-lived message shown over the app when a download lands. The row
+    /// itself stays quiet: "Saved …" under the bundle id said nothing the row
+    /// did not already show.
+    @Published private(set) var toast: String?
+
     private init() {}
 
     /// Starts a download and returns immediately.
@@ -142,6 +148,10 @@ final class DownloadManager: ObservableObject {
                 job.finish(file.lastPathComponent, url: file)
                 AppLog.info("download finished: " + file.lastPathComponent, .download)
                 NotificationCenter.default.post(name: .downloadFinished, object: nil)
+
+                // Done is felt before it is read.
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                showToast(app.trackName + " downloaded")
             } catch {
                 job.fail(error.localizedDescription)
                 AppLog.error("download failed: " + error.localizedDescription, .download)
@@ -149,6 +159,15 @@ final class DownloadManager: ObservableObject {
         }
 
         return job
+    }
+
+    private func showToast(_ message: String) {
+        toast = message
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if toast == message { toast = nil }
+        }
     }
 
     /// The jobs still running, newest first, for the Downloads tab.
