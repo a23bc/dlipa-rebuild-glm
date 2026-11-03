@@ -8,10 +8,14 @@ struct DownloadsScreen: View {
     @State private var files: [URL] = []
     @State private var shareURL: URL?
 
+    /// Downloads run here whether or not the screen that started them is gone,
+    /// so this is the one place their progress can be seen.
+    @ObservedObject private var manager = DownloadManager.shared
+
     var body: some View {
         NavigationView {
             Group {
-                if files.isEmpty {
+                if files.isEmpty && manager.jobs.isEmpty {
                     EmptyStateView(
                         title: "No Downloads",
                         systemImage: "arrow.down.app",
@@ -19,6 +23,14 @@ struct DownloadsScreen: View {
                     )
                 } else {
                     List {
+                        if !manager.jobs.isEmpty {
+                            Section("In progress") {
+                                ForEach(manager.jobs) { job in
+                                    DownloadJobRow(job: job)
+                                }
+                            }
+                        }
+
                         ForEach(files, id: \.self) { file in
                             Button { shareURL = file } label: {
                                 row(for: file)
@@ -35,6 +47,9 @@ struct DownloadsScreen: View {
                 }
             }
             .navigationTitle("Downloads")
+            .onReceive(NotificationCenter.default.publisher(for: .downloadFinished)) { _ in
+                reload()
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { reload() } label: {
@@ -82,5 +97,29 @@ struct DownloadsScreen: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+}
+
+/// One job's progress. Separate view so each row observes its own job; the
+/// manager's array only changes when a job is added, not as bytes arrive.
+private struct DownloadJobRow: View {
+    @ObservedObject var job: DownloadJob
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(job.appName).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(job.statusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            if job.isActive {
+                ProgressView(value: job.fraction)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }

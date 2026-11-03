@@ -311,22 +311,13 @@ final class SearchModel: ObservableObject {
         }
     }
 
+    /// Hands the download to the manager and returns at once.
+    ///
+    /// The request runs the emulated Store runtime, which takes minutes on
+    /// device; holding this screen busy for it was the reason the app felt
+    /// stuck. Progress belongs on the Downloads tab, not here.
     func download(_ app: StoreApp, versionID: String?) async {
-        busy = true
-        status = "Requesting " + app.trackName + "..."
-
-        do {
-            let name = app.bundleId + "-" + (versionID ?? "latest") + ".ipa"
-            let file = try await AppSession.shared.download(app,
-                                                           externalVersionId: versionID,
-                                                           fileName: name) { _, _ in }
-            status = "Saved " + file.lastPathComponent
-            AppLog.info("download finished: " + file.lastPathComponent, .download)
-        } catch {
-            status = ""
-            errorText = error.localizedDescription
-            AppLog.error("download failed: " + error.localizedDescription, .download)
-        }
-        busy = false
+        DownloadManager.shared.start(app, versionID: versionID)
+        status = "Queued " + app.trackName
     }
 }
