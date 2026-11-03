@@ -8,6 +8,8 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
@@ -181,9 +183,45 @@ func Open(ctx context.Context, bundle assets.Bundle) (*Machine, error) {
 	return machine, nil
 }
 
+// One emulator per process, enforced rather than assumed.
+//
+// QEMU's translation buffer is allocated once per process. A second engine does
+// not fail at uc_open -- that returns fine -- it fails at the deferred UC_INIT
+// on the first mem_map, prints "Could not allocate dynamic translator buffer"
+// and calls exit(1). No exception, no crash report: the app simply disappears,
+// which is what the intermittent launch crash looked like.
+//
+// This makes the second attempt an error with a stack instead of a dead process,
+// so the caller is named in the log.
+var engineClaim struct {
+	sync.Mutex
+	created bool
+	at      string
+}
+
+func claimEngine() error {
+	engineClaim.Lock()
+	defer engineClaim.Unlock()
+
+	if engineClaim.created {
+		return fmt.Errorf("this process already hosts an emulator (opened at %s); a second one exits the process:\n%s",
+			engineClaim.at, debug.Stack())
+	}
+
+	engineClaim.created = true
+	engineClaim.at = time.Now().Format("15:04:05.000")
+
+	return nil
+}
+
 func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptions) (*Machine, map[string]uint64, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("SAP runtime context is nil")
+	}
+
+	if err := claimEngine(); err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] second engine refused: %v\n", err)
+		return nil, nil, err
 	}
 
 	if err := ctx.Err(); err != nil {
