@@ -255,6 +255,29 @@ final class AppSession: ObservableObject {
     /// So it is created at launch, right after the assets finish staging, while
     /// the process is as small as it will ever be. Nothing here needs an
     /// account: a signer is bag plus hardware identity.
+    /// The signer the whole app shares.
+    ///
+    /// A process can host one SAP session: the guest maps fixed addresses and a
+    /// second Machine cannot map them again (UC_ERR_MAP), which is why a self test
+    /// that built its own made the next download fail. Everything -- self test,
+    /// search, downloads -- goes through this.
+    func sharedSigner(setupURL: String,
+                      certURL: String,
+                      version: Int32,
+                      hardware: [UInt8]) throws -> SAPSigner {
+        if let signer {
+            return signer
+        }
+
+        let created = try SAPSigner(setupURL: setupURL,
+                                    certURL: certURL,
+                                    version: version,
+                                    hardware: hardware)
+        signer = created
+
+        return created
+    }
+
     func prewarmSAPRuntime() async {
         guard signer == nil else { return }
 

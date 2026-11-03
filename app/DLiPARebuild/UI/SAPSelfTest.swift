@@ -76,18 +76,17 @@ enum SAPSelfTest {
                 // liveSessions to be 0. With the app already signed in it is 1,
                 // so the constructor refuses and this reports "a SAP session is
                 // already open" no matter what -- that part is still open.
-                var opened: SAPSigner?
-                defer { opened?.close() }
-
-                // The signer constructor does the whole chain: load the X64I
-                // container, run the initialiser, fetch the certificate, run
-                // both exchange legs. Throwing here means one of those failed
-                // and the error carries which.
-                let signer = try SAPSigner(setupURL: setup,
-                                           certURL: cert,
-                                           version: bag.signSapVersion,
-                                           hardware: hardware)
-                opened = signer
+                // The app's signer, not a new one.
+                //
+                // A process hosts one SAP session: the guest maps fixed
+                // addresses, and a second signer cannot map them again --
+                // UC_ERR_MAP -- so building one here is what made the next
+                // download fail. If no signer exists yet, this creates it and
+                // keeps it, so the download reuses this very session.
+                let signer = try AppSession.shared.sharedSigner(setupURL: setup,
+                                                                certURL: cert,
+                                                                version: bag.signSapVersion,
+                                                                hardware: hardware)
 
                 emit("Handshake OK")
                 emit("Signing a probe body...")
