@@ -264,7 +264,7 @@ final class AppSession: ObservableObject {
     func sharedSigner(setupURL: String,
                       certURL: String,
                       version: Int32,
-                      hardware: [UInt8]) throws -> SAPSigner {
+                      hardware: HardwareIdentity) throws -> SAPSigner {
         if let signer {
             return signer
         }
