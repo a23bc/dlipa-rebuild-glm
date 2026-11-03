@@ -198,8 +198,24 @@ final class AppSession: ObservableObject {
         // ensureSigner also refuses a result whose identity no longer matches.
         signerBuild?.cancel()
         signerBuild = nil
-        signer?.close()
-        signer = nil
+
+        // The emulator is NOT closed and rebuilt here.
+        //
+        // A process can host one Unicorn engine: TCG's translator buffer is
+        // allocated once, and a second uc_open dies inside QEMU with
+        // "Could not allocate dynamic translator buffer" -- exit(1), no crash
+        // report, which is exactly the intermittent launch crash. Rebuilding on
+        // an identity change did precisely that whenever a pre-warm had already
+        // built the machine.
+        //
+        // The existing machine is kept and the session material around it is
+        // dropped instead. If the identity really changed, the next signature
+        // will be refused by Apple, which is a visible failure rather than a
+        // process that vanishes.
+        if signer != nil {
+            AppLog.warn("identity changed: keeping the existing emulator", .sap)
+        }
+
         bag = nil
         client.resetSession()
         // The stored accounts were signed against the old device identity and
