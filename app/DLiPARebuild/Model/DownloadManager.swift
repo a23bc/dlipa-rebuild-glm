@@ -33,6 +33,9 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     @Published private(set) var state: State = .requesting
+    /// Set when the package lands. The row turns into the finished row rather
+    /// than a second entry being created for the same download.
+    @Published private(set) var savedURL: URL?
     @Published private(set) var received: Int64 = 0
     @Published private(set) var expected: Int64 = 0
 
@@ -76,7 +79,10 @@ final class DownloadJob: ObservableObject, Identifiable {
         if case .requesting = state { state = .downloading }
     }
 
-    fileprivate func finish(_ name: String) { state = .finished(name) }
+    fileprivate func finish(_ name: String, url: URL) {
+        savedURL = url
+        state = .finished(name)
+    }
     fileprivate func fail(_ message: String) { state = .failed(message) }
 
     static func size(_ bytes: Int64) -> String {
@@ -113,15 +119,27 @@ final class DownloadManager: ObservableObject {
             guard let job else { return }
 
             do {
+                var ticks = 0
+
                 let file = try await AppSession.shared.download(app,
                                                                 externalVersionId: versionID,
                                                                 fileName: name) { received, expected in
+                    ticks += 1
+
+                    // First tick and every two hundred after it: enough to prove
+                    // the callback arrives and what it carries, without filling
+                    // the log at several calls a second.
+                    if ticks == 1 || ticks % 200 == 0 {
+                        AppLog.info("progress tick " + String(ticks) + ": "
+                                    + String(received) + "/" + String(expected), .download)
+                    }
+
                     // Called from a URLSession delegate queue, several times a
                     // second: hop to the main actor before touching state.
                     Task { @MainActor in job.update(received: received, expected: expected) }
                 }
 
-                job.finish(file.lastPathComponent)
+                job.finish(file.lastPathComponent, url: file)
                 AppLog.info("download finished: " + file.lastPathComponent, .download)
                 NotificationCenter.default.post(name: .downloadFinished, object: nil)
             } catch {

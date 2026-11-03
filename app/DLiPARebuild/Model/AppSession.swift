@@ -566,22 +566,15 @@ func diagnosticKBSync() async -> String {
         request.setValue(AppStoreClient.downloadUserAgent,
                          forHTTPHeaderField: "User-Agent")
 
-        let configuration = URLSessionConfiguration.default
-        let session = URLSession(configuration: configuration,
-                                 delegate: DownloadProgressDelegate(progress: progress),
-                                 delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-
-        let (temporary, response) = try await session.download(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw StoreError.httpError((response as? HTTPURLResponse)?.statusCode ?? -1,
-                                       "download failed")
-        }
-
         let directory = try AppSession.downloadsDirectory()
         let destination = directory.appendingPathComponent(fileName)
         try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temporary, to: destination)
+
+        // Written here rather than handed to URLSession's download API: that API
+        // reports totalBytesExpectedToWrite, which arrives as -1 for these
+        // package URLs and leaves a progress bar with no denominator. Reading the
+        // response's Content-Length ourselves gives a real total and real ticks.
+        try await FileDownloader.run(request: request, to: destination, progress: progress)
         AppLog.info("saved " + destination.lastPathComponent, .download)
         return destination
     }
@@ -618,24 +611,114 @@ func diagnosticKBSync() async -> String {
 }
 
 /// Turns URLSession's byte counts into a fraction, for the progress overlay.
-private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
+/// Receives the body itself and writes it to `destination`.
+///
+/// `URLSession.download(for:)` was the obvious choice and reported `-1` for the
+/// expected size on these package URLs, so the UI had nothing to show. A data
+/// task plus a file handle gives both the total (from Content-Length) and the
+/// running count.
+private final class FileDownloader: NSObject, URLSessionDataDelegate {
+    private let destination: URL
     private let progress: @Sendable (Int64, Int64) -> Void
+    private let completion: (Result<Void, Error>) -> Void
 
-    init(progress: @escaping @Sendable (Int64, Int64) -> Void) {
+    private var handle: FileHandle?
+    private var expected: Int64 = 0
+    private var written: Int64 = 0
+    private var failure: Error?
+    private var lastReport: Int64 = 0
+
+    init(destination: URL,
+         progress: @escaping @Sendable (Int64, Int64) -> Void,
+         completion: @escaping (Result<Void, Error>) -> Void) {
+        self.destination = destination
         self.progress = progress
+        self.completion = completion
     }
 
-    func urlSession(_ session: URLSession,
-                    downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        progress(totalBytesWritten, totalBytesExpectedToWrite)
+    static func run(request: URLRequest,
+                    to destination: URL,
+                    progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let downloader = FileDownloader(destination: destination, progress: progress) { result in
+                continuation.resume(with: result)
+            }
+
+            let configuration = URLSessionConfiguration.default
+            let session = URLSession(configuration: configuration,
+                                     delegate: downloader,
+                                     delegateQueue: nil)
+
+            // The session retains its delegate; invalidating after completion
+            // releases it and closes the sockets.
+            downloader.session = session
+            session.dataTask(with: request).resume()
+        }
     }
 
+    private var session: URLSession?
+
     func urlSession(_ session: URLSession,
-                    downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {}
+                    dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let http = response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            failure = StoreError.httpError(http.statusCode, "download failed")
+            completionHandler(.cancel)
+
+            return
+        }
+
+        expected = max(0, response.expectedContentLength)
+
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
+        handle = try? FileHandle(forWritingTo: destination)
+
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let handle else { return }
+
+        try? handle.write(contentsOf: data)
+        written += Int64(data.count)
+
+        // Every 256 KB: often enough to move, rare enough not to flood the main
+        // actor with hops.
+        if written - lastReport >= 256 * 1024 || (expected > 0 && written == expected) {
+            lastReport = written
+            progress(written, expected)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        try? handle?.close()
+        handle = nil
+
+        session.finishTasksAndInvalidate()
+
+        if let failure {
+            try? FileManager.default.removeItem(at: destination)
+            completion(.failure(failure))
+            return
+        }
+
+        if let error {
+            try? FileManager.default.removeItem(at: destination)
+            completion(.failure(error))
+            return
+        }
+
+        guard written > 0 else {
+            try? FileManager.default.removeItem(at: destination)
+            completion(.failure(StoreError.httpError(-1, "download wrote nothing")))
+            return
+        }
+
+        progress(written, expected > 0 ? expected : written)
+        completion(.success(()))
+    }
 }
 
 /// Runs a blocking bridge call without holding the main actor.

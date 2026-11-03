@@ -25,18 +25,26 @@ struct DownloadsScreen: View {
                 } else {
                     List {
                         ForEach(manager.jobs) { job in
-                            DownloadJobRow(job: job)
+                            if let saved = job.savedURL {
+                                // The job that produced the file is the file's
+                                // row: a finished download does not get a second
+                                // entry beside the job that made it.
+                                Button { shareURL = saved } label: {
+                                    DownloadJobRow(job: job)
+                                }
+                            } else {
+                                DownloadJobRow(job: job)
+                            }
                         }
 
-                        ForEach(files, id: \.self) { file in
+                        ForEach(visibleFiles, id: \.self) { file in
                             Button { shareURL = file } label: {
                                 FinishedRow(file: file)
                             }
-                            .buttonStyle(.plain)
                         }
                         .onDelete { offsets in
                             for index in offsets {
-                                try? FileManager.default.removeItem(at: files[index])
+                                try? FileManager.default.removeItem(at: visibleFiles[index])
                             }
                             reload()
                         }
@@ -61,6 +69,12 @@ struct DownloadsScreen: View {
                 ActivityView(activityItems: [item.url])
             }
         }
+    }
+
+    /// Files on disk that no finished job is already showing.
+    private var visibleFiles: [URL] {
+        let shown = Set(manager.jobs.compactMap { $0.savedURL?.lastPathComponent })
+        return files.filter { !shown.contains($0.lastPathComponent) }
     }
 
     private func reload() {
@@ -109,7 +123,11 @@ private struct DownloadJobRow: View {
                 Text(job.versionText)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                if job.expected > 0 {
+                if let saved = job.savedURL {
+                    Text(FinishedRow.size(of: saved))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                } else if job.expected > 0 {
                     Text(DownloadJob.size(job.expected))
                         .font(.caption2)
                         .foregroundColor(.secondary)
