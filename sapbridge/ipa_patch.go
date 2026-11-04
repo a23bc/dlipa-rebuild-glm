@@ -20,8 +20,8 @@ import (
 // sinfs under SC_Info) is separate because it needs the manifest read out of the
 // package first.
 //
-// The original file is left alone: the patched copy is written beside it, so a
-// bad patch is a deleted file rather than a lost download.
+// The file is patched in place, through a temporary: a failure leaves the original
+// untouched, and a success leaves exactly one package behind.
 func PatchIPA(path, email string) (string, error) {
 	email = strings.TrimSpace(email)
 	if email == "" {
@@ -49,8 +49,8 @@ func PatchIPA(path, email string) (string, error) {
 		return "", err
 	}
 
-	outPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".patched.ipa"
-	tmpPath := outPath + ".tmp"
+	// Patched in place: one file per download, no sibling to keep in step with.
+	tmpPath := path + ".patching"
 
 	// FairPlay data goes in the same pass: it is another entry, not a modification.
 	sinfs, sinfErr := sinfEntries(source)
@@ -66,11 +66,11 @@ func PatchIPA(path, email string) (string, error) {
 		return "", err
 	}
 
-	if err := os.Rename(tmpPath, outPath); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		return "", fmt.Errorf("patch ipa: rename: %w", err)
 	}
 
-	return outPath, nil
+	return path, nil
 }
 
 // metadataDocument returns the plist's bytes: the one inside the package if there

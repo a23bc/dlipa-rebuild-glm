@@ -51,4 +51,3 @@ FOUNDATION_EXPORT NSString * _Nullable SapbridgePatchIPA(NSString * _Nullable pa
 FOUNDATION_EXPORT NSString * _Nullable SapbridgeStartInstallServer(NSString * _Nullable dataDir, NSString * _Nullable packagePath, NSString * _Nullable bundleID, NSString * _Nullable version, NSString * _Nullable title, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT NSString * _Nullable SapbridgeInstallGuideURL(void);
 FOUNDATION_EXPORT NSString * _Nullable SapbridgeBlankAudioPath(NSString * _Nullable dataDir, NSError * _Nullable * _Nullable error);
-FOUNDATION_EXPORT bool SapbridgePackageHasFairPlay(NSString * _Nullable path);

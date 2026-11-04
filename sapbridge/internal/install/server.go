@@ -657,14 +657,3 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 
 	return written, err
 }
-
-// PackageHasFairPlay reports whether a package carries SC_Info sinf data.
-//
-// Exported so the app can decide what to serve: a package without it installs and
-// then fails to launch, and allowing any package that has it makes it possible to
-// test the install path with a package prepared elsewhere.
-func PackageHasFairPlay(path string) bool {
-	identity, ok := readPackageIdentity(path)
-
-	return ok && identity.FairPlay
-}

@@ -167,19 +167,18 @@ final class DownloadManager: ObservableObject {
 
                 DownloadMetadataStore.write(app, versionID: versionID, for: file)
 
-                // Step 2 of 4.6, behind a switch while it is being validated. The
-                // patched copy is a sibling file; the download itself is untouched.
-                if UserDefaults.standard.bool(forKey: SettingsScreen.patchDownloadsKey) {
-                    var failure: NSError?
-                    let patched = SapbridgePatchIPA(file.path,
-                                                    AppSession.shared.activeAccount?.email,
-                                                    &failure)
+                // Always: the package Apple serves has no FairPlay data, so an
+                // unpatched download installs and then refuses to launch. The file is
+                // patched in place -- there is no second copy to keep track of.
+                var failure: NSError?
+                _ = SapbridgePatchIPA(file.path,
+                                      AppSession.shared.activeAccount?.email,
+                                      &failure)
 
-                    if let failure {
-                        AppLog.warn("ipa patch failed: " + failure.localizedDescription, .download)
-                    } else {
-                        AppLog.info("ipa patched: " + (patched ?? "?"), .download)
-                    }
+                if let failure {
+                    AppLog.warn("ipa patch failed: " + failure.localizedDescription, .download)
+                } else {
+                    AppLog.info("ipa patched: " + file.lastPathComponent, .download)
                 }
                 job.finish(file.lastPathComponent, url: file)
                 AppLog.info("download finished: " + file.lastPathComponent, .download)
