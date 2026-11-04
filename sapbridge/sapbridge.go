@@ -468,3 +468,9 @@ func InstallGuideURL() string {
 func BlankAudioPath(dataDir string) (path string, err error) {
 	return install.BlankAudioPath(dataDir)
 }
+
+// PackageHasFairPlay reports whether the package carries the data needed to launch
+// after install.
+func PackageHasFairPlay(path string) bool {
+	return install.PackageHasFairPlay(path)
+}
