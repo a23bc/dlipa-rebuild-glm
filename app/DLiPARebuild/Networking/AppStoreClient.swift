@@ -1143,7 +1143,10 @@ final class AppStoreClient {
         let cookieHeader = capturedCookieHeader
         let version = externalVersionId ?? ""
 
-        let json = try await Task.detached(priority: .userInitiated) {
+        // Utility, not userInitiated: the guest mapping saturates a core for about a
+        // minute, and on a two core phone that is the difference between a stutter
+        // and a screen that stops responding.
+        let json = try await Task.detached(priority: .utility) {
             try signer.entDownload(dsid: dsid, token: token, storefront: storefront,
                                    endpoint: endpoint, cookieHeader: cookieHeader,
                                    appID: numericID, externalVersionID: version)
