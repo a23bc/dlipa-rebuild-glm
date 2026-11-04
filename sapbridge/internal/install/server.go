@@ -103,13 +103,27 @@ func Start(dataDir string, manifest Manifest) (*Server, string, string, error) {
 	// The installer asks for the manifest by the URL it was given, then fetches
 	// whatever asset URLs that manifest names -- both come back here.
 	mux.HandleFunc("/manifest.plist", func(w http.ResponseWriter, r *http.Request) {
+		body := manifestPlist(manifest, base)
+
 		w.Header().Set("Content-Type", "text/xml")
-		_, _ = w.Write(manifestPlist(manifest, base))
+		_, _ = w.Write(body)
+
+		fmt.Fprintf(os.Stderr, "[SAP] install: %s /manifest.plist -> %d bytes\n", r.Method, len(body))
 	})
 
 	mux.HandleFunc("/app.ipa", func(w http.ResponseWriter, r *http.Request) {
+		// Every fetch is logged with its outcome: whether the installer came at all,
+		// how far it got and whether it resumed are the facts that separate "cannot
+		// reach the server" from "took the package and refused it".
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		started := time.Now()
+
 		w.Header().Set("Content-Type", "application/octet-stream")
-		http.ServeFile(w, r, manifest.PackagePath)
+		http.ServeFile(recorder, r, manifest.PackagePath)
+
+		fmt.Fprintf(os.Stderr, "[SAP] install: %s /app.ipa range=%q -> %d, %d bytes, %s\n",
+			r.Method, r.Header.Get("Range"), recorder.status, recorder.written,
+			time.Since(started).Round(time.Millisecond))
 	})
 
 	mux.HandleFunc("/ca.pem", func(w http.ResponseWriter, r *http.Request) {
@@ -615,4 +629,23 @@ func readPackageIdentity(path string) (packageIdentity, bool) {
 	}
 
 	return identity, true
+}
+
+// statusRecorder keeps the outcome of a response for the log.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written int64
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	written, err := r.ResponseWriter.Write(p)
+	r.written += int64(written)
+
+	return written, err
 }

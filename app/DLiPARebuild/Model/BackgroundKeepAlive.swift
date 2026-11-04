@@ -97,6 +97,10 @@ final class BackgroundKeepAlive {
             player.volume = 0
             player.play()
             self.player = player
+
+            // Whether the loop is actually running is the difference between "the app
+            // may be suspended any moment" and "the server will still be here".
+            AppLog.info("keep-alive audio playing=" + String(player.isPlaying), .app)
         } catch {
             AppLog.warn("background keep-alive audio failed: " + error.localizedDescription, .app)
         }
