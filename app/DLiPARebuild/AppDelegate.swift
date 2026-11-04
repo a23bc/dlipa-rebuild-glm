@@ -92,7 +92,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // Off unless asked for. Opening the engine at launch is the step that
             // can end the process before a screen is drawn, and it is now a
             // diagnostic switch rather than a default.
-            let prewarm = UserDefaults.standard.bool(forKey: SettingsScreen.prewarmKey)
+            let prewarm = UserDefaults.standard.bool(forKey: DiagnosticsScreen.prewarmKey)
 
             if prewarm {
                 Task { @MainActor in

@@ -20,16 +20,6 @@ struct SettingsScreen: View {
     /// Set once the Diagnostics tab has been unlocked. Shared with RootTabView.
     static let showDiagnosticsKey = "com.a23bc.dliparebuild.showDiagnostics"
 
-    /// Whether the SAP runtime opens at launch.
-    ///
-    /// On by default, because it is what makes the download work.
-    ///
-    /// Verified on device: with the engine opened at launch, the download reuses
-    /// that session and succeeds; opening it later, after staging, fails. The open
-    /// is not cheaper at launch, it is merely early enough that the process is
-    /// still small. The remaining problem is that the open itself can fail at
-    /// launch, and that is what is being worked on.
-    static let prewarmKey = "com.a23bc.dliparebuild.prewarmAtLaunch"
 
     /// Taps needed on the About row before the Diagnostics tab appears.
     private static let unlockTaps = 5

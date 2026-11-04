@@ -20,8 +20,14 @@ struct DiagnosticsScreen: View {
     /// that visible: if they stop while the spinner still turns, main is blocked
     /// and the last one printed marks when.
     @State private var heartbeat: Timer?
+    /// Whether the SAP runtime opens at launch.
+    ///
+    /// Off by default: the open is the step that can end the process before a
+    /// screen is drawn. On, it makes the first download reuse a session that is
+    /// already built.
+    static let prewarmKey = "com.a23bc.dliparebuild.prewarmAtLaunch"
     @State private var recording = AppLog.isRecording
-    @AppStorage(SettingsScreen.prewarmKey) private var prewarmAtLaunch = false
+    @AppStorage(prewarmKey) private var prewarmAtLaunch = false
     @State private var logText = ""
 
     var body: some View {
@@ -29,8 +35,6 @@ struct DiagnosticsScreen: View {
             VStack(spacing: 0) {
                 Form {
                     Section {
-                        Toggle("Open the SAP runtime at launch", isOn: $prewarmAtLaunch)
-                            .onChange(of: prewarmAtLaunch) { _ in refresh() }
                         Toggle("Record log", isOn: $recording)
                             .onChange(of: recording) { value in
                                 // Release builds drop .debug before anyone can
@@ -38,6 +42,8 @@ struct DiagnosticsScreen: View {
                                 AppLog.isRecording = value
                                 refresh()
                             }
+                        Toggle("Open the SAP runtime at launch", isOn: $prewarmAtLaunch)
+                            .onChange(of: prewarmAtLaunch) { _ in refresh() }
                     }
 
                     Section {
