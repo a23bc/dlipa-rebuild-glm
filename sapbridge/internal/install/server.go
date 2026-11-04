@@ -524,11 +524,12 @@ func keyIdentifier(public any) []byte {
 
 // packageIdentity is what the manifest has to declare, read from the package.
 type packageIdentity struct {
-	BundleID string
-	Version  string
-	Title    string
-	FairPlay bool
-	Size     int64
+	BundleID  string
+	Version   string
+	Title     string
+	MinimumOS string
+	FairPlay  bool
+	Size      int64
 }
 
 // readPackageIdentity pulls the identifiers out of Payload/<app>.app/Info.plist.
@@ -600,6 +601,7 @@ func readPackageIdentity(path string) (packageIdentity, bool) {
 
 		var document struct {
 			BundleID    string `plist:"CFBundleIdentifier"`
+			MinimumOS   string `plist:"MinimumOSVersion"`
 			Short       string `plist:"CFBundleShortVersionString"`
 			Version     string `plist:"CFBundleVersion"`
 			DisplayName string `plist:"CFBundleDisplayName"`
@@ -624,6 +626,7 @@ func readPackageIdentity(path string) (packageIdentity, bool) {
 		fmt.Fprintf(os.Stderr, "[SAP] install: identity build=%q short=%q\n",
 			document.Version, document.Short)
 
+		identity.MinimumOS = document.MinimumOS
 		identity.Title = document.DisplayName
 		if identity.Title == "" {
 			identity.Title = document.Name
@@ -656,4 +659,17 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	r.written += int64(written)
 
 	return written, err
+}
+
+// PackageMinimumOS is the deployment target declared inside the package.
+//
+// The search results carry it, but a downloaded file has to be read to know what
+// it needs; the downloads list shows the same line as the search list.
+func PackageMinimumOS(path string) string {
+	identity, ok := readPackageIdentity(path)
+	if !ok {
+		return ""
+	}
+
+	return identity.MinimumOS
 }

@@ -468,3 +468,8 @@ func InstallGuideURL() string {
 func BlankAudioPath(dataDir string) (path string, err error) {
 	return install.BlankAudioPath(dataDir)
 }
+
+// PackageMinimumOS is the iOS deployment target the package declares.
+func PackageMinimumOS(path string) string {
+	return install.PackageMinimumOS(path)
+}
