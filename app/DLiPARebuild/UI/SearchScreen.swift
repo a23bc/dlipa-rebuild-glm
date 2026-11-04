@@ -59,7 +59,7 @@ struct SearchScreen: View {
                                 ])
                 }
                 .sheet(item: $versionTarget, onDismiss: { versionTarget = nil }) { app in
-                    VersionListView(app: app, allowsDownload: false) { versionID in
+                    VersionListView(app: app) { versionID in
                         versionTarget = nil
                         Task { await model.download(app, versionID: versionID) }
                     }

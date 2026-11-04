@@ -7,9 +7,6 @@ import SwiftUI
 /// keeps only the metadata.
 struct VersionListView: View {
     let app: StoreApp
-    /// When false the list is read-only history; when true a tap starts a
-    /// download of that version.
-    let allowsDownload: Bool
     var onPick: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -45,10 +42,11 @@ struct VersionListView: View {
                                         // recognises; the identifier is the only
                                         // value a caller can use, so it stays
                                         // visible underneath.
-                                        if let title = titles[identifier] {
-                                            Text(title)
-                                                .foregroundColor(.primary)
-                                        }
+                                        // A blank keeps the line's height, so the
+                                        // identifier does not jump down when the
+                                        // version arrives.
+                                        Text(titles[identifier] ?? " ")
+                                            .foregroundColor(.primary)
                                         Text(identifier)
                                             .font(.caption)
                                             .foregroundColor(.secondary)
@@ -77,7 +75,7 @@ struct VersionListView: View {
                     }
                 }
             }
-            .navigationTitle(allowsDownload ? "Pick a Version" : "Version History")
+            .navigationTitle("Version History")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
