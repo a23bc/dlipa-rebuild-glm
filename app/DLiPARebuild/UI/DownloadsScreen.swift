@@ -117,30 +117,14 @@ private struct DownloadTarget {
             ?? url.deletingPathExtension().lastPathComponent
     }
 
-    /// The same line the search results carry: version, iOS requirement, size.
+    /// Bundle id and version on one line, the way the search sheet does it.
     var subtitle: String {
-        var parts: [String] = []
-
-        let metadata = DownloadMetadataStore.read(for: url)
-        let fallback = FinishedRow.split(url.deletingPathExtension().lastPathComponent)
-        let version = metadata?.version ?? fallback.version
-
-        if !version.isEmpty {
-            parts.append("v" + version)
+        if let metadata = DownloadMetadataStore.read(for: url) {
+            return metadata.bundleID + " · " + metadata.version
         }
 
-        let minimumOS = SapbridgePackageMinimumOS(url.path) ?? ""
-        if !minimumOS.isEmpty {
-            parts.append("iOS" + minimumOS)
-        }
-
-        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-            let formatter = ByteCountFormatter()
-            formatter.countStyle = .file
-            parts.append(formatter.string(fromByteCount: Int64(size)))
-        }
-
-        return parts.joined(separator: " · ")
+        let parts = FinishedRow.split(url.deletingPathExtension().lastPathComponent)
+        return parts.bundleID + (parts.version.isEmpty ? "" : " · " + parts.version)
     }
 }
 
