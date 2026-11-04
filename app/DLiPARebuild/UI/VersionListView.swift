@@ -14,6 +14,8 @@ struct VersionListView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var versions: AppStoreClient.VersionList?
+    /// Resolved marketing versions, filled in as rows appear.
+    @State private var titles: [String: String] = [:]
     @State private var errorText: String?
     @State private var loading = true
 
@@ -28,36 +30,40 @@ struct VersionListView: View {
                                    detail: errorText)
                 } else if let versions {
                     List {
-                        ForEach(Array(versions.identifiers.enumerated()), id: \.offset) { entry in
+                        ForEach(ordered(versions), id: \.self) { identifier in
                             // Tapping always starts that version's download, in
                             // history as well: the list is the only place a
                             // specific build can be chosen, and doing nothing on
                             // tap made it look broken.
                             Button {
-                                onPick(entry.element)
+                                onPick(identifier)
                                 dismiss()
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        // The id is the identity of a build; the
-                                        // label says whether it is the newest.
-                                        // Replacing the id with "Latest" hid the
-                                        // only value a caller can use.
-                                        Text(entry.element)
+                                        // The marketing version is what a person
+                                        // recognises; the identifier is the only
+                                        // value a caller can use, so it stays
+                                        // visible underneath.
+                                        Text(titles[identifier] ?? identifier)
                                             .foregroundColor(.primary)
-                                        Text(entry.element == versions.latest
-                                             ? "Latest version"
-                                             : "Older version")
+                                        Text("ID " + identifier)
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                     }
                                     Spacer()
-                                    if entry.element == versions.latest {
+                                    if identifier == versions.latest {
                                         Image(systemName: "checkmark")
                                             .foregroundColor(.accentColor)
                                     }
                                 }
                                 .contentShape(Rectangle())
+                            }
+                            .task {
+                                if titles[identifier] == nil {
+                                    titles[identifier] = await AppSession.shared
+                                        .versionString(for: app, versionID: identifier)
+                                }
                             }
                         }
                     }
@@ -73,6 +79,17 @@ struct VersionListView: View {
         }
         .navigationViewStyle(.stack)
         .task { await load() }
+    }
+
+    /// Newest first: the latest identifier, then the rest by descending id, which is
+    /// chronological -- Apple increments these as builds ship.
+    private func ordered(_ list: AppStoreClient.VersionList) -> [String] {
+        list.identifiers.sorted { left, right in
+            if left == list.latest { return true }
+            if right == list.latest { return false }
+
+            return (Int64(left) ?? 0) > (Int64(right) ?? 0)
+        }
     }
 
     private func load() async {

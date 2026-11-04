@@ -573,6 +573,18 @@ func diagnosticKBSync() async -> String {
                                              signer: signer)
     }
 
+    /// Resolves one build's marketing version, for the version list's rows.
+    func versionString(for app: StoreApp, versionID: String) async -> String? {
+        guard let (account, bag, signer) = try? await ensureSession() else { return nil }
+
+        return try? await client.versionString(appId: String(app.trackId),
+                                               externalVersionId: versionID,
+                                               guid: hardware.guid,
+                                               account: account.asAccount(),
+                                               bag: bag,
+                                               signer: signer)
+    }
+
     /// The signed URL for an app, or for one specific version of it.
     func downloadURL(for app: StoreApp,
                      externalVersionId: String?) async throws -> URL {

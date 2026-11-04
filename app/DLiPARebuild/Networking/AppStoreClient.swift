@@ -382,6 +382,34 @@ final class AppStoreClient {
         let identifiers: [String]
     }
 
+    /// The marketing version of one build, e.g. "14.30.1".
+    ///
+    /// The version list only carries identifiers, so the label behind each row has
+    /// to be fetched: one signed download-product request per id, which is cheap --
+    /// it reads songList metadata and never touches the encoder.
+    func versionString(appId: String,
+                       externalVersionId: String,
+                       guid: String,
+                       account: Account,
+                       bag: StoreBag,
+                       signer: SAPSigner) async throws -> String? {
+        let plist = try await downloadProduct(appId: appId,
+                                              externalVersionId: externalVersionId,
+                                              guid: guid,
+                                              account: account,
+                                              bag: bag,
+                                              signer: signer)
+
+        let songs = plist["songList"] as? [[String: Any]]
+        let metadata = songs?.first?["metadata"] as? [String: Any]
+
+        if let short = metadata?["bundleShortVersionString"] as? String, !short.isEmpty {
+            return short
+        }
+
+        return nil
+    }
+
     /// Lists the versions available for an app, acquiring a licence if Apple
     /// asks for one.
     ///
