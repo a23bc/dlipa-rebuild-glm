@@ -45,9 +45,11 @@ struct VersionListView: View {
                                         // recognises; the identifier is the only
                                         // value a caller can use, so it stays
                                         // visible underneath.
-                                        Text(titles[identifier] ?? identifier)
-                                            .foregroundColor(.primary)
-                                        Text("ID " + identifier)
+                                        if let title = titles[identifier] {
+                                            Text(title)
+                                                .foregroundColor(.primary)
+                                        }
+                                        Text(identifier)
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                     }
@@ -59,12 +61,18 @@ struct VersionListView: View {
                                 }
                                 .contentShape(Rectangle())
                             }
-                            .task {
-                                if titles[identifier] == nil {
-                                    titles[identifier] = await AppSession.shared
-                                        .versionString(for: app, versionID: identifier)
-                                }
-                            }
+
+                        }
+                    }
+                    // Resolved one at a time, in list order. Asking for every
+                    // visible row at once put a dozen signed requests in flight
+                    // together and the screen stopped responding.
+                    .task(id: versions.identifiers.count) {
+                        for identifier in ordered(versions) where titles[identifier] == nil {
+                            if Task.isCancelled { return }
+
+                            titles[identifier] = await AppSession.shared
+                                .versionString(for: app, versionID: identifier)
                         }
                     }
                 }
