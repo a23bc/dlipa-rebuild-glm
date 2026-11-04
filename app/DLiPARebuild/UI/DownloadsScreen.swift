@@ -162,17 +162,6 @@ private struct DownloadJobRow: View {
             }
 
             Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(job.versionText)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if job.expected > 0 {
-                    Text(DownloadJob.size(job.expected))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
         }
         .padding(.vertical, 2)
     }
