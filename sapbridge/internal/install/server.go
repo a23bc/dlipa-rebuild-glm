@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -318,10 +319,20 @@ func loadOrCreateCertificate(dataDir string) (tls.Certificate, []byte, error) {
 	}
 
 	caTemplate := &x509.Certificate{
-		SerialNumber:          serial(),
-		Subject:               pkix.Name{CommonName: "DLiPA CA"},
+		SerialNumber: serial(),
+		// The original certificate's shape, matched field for field: a leaf without
+		// an authority key identifier is the kind iOS declines to chain, and the
+		// validity ceiling is Apple's, not a preference.
+		Subject: pkix.Name{
+			CommonName:   "DLiPA CA",
+			Organization: []string{"LocalCA"},
+			Locality:     []string{"Local"},
+			Province:     []string{"Local"},
+			Country:      []string{"US"},
+		},
+		SubjectKeyId:          keyIdentifier(caKey.PublicKey),
 		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().AddDate(10, 0, 0),
+		NotAfter:              time.Now().AddDate(0, 0, caValidityDays),
 		IsCA:                  true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
@@ -454,4 +465,23 @@ func mustParse(der []byte) *x509.Certificate {
 	}
 
 	return parsed
+}
+
+const (
+	// Apple's ceiling for TLS server certificates, and what the original uses.
+	leafValidityDays = 825
+	caValidityDays   = 3650
+)
+
+// keyIdentifier is the RFC 5280 method 1 key identifier: SHA-1 over the public key
+// bits, twenty bytes. iOS expects both the CA and the leaf to carry one.
+func keyIdentifier(public any) []byte {
+	der, err := x509.MarshalPKIXPublicKey(public)
+	if err != nil {
+		return nil
+	}
+
+	sum := sha1.Sum(der)
+
+	return sum[:]
 }
