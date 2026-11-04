@@ -63,6 +63,7 @@ struct DownloadsScreen: View {
                     return ActionSheet(title: Text(item.title + "\n" + item.subtitle),
                                        buttons: [
                                         .default(Text("Install")) { InstallMenu.present(url) },
+                                        .default(Text("Install via local HTTPS")) { installOverHTTPS(url) },
                                         .default(Text("Share")) { shareURL = url },
                                         .cancel()
                                        ])
@@ -259,6 +260,37 @@ private struct Artwork: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
+
+    /// Serves the package from the app and asks the installer to fetch it.
+    ///
+    /// The installer runs in another process, so the server has to outlive this
+    /// call -- it does, the bridge keeps it alive for the process.
+    private func installOverHTTPS(_ url: URL) {
+        let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("dlipa", isDirectory: true).path
+
+        let metadata = DownloadMetadataStore.read(for: url)
+        let parts = FinishedRow.split(url.deletingPathExtension().lastPathComponent)
+
+        var failure: NSError?
+        let target = SapbridgeStartInstallServer(cache,
+                                                 url.path,
+                                                 metadata?.bundleID ?? parts.bundleID,
+                                                 metadata?.version ?? parts.version,
+                                                 metadata?.name ?? parts.bundleID,
+                                                 &failure)
+
+        if let failure {
+            AppLog.error("install server failed: " + failure.localizedDescription, .download)
+
+            return
+        }
+
+        guard let target, let link = URL(string: target) else { return }
+
+        AppLog.info("install via HTTPS: " + target, .download)
+        UIApplication.shared.open(link)
+    }
 
 /// "Open in…" for a local package. The document interaction controller is the
 /// only supported way to hand a file to another app (TrollStore among them);

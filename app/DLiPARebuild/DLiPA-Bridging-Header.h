@@ -48,3 +48,4 @@ FOUNDATION_EXPORT void SapbridgeSetBundleDir(NSString * _Nullable path);
 
 NS_ASSUME_NONNULL_END
 FOUNDATION_EXPORT NSString * _Nullable SapbridgePatchIPA(NSString * _Nullable path, NSString * _Nullable email, NSError * _Nullable * _Nullable error);
+FOUNDATION_EXPORT NSString * _Nullable SapbridgeStartInstallServer(NSString * _Nullable dataDir, NSString * _Nullable packagePath, NSString * _Nullable bundleID, NSString * _Nullable version, NSString * _Nullable title, NSError * _Nullable * _Nullable error);

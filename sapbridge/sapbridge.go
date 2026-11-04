@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -419,3 +420,32 @@ func ParseDSID(value string) (int64, error) {
 	return int64(parsed), nil
 }
 
+// StartInstallServer serves a local package for itms-services and returns the URL
+// to open. The caller keeps the returned server alive until the install ends.
+func StartInstallServer(dataDir, packagePath, bundleID, version, title string) (url string, err error) {
+	server, url, startErr := install.Start(dataDir, install.Manifest{
+		BundleID:    bundleID,
+		Version:     version,
+		Title:       title,
+		PackagePath: packagePath,
+	})
+	if startErr != nil {
+		return "", startErr
+	}
+
+	// Kept for the life of the process: the installer fetches the package while
+	// the app is in the background, and a server that stops with the call would
+	// turn every install into a timeout.
+	installServersMu.Lock()
+	installServers = append(installServers, server)
+	installServersMu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "[SAP] install server ready\n")
+
+	return url, nil
+}
+
+var (
+	installServersMu sync.Mutex
+	installServers   []*install.Server
+)
