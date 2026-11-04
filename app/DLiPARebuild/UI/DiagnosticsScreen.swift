@@ -21,6 +21,7 @@ struct DiagnosticsScreen: View {
     /// and the last one printed marks when.
     @State private var heartbeat: Timer?
     @State private var recording = AppLog.isRecording
+    @AppStorage(SettingsScreen.prewarmKey) private var prewarmAtLaunch = false
     @State private var logText = ""
 
     var body: some View {
@@ -28,6 +29,8 @@ struct DiagnosticsScreen: View {
             VStack(spacing: 0) {
                 Form {
                     Section {
+                        Toggle("Open the SAP runtime at launch", isOn: $prewarmAtLaunch)
+                            .onChange(of: prewarmAtLaunch) { _ in refresh() }
                         Toggle("Record log", isOn: $recording)
                             .onChange(of: recording) { value in
                                 // Release builds drop .debug before anyone can

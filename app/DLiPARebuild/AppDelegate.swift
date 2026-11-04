@@ -89,10 +89,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // A switch, not a policy. Opening the engine at launch is the one
             // step that can end the process before a screen is drawn; not opening
             // it costs two minutes on the first thing that needs the store.
-            // Unset means on: the switch defaults to true, and bool(forKey:)
-            // would read the absence as false.
-            let stored = UserDefaults.standard.object(forKey: SettingsScreen.prewarmKey)
-            let prewarm = (stored as? Bool) ?? true
+            // Off unless asked for. Opening the engine at launch is the step that
+            // can end the process before a screen is drawn, and it is now a
+            // diagnostic switch rather than a default.
+            let prewarm = UserDefaults.standard.bool(forKey: SettingsScreen.prewarmKey)
 
             if prewarm {
                 Task { @MainActor in
