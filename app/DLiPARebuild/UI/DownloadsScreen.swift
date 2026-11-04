@@ -290,6 +290,11 @@ private struct Artwork: View {
 
         AppLog.info("install via HTTPS: " + target, .download)
 
+        // The installer runs in another process while this one is in the
+        // background: without this the server stops answering the moment the user
+        // leaves for Safari or Settings, and the install fails silently.
+        BackgroundKeepAlive.shared.start(reason: "itms-services install")
+
         // Ask the server whether its own certificate is trusted before handing the
         // URL to the installer. Without this the failure is silence: the installer
         // tries, cannot verify the host, and stops -- nothing appears on screen to
