@@ -31,19 +31,10 @@ struct SettingsScreen: View {
     /// launch, and that is what is being worked on.
     static let prewarmKey = "com.a23bc.dliparebuild.prewarmAtLaunch"
 
-    /// Whether a finished download is rewritten into a patched copy.
-    ///
-    /// Off by default: the patch is still being validated, and a package that has
-    /// been rewritten is not the one Apple served. The original is never replaced,
-    /// so switching this off is always safe.
-    static let patchDownloadsKey = "com.a23bc.dliparebuild.patchDownloads"
-
     /// Taps needed on the About row before the Diagnostics tab appears.
     private static let unlockTaps = 5
 
     @AppStorage(showDiagnosticsKey) private var showDiagnostics = false
-    @AppStorage(prewarmKey) private var prewarmAtLaunch = true
-    @AppStorage(patchDownloadsKey) private var patchDownloads = false
 
     /// Read on appear and again after a regeneration: the value lives in
     /// UserDefaults, not in observable state.
@@ -81,8 +72,6 @@ struct SettingsScreen: View {
 
                 if showDiagnostics {
                     Section {
-                        Toggle("Open the SAP runtime at launch", isOn: $prewarmAtLaunch)
-                        Toggle("Patch downloads (rewrite iTunesMetadata)", isOn: $patchDownloads)
                         Toggle("Show Diagnostics tab", isOn: $showDiagnostics)
                     }
                 }
