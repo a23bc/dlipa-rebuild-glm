@@ -280,6 +280,15 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		URL:             firstPackageURL(text),
 	}
 
+	// Whether the response carries the pieces 4.6 needs. Step 2 rewrites
+	// iTunesMetadata.plist, step 3 writes the sinfs into SC_Info; both are only
+	// possible if this body contains them. Counted rather than parsed: a plist
+	// decoder is the next step, and knowing the fields exist comes first.
+	fmt.Fprintf(os.Stderr, "[SAP] ent download: response carries sinfs=%d metadata=%d md5=%d\n",
+		countOccurrences(text, "sinfs"),
+		countOccurrences(text, "metadata"),
+		countOccurrences(text, "md5"))
+
 	// Apple rejected the blob: drop it so the next attempt generates a fresh one
 	// instead of replaying a value the server has already refused.
 	if result.FailureType != "" && fromCache {
@@ -385,4 +394,9 @@ func firstPackageURL(text string) string {
 	}
 
 	return value
+}
+
+// countOccurrences counts a substring in the response body.
+func countOccurrences(body, needle string) int {
+	return strings.Count(body, needle)
 }
