@@ -84,13 +84,18 @@ if [ -z "$REGION_C" ]; then
 fi
 
 echo "==> patching TCG default buffer size in $REGION_C"
-sed -i.bak -E 's/(#define[[:space:]]+DEFAULT_CODE_GEN_BUFFER_SIZE_1[[:space:]]+\(size_t\)).*/\1(32 * MiB)/' "$REGION_C"
 
-if ! grep -q "DEFAULT_CODE_GEN_BUFFER_SIZE_1 (size_t)(32 \* MiB)" "$REGION_C"; then
-	echo "::error::could not rewrite DEFAULT_CODE_GEN_BUFFER_SIZE_1 in $REGION_C" >&2
+# The file carries more than one definition -- the fork picks between a small and
+# a large one by configuration -- and the build ends up on the large one. Every
+# definition is rewritten, so which branch is taken stops mattering.
+sed -i.bak -E 's/^#define[[:space:]]+DEFAULT_CODE_GEN_BUFFER_SIZE_1[[:space:]]+.*/#define DEFAULT_CODE_GEN_BUFFER_SIZE_1 (32 * MiB)/' "$REGION_C"
+
+if grep -q "(1 \* GiB)" "$REGION_C"; then
+	echo "::error::a 1 GiB default survived the rewrite in $REGION_C" >&2
 	grep -n "DEFAULT_CODE_GEN_BUFFER_SIZE_1" "$REGION_C" >&2 || true
 	exit 1
 fi
+
 
 if ! grep -q "UNICORN_INTERPRETER" "$SRC_DIR/CMakeLists.txt"; then
   echo "::error::UNICORN_INTERPRETER not found in $SRC_DIR/CMakeLists.txt; the pinned fork changed" >&2
