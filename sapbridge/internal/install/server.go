@@ -302,7 +302,7 @@ func loadOrCreateCertificate(dataDir string) (tls.Certificate, []byte, error) {
 	caPath := filepath.Join(dataDir, "install-ca.pem")
 
 	if existing, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-		if caPEM, err := os.ReadFile(caPath); err == nil {
+		if caPEM, err := os.ReadFile(caPath); err == nil && leafLifetimeOK(existing) {
 			// The fingerprint is what the user can compare against the profile in
 			// Settings: a mismatch means the installed profile belongs to an older
 			// certificate, which is exactly how "I trusted it already" happens.
@@ -346,11 +346,15 @@ func loadOrCreateCertificate(dataDir string) (tls.Certificate, []byte, error) {
 		SerialNumber: serial(),
 		Subject:      pkix.Name{CommonName: "localhost.direct"},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(10, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-		DNSNames:     []string{"localhost.direct", "localhost"},
+		// 365 days, not ten years. Apple refuses TLS server certificates with a
+		// lifetime over 825 days, and that rule applies to certificates issued by a
+		// user-installed root as well -- a ten year leaf is rejected even when the
+		// root is trusted, which is exactly how this failed with a profile installed.
+		NotAfter:    time.Now().AddDate(0, 0, 365),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:    []string{"localhost.direct", "localhost"},
 	}
 
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
@@ -384,9 +388,13 @@ func loadOrCreateCertificate(dataDir string) (tls.Certificate, []byte, error) {
 
 	fmt.Fprintf(os.Stderr, "[SAP] install: generated CA %s\n", fingerprint(caPEM))
 
-	certificate, err := tls.X509KeyPair(leafPEM, keyPEM)
-	if err != nil {
-		return tls.Certificate{}, nil, fmt.Errorf("install: key pair: %w", err)
+	// The chain is sent, not just the leaf: iOS can usually find an installed root on
+	// its own, but a locally trusted one is the case where trusting to build the
+	// chain by itself has bitten before.
+	certificate := tls.Certificate{
+		Certificate: [][]byte{leafDER, caDER},
+		PrivateKey:  leafKey,
+		Leaf:        mustParse(leafDER),
 	}
 
 	return certificate, caPEM, nil
@@ -413,4 +421,37 @@ func fingerprint(caPEM []byte) string {
 	sum := sha256.Sum256(block.Bytes)
 
 	return fmt.Sprintf("%X", sum[:8])
+}
+
+// leafLifetimeOK reports whether a stored certificate may still be presented.
+//
+// Two things disqualify it: it has expired, or it was issued with a lifetime Apple
+// no longer accepts. The second is why an existing install has to regenerate once --
+// the first leaves were ten year ones.
+func leafLifetimeOK(certificate tls.Certificate) bool {
+	leaf := certificate.Leaf
+	if leaf == nil && len(certificate.Certificate) > 0 {
+		leaf = mustParse(certificate.Certificate[0])
+	}
+
+	if leaf == nil {
+		return false
+	}
+
+	const limit = 825 * 24 * time.Hour
+
+	if leaf.NotAfter.Sub(leaf.NotBefore) > limit {
+		return false
+	}
+
+	return time.Now().Before(leaf.NotAfter)
+}
+
+func mustParse(der []byte) *x509.Certificate {
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil
+	}
+
+	return parsed
 }
