@@ -1,6 +1,7 @@
 package install
 
 import (
+	"archive/zip"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,6 +13,8 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"howett.net/plist"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -55,6 +58,25 @@ func Start(dataDir string, manifest Manifest) (*Server, string, string, error) {
 
 	if _, err := os.Stat(manifest.PackagePath); err != nil {
 		return nil, "", "", fmt.Errorf("install: package: %w", err)
+	}
+
+	// The installer cross-checks what the manifest claims against what it downloads,
+	// so both come out of the package itself rather than from whatever the caller
+	// happened to have at hand.
+	if resolved, ok := readPackageIdentity(manifest.PackagePath); ok {
+		manifest.BundleID = resolved.BundleID
+		manifest.Version = resolved.Version
+
+		if manifest.Title == "" {
+			manifest.Title = resolved.Title
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] install: serving %s (%s %s, fairplay=%v) %d bytes\n",
+			filepath.Base(manifest.PackagePath), resolved.BundleID, resolved.Version,
+			resolved.FairPlay, resolved.Size)
+	} else {
+		fmt.Fprintf(os.Stderr, "[SAP] install: serving %s, identity unreadable\n",
+			filepath.Base(manifest.PackagePath))
 	}
 
 	certificate, caPEM, err := loadOrCreateCertificate(dataDir)
@@ -484,4 +506,113 @@ func keyIdentifier(public any) []byte {
 	sum := sha1.Sum(der)
 
 	return sum[:]
+}
+
+// packageIdentity is what the manifest has to declare, read from the package.
+type packageIdentity struct {
+	BundleID string
+	Version  string
+	Title    string
+	FairPlay bool
+	Size     int64
+}
+
+// readPackageIdentity pulls the identifiers out of Payload/<app>.app/Info.plist.
+//
+// It also reports whether the bundle carries FairPlay data: a package without it
+// installs and then refuses to launch, and the difference is invisible from the
+// outside until the app is opened.
+func readPackageIdentity(path string) (packageIdentity, bool) {
+	reader, err := zip.OpenReader(path)
+	if err != nil {
+		return packageIdentity{}, false
+	}
+
+	defer reader.Close()
+
+	identity := packageIdentity{}
+
+	if stat, err := os.Stat(path); err == nil {
+		identity.Size = stat.Size()
+	}
+
+	var infoPath, appPrefix string
+
+	for _, file := range reader.File {
+		trimmed := strings.TrimPrefix(file.Name, "Payload/")
+		if trimmed == file.Name {
+			continue
+		}
+
+		if strings.HasSuffix(trimmed, ".app/") && strings.Count(trimmed, "/") == 1 {
+			appPrefix = "Payload/" + trimmed
+
+			break
+		}
+	}
+
+	if appPrefix == "" {
+		return packageIdentity{}, false
+	}
+
+	infoPath = appPrefix + "Info.plist"
+
+	for _, file := range reader.File {
+		if !strings.HasPrefix(file.Name, appPrefix+"SC_Info/") {
+			continue
+		}
+
+		if strings.HasSuffix(file.Name, ".sinf") {
+			identity.FairPlay = true
+		}
+	}
+
+	for _, file := range reader.File {
+		if file.Name != infoPath {
+			continue
+		}
+
+		stream, err := file.Open()
+		if err != nil {
+			return packageIdentity{}, false
+		}
+
+		raw, err := io.ReadAll(stream)
+		_ = stream.Close()
+
+		if err != nil {
+			return packageIdentity{}, false
+		}
+
+		var document struct {
+			BundleID    string `plist:"CFBundleIdentifier"`
+			Short       string `plist:"CFBundleShortVersionString"`
+			Version     string `plist:"CFBundleVersion"`
+			DisplayName string `plist:"CFBundleDisplayName"`
+			Name        string `plist:"CFBundleName"`
+		}
+
+		if _, err := plist.Unmarshal(raw, &document); err != nil {
+			return packageIdentity{}, false
+		}
+
+		identity.BundleID = document.BundleID
+		identity.Version = document.Short
+		if identity.Version == "" {
+			identity.Version = document.Version
+		}
+
+		identity.Title = document.DisplayName
+		if identity.Title == "" {
+			identity.Title = document.Name
+		}
+
+		break
+	}
+
+	if identity.BundleID == "" {
+		return packageIdentity{}, false
+	}
+
+	return identity, true
 }
