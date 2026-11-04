@@ -22,8 +22,16 @@ final class BackgroundKeepAlive {
     private var player: AVAudioPlayer?
     private var started = Date()
 
-    /// A silent minute of audio, built here rather than shipped as an asset: a
-    /// binary in the bundle would be one more thing to keep licensed and valid.
+    /// Fallback track, used only if the bundled one is missing from the build.
+    private static func writeSyntheticTrack() -> URL? {
+        guard let wav = silentWAV(seconds: 60) else { return nil }
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("keepalive.wav")
+        try? wav.write(to: url)
+
+        return url
+    }
+
     private static func silentWAV(seconds: Int) -> Data? {
         let sampleRate = 8000
         let samples = sampleRate * seconds * 2 // 16-bit mono
@@ -68,10 +76,12 @@ final class BackgroundKeepAlive {
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
 
-            guard let wav = BackgroundKeepAlive.silentWAV(seconds: 60) else { return }
+            // The original app ships a blank track for exactly this purpose; using
+            // it keeps the behaviour identical rather than merely similar.
+            let url = Bundle.main.url(forResource: "blank_audio", withExtension: "mp3")
+                ?? BackgroundKeepAlive.writeSyntheticTrack()
 
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("keepalive.wav")
-            try wav.write(to: url)
+            guard let url else { return }
 
             let player = try AVAudioPlayer(contentsOf: url)
             player.numberOfLoops = -1
@@ -88,7 +98,7 @@ final class BackgroundKeepAlive {
         guard task != .invalid || player != nil else { return }
 
         AppLog.info("background keep-alive off after "
-                    + String(Int(Date().timeIntervalSince(started))) + "s", .app)
+                    + String(Int(Date().timeIntervalSince(self.started))) + "s", .app)
 
         player?.stop()
         player = nil
