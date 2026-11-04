@@ -35,12 +35,16 @@ func PatchIPA(path, email string) (string, error) {
 
 	defer source.Close()
 
-	metadata := findMetadata(source)
-	if metadata == nil {
-		return "", fmt.Errorf("patch ipa: no iTunesMetadata.plist in the package")
+	// Apple's package carries no iTunesMetadata.plist: the store adds it from the
+	// download response when it installs. So it is created here from the dictionary
+	// the response supplied, and an existing one is treated the same way -- read,
+	// relabelled, written back.
+	raw, err := metadataDocument(source)
+	if err != nil {
+		return "", err
 	}
 
-	entries, err := patchMetadata(metadata, email)
+	entries, err := patchMetadata(raw, email)
 	if err != nil {
 		return "", err
 	}
@@ -57,34 +61,48 @@ func PatchIPA(path, email string) (string, error) {
 	return outPath, nil
 }
 
-// findMetadata locates the plist at the package root.
-func findMetadata(source *zip.ReadCloser) *zip.File {
+// metadataDocument returns the plist's bytes: the one inside the package if there
+// is one, otherwise the dictionary kept from the download response.
+func metadataDocument(source *zip.ReadCloser) ([]byte, error) {
 	for _, file := range source.File {
-		if file.Name == "iTunesMetadata.plist" {
-			return file
+		if file.Name != "iTunesMetadata.plist" {
+			continue
 		}
+
+		reader, err := file.Open()
+		if err != nil {
+			return nil, fmt.Errorf("patch ipa: open metadata: %w", err)
+		}
+
+		defer reader.Close()
+
+		return io.ReadAll(reader)
 	}
 
-	return nil
+	raw, err := os.ReadFile(metadataSlot())
+	if err != nil {
+		return nil, fmt.Errorf("patch ipa: the package has no iTunesMetadata.plist and none was recorded: %w", err)
+	}
+
+	return raw, nil
+}
+
+// metadataSlot is the file the bridge writes the response's metadata dictionary to
+// after a successful download. Kept in step with metadataSlotPath in internal/sap.
+func metadataSlot() string {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		root = os.TempDir()
+	}
+
+	return filepath.Join(root, "dlipa", "last-metadata.plist")
 }
 
 // patchMetadata decodes the plist, sets the two account fields and re-encodes it.
 //
 // Binary rather than XML: the original ships as binary, and the installer is not
 // the place to discover that a format change matters.
-func patchMetadata(file *zip.File, email string) ([]byte, error) {
-	reader, err := file.Open()
-	if err != nil {
-		return nil, fmt.Errorf("patch ipa: open metadata: %w", err)
-	}
-
-	defer reader.Close()
-
-	raw, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("patch ipa: read metadata: %w", err)
-	}
-
+func patchMetadata(raw []byte, email string) ([]byte, error) {
 	var document map[string]any
 	if _, err := plist.Unmarshal(raw, &document); err != nil {
 		return nil, fmt.Errorf("patch ipa: decode metadata: %w", err)
@@ -115,6 +133,7 @@ func writePatched(source *zip.ReadCloser, metadata []byte, outPath, tmpPath stri
 	}
 
 	writer := zip.NewWriter(target)
+	replaced := false
 
 	for _, file := range source.File {
 		if file.Name == "iTunesMetadata.plist" {
@@ -141,6 +160,8 @@ func writePatched(source *zip.ReadCloser, metadata []byte, outPath, tmpPath stri
 				return fmt.Errorf("patch ipa: write metadata: %w", err)
 			}
 
+			replaced = true
+
 			continue
 		}
 
@@ -148,6 +169,24 @@ func writePatched(source *zip.ReadCloser, metadata []byte, outPath, tmpPath stri
 			_ = target.Close()
 
 			return fmt.Errorf("patch ipa: copy %s: %w", file.Name, err)
+		}
+	}
+
+	// Most packages have no metadata entry at all, which is why this adds one
+	// rather than only replacing it: the store adds the file at install time, so a
+	// package meant to be installed by something else needs it present.
+	if !replaced {
+		entry, err := writer.Create("iTunesMetadata.plist")
+		if err != nil {
+			_ = target.Close()
+
+			return fmt.Errorf("patch ipa: add metadata entry: %w", err)
+		}
+
+		if _, err := entry.Write(metadata); err != nil {
+			_ = target.Close()
+
+			return fmt.Errorf("patch ipa: write metadata: %w", err)
 		}
 	}
 

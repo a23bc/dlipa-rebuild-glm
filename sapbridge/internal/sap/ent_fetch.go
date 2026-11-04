@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"howett.net/plist"
 	"io"
 	"net/http"
 	"os"
@@ -284,6 +286,14 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// iTunesMetadata.plist, step 3 writes the sinfs into SC_Info; both are only
 	// possible if this body contains them. Counted rather than parsed: a plist
 	// decoder is the next step, and knowing the fields exist comes first.
+	// The package Apple serves has no iTunesMetadata.plist; the store adds it from
+	// the response's songList[0].metadata when it installs. Anything that installs
+	// the package itself has to add it, so the dictionary is kept here where the
+	// patch step can pick it up.
+	if err := storeDownloadMetadata(text); err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store metadata: %v\n", err)
+	}
+
 	fmt.Fprintf(os.Stderr, "[SAP] ent download: response carries sinfs=%d metadata=%d md5=%d\n",
 		countOccurrences(text, "sinfs"),
 		countOccurrences(text, "metadata"),
@@ -399,4 +409,47 @@ func firstPackageURL(text string) string {
 // countOccurrences counts a substring in the response body.
 func countOccurrences(body, needle string) int {
 	return strings.Count(body, needle)
+}
+
+// metadataSlotPath is where the last response's metadata dictionary is kept.
+//
+// One slot, overwritten per download: the patch runs seconds after the download it
+// belongs to, and a per-item key would need the item identity plumbed through both
+// languages for no gain yet.
+func metadataSlotPath() string {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		root = os.TempDir()
+	}
+
+	return filepath.Join(root, "dlipa", "last-metadata.plist")
+}
+
+// storeDownloadMetadata writes songList[0].metadata out as a binary plist.
+func storeDownloadMetadata(body string) error {
+	var document struct {
+		SongList []struct {
+			Metadata map[string]any `plist:"metadata"`
+		} `plist:"songList"`
+	}
+
+	if _, err := plist.Unmarshal([]byte(body), &document); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(document.SongList) == 0 || len(document.SongList[0].Metadata) == 0 {
+		return errors.New("response carries no songList metadata")
+	}
+
+	encoded, err := plist.Marshal(document.SongList[0].Metadata, plist.BinaryFormat)
+	if err != nil {
+		return fmt.Errorf("encode metadata: %w", err)
+	}
+
+	path := metadataSlotPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create metadata directory: %w", err)
+	}
+
+	return os.WriteFile(path, encoded, 0o600)
 }
