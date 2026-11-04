@@ -24,10 +24,29 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     var appName: String { app.trackName }
     var bundleID: String { app.bundleId }
-    /// The human version when the catalogue has one, else the id we asked for.
+    /// The human version of the build that was asked for.
+    ///
+    /// A specific version is not the catalogue version: the app object carries the
+    /// one the store hands out today, so using it labelled every old build with the
+    /// newest number. Until the build's own version is resolved the identifier is
+    /// shown, because it is at least true.
     var versionText: String {
+        if let versionID {
+            return resolvedVersion ?? versionID
+        }
+
         if let version = app.version, !version.isEmpty { return version }
-        return versionID ?? "latest"
+
+        return "latest"
+    }
+
+    /// Filled in once the build's marketing version has been fetched.
+    @Published private(set) var resolvedVersion: String?
+
+    func resolveVersion(_ version: String?) {
+        guard resolvedVersion == nil, let version, !version.isEmpty else { return }
+
+        resolvedVersion = version
     }
     var artworkURL: URL? {
         URL(string: app.artworkUrl100 ?? app.artworkUrl60 ?? "")
@@ -130,13 +149,24 @@ final class DownloadManager: ObservableObject {
     /// the job's published state.
     @discardableResult
     func start(_ app: StoreApp, versionID: String?) -> DownloadJob {
-        // bundle id and the version a person would recognise, not the numeric
-        // identifier the catalogue uses internally.
-        let version = app.version ?? versionID ?? "latest"
+        // A pinned build is named after its identifier: app.version is the version
+        // the store hands out today, and putting that in the file name labelled every
+        // old build with the newest number.
+        let version = versionID ?? app.version ?? "latest"
         let name = app.bundleId + "-" + version + ".ipa"
         let job = DownloadJob(app: app, versionID: versionID, fileName: name)
 
         jobs.insert(job, at: 0)
+
+        // Resolve the label in the background: the identifier is what was asked for,
+        // the marketing version is what a person recognises.
+        if let versionID {
+            Task { [weak job] in
+                let resolved = await AppSession.shared.versionString(for: app,
+                                                                    versionID: versionID)
+                job?.resolveVersion(resolved)
+            }
+        }
 
         AppLog.info("download queued: " + name, .download)
 
@@ -165,7 +195,7 @@ final class DownloadManager: ObservableObject {
                     Task { @MainActor in job.update(received: received, expected: expected) }
                 }
 
-                DownloadMetadataStore.write(app, versionID: versionID, for: file)
+                DownloadMetadataStore.write(app, version: job.versionText, for: file)
 
                 // Always: the package Apple serves has no FairPlay data, so an
                 // unpatched download installs and then refuses to launch. The file is
@@ -235,10 +265,10 @@ struct DownloadMetadata: Codable {
 }
 
 enum DownloadMetadataStore {
-    static func write(_ app: StoreApp, versionID: String?, for file: URL) {
+    static func write(_ app: StoreApp, version: String, for file: URL) {
         let metadata = DownloadMetadata(name: app.trackName,
                                         bundleID: app.bundleId,
-                                        version: app.version ?? versionID ?? "latest",
+                                        version: version,
                                         artwork: app.artworkUrl100 ?? app.artworkUrl60,
                                         minimumOS: app.minimumOsVersion)
 
