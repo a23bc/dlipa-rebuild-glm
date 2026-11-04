@@ -166,6 +166,21 @@ final class DownloadManager: ObservableObject {
                 }
 
                 DownloadMetadataStore.write(app, versionID: versionID, for: file)
+
+                // Step 2 of 4.6, behind a switch while it is being validated. The
+                // patched copy is a sibling file; the download itself is untouched.
+                if UserDefaults.standard.bool(forKey: SettingsScreen.patchDownloadsKey) {
+                    var failure: NSError?
+                    let patched = SapbridgePatchIPA(file.path,
+                                                    AppSession.shared.activeAccount?.email,
+                                                    &failure)
+
+                    if let failure {
+                        AppLog.warn("ipa patch failed: " + failure.localizedDescription, .download)
+                    } else {
+                        AppLog.info("ipa patched: " + (patched ?? "?"), .download)
+                    }
+                }
                 job.finish(file.lastPathComponent, url: file)
                 AppLog.info("download finished: " + file.lastPathComponent, .download)
                 NotificationCenter.default.post(name: .downloadFinished, object: nil)
