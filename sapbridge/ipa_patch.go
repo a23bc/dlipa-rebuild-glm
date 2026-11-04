@@ -52,10 +52,22 @@ func PatchIPA(path, email string) (string, error) {
 	outPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".patched.ipa"
 	tmpPath := outPath + ".tmp"
 
-	if err := writePatched(source, entries, outPath, tmpPath); err != nil {
+	// FairPlay data goes in the same pass: it is another entry, not a modification.
+	sinfs, sinfErr := sinfEntries(source)
+	if sinfErr != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] patch ipa: sinfs not injected: %v\n", sinfErr)
+	}
+
+	all := append([]extraEntry{{Name: "iTunesMetadata.plist", Data: entries}}, sinfs...)
+
+	if err := appendToZip(path, tmpPath, all); err != nil {
 		_ = os.Remove(tmpPath)
 
 		return "", err
+	}
+
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		return "", fmt.Errorf("patch ipa: rename: %w", err)
 	}
 
 	return outPath, nil
@@ -119,101 +131,6 @@ func patchMetadata(raw []byte, email string) ([]byte, error) {
 	return encoded, nil
 }
 
-// writePatched copies every entry, substituting the rewritten metadata.
-//
-// Writer.Copy moves the entries' compressed bytes across untouched: no
-// recompression, no recomputed checksums. Only the metadata entry is rebuilt,
-// because its contents changed. Whether the reconstructed headers are faithful
-// enough for the installer is the open question this design is meant to answer
-// cheaply -- see the note in the plan about falling back to raw local headers.
-func writePatched(source *zip.ReadCloser, metadata []byte, outPath, tmpPath string) error {
-	target, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("patch ipa: create: %w", err)
-	}
-
-	writer := zip.NewWriter(target)
-	replaced := false
-
-	for _, file := range source.File {
-		if file.Name == "iTunesMetadata.plist" {
-			header := file.FileHeader
-			//
-			// Sizes and CRC no longer match the rewritten body; zero them so the
-			// writer computes them rather than trusting stale values.
-			header.CRC32 = 0
-			header.CompressedSize = 0
-			header.CompressedSize64 = 0
-			header.UncompressedSize = 0
-			header.UncompressedSize64 = 0
-
-			entry, err := writer.CreateHeader(&header)
-			if err != nil {
-				_ = target.Close()
-
-				return fmt.Errorf("patch ipa: create metadata entry: %w", err)
-			}
-
-			if _, err := entry.Write(metadata); err != nil {
-				_ = target.Close()
-
-				return fmt.Errorf("patch ipa: write metadata: %w", err)
-			}
-
-			replaced = true
-
-			continue
-		}
-
-		if err := writer.Copy(file); err != nil {
-			_ = target.Close()
-
-			return fmt.Errorf("patch ipa: copy %s: %w", file.Name, err)
-		}
-	}
-
-	// Most packages have no metadata entry at all, which is why this adds one
-	// rather than only replacing it: the store adds the file at install time, so a
-	// package meant to be installed by something else needs it present.
-	if !replaced {
-		entry, err := writer.Create("iTunesMetadata.plist")
-		if err != nil {
-			_ = target.Close()
-
-			return fmt.Errorf("patch ipa: add metadata entry: %w", err)
-		}
-
-		if _, err := entry.Write(metadata); err != nil {
-			_ = target.Close()
-
-			return fmt.Errorf("patch ipa: write metadata: %w", err)
-		}
-	}
-
-	// FairPlay authorisation data goes in last: the package installs without it, but
-	// the app cannot be decrypted at launch, which is what "install succeeded and
-	// then nothing opens" looks like.
-	if err := injectSinfs(source, writer); err != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] patch ipa: sinfs not injected: %v\n", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		_ = target.Close()
-
-		return fmt.Errorf("patch ipa: finish: %w", err)
-	}
-
-	if err := target.Close(); err != nil {
-		return fmt.Errorf("patch ipa: close: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, outPath); err != nil {
-		return fmt.Errorf("patch ipa: rename: %w", err)
-	}
-
-	return nil
-}
-
 // sinfRecord mirrors the response entry.
 type sinfRecord struct {
 	ID   int64  `plist:"id,omitempty"`
@@ -240,51 +157,47 @@ func loadSinfs() []sinfRecord {
 	return records
 }
 
-// injectSinfs writes the FairPlay data into the main app's SC_Info directory.
+// sinfEntries builds the SC_Info entries the package is missing.
 //
 // The destination paths come from SC_Info/Manifest.plist's SinfPaths, paired with
-// the sinfs by index -- that is how the upstream tool does it, and the order is the
-// contract, not the id field.
-func injectSinfs(source *zip.ReadCloser, writer *zip.Writer) error {
+// the sinfs by index -- that is the upstream tool's contract, and the order is what
+// matters, not the id field.
+func sinfEntries(source *zip.ReadCloser) ([]extraEntry, error) {
 	records := loadSinfs()
 	if len(records) == 0 {
-		return fmt.Errorf("no sinfs were recorded for this download")
+		return nil, fmt.Errorf("no sinfs were recorded for this download")
 	}
 
 	appDir := mainAppDirectory(source)
 	if appDir == "" {
-		return fmt.Errorf("no Payload/*.app in the package")
+		return nil, fmt.Errorf("no Payload/*.app in the package")
 	}
 
 	paths, err := sinfPaths(source, appDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if len(paths) == 0 {
-		return fmt.Errorf("no SinfPaths and no CFBundleExecutable to derive them from")
+		return nil, fmt.Errorf("no SinfPaths and no CFBundleExecutable to derive them from")
 	}
 
 	if len(records) < len(paths) {
-		// Fewer sinfs than destinations: write what matches rather than nothing.
 		paths = paths[:len(records)]
 	}
 
-	for index, relative := range paths {
-		entry, err := writer.Create(appDir + relative)
-		if err != nil {
-			return fmt.Errorf("create %s: %w", relative, err)
-		}
+	entries := make([]extraEntry, 0, len(paths))
 
-		if _, err := entry.Write(records[index].Sinf); err != nil {
-			return fmt.Errorf("write %s: %w", relative, err)
-		}
+	for index, relative := range paths {
+		entries = append(entries, extraEntry{
+			Name: appDir + relative,
+			Data: records[index].Sinf,
+		})
 	}
 
-	return nil
+	return entries, nil
 }
 
-// mainAppDirectory is "Payload/<name>.app/", the bundle the sinfs belong to.
 func mainAppDirectory(source *zip.ReadCloser) string {
 	for _, file := range source.File {
 		trimmed := strings.TrimPrefix(file.Name, "Payload/")
