@@ -292,7 +292,9 @@ func mainAppDirectory(source *zip.ReadCloser) string {
 			continue
 		}
 
-		if strings.HasSuffix(trimmed, ".app/") && !strings.Contains(trimmed, "/") {
+		// "Name.app/" carries the slash that makes it a directory entry, so counting
+		// slashes is the check -- looking for the absence of one never matches.
+		if strings.HasSuffix(trimmed, ".app/") && strings.Count(trimmed, "/") == 1 {
 			return "Payload/" + trimmed
 		}
 	}
