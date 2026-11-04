@@ -62,6 +62,36 @@ fi
 # The whole point of this fork is the interpreter target. If the option is
 # gone, the pin has drifted and a JIT-only library would be produced - which
 # links fine and then fails on the device. Stop here instead.
+# Shrink the compile-time default of TCG's translation buffer.
+#
+# The runtime control (uc_ctl UC_CTL_TCG_BUFFER_SIZE) executes and reports no
+# error, but the allocation QEMU actually makes is still the 1 GiB default: a
+# probe shows a 4 MiB mapping succeeding while a 1 GiB one fails with ENOMEM at
+# the same instant, and the very next mem_map dies with "Could not allocate
+# dynamic translator buffer". A gigabyte of contiguous address space is not
+# available on this device once the app is up, so the default -- not the control
+# -- is what has to change.
+#
+# 32 MiB is far more than an interpreted backend needs and small enough to fit
+# anywhere. SRC is replaced by sed below; the assertion after it is the point:
+# if the fork changes shape, this fails the build instead of shipping a library
+# that quietly still asks for a gigabyte.
+REGION_C=$(grep -rl "DEFAULT_CODE_GEN_BUFFER_SIZE_1" "$SRC_DIR/qemu" | head -n 1)
+
+if [ -z "$REGION_C" ]; then
+	echo "::error::DEFAULT_CODE_GEN_BUFFER_SIZE_1 not found under $SRC_DIR/qemu; the pinned fork changed" >&2
+	exit 1
+fi
+
+echo "==> patching TCG default buffer size in $REGION_C"
+sed -i.bak -E 's/(#define[[:space:]]+DEFAULT_CODE_GEN_BUFFER_SIZE_1[[:space:]]+\(size_t\)).*/\1(32 * MiB)/' "$REGION_C"
+
+if ! grep -q "DEFAULT_CODE_GEN_BUFFER_SIZE_1 (size_t)(32 \* MiB)" "$REGION_C"; then
+	echo "::error::could not rewrite DEFAULT_CODE_GEN_BUFFER_SIZE_1 in $REGION_C" >&2
+	grep -n "DEFAULT_CODE_GEN_BUFFER_SIZE_1" "$REGION_C" >&2 || true
+	exit 1
+fi
+
 if ! grep -q "UNICORN_INTERPRETER" "$SRC_DIR/CMakeLists.txt"; then
   echo "::error::UNICORN_INTERPRETER not found in $SRC_DIR/CMakeLists.txt; the pinned fork changed" >&2
   exit 1
