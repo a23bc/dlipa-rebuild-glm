@@ -122,7 +122,7 @@ func Start(dataDir string, manifest Manifest) (*Server, string, string, error) {
 	guideMux := http.NewServeMux()
 	guideMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(guideHTML(base)))
+		_, _ = w.Write([]byte(guideHTML(base, fingerprint(caPEM))))
 	})
 	guideMux.HandleFunc("/profile.mobileconfig", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-apple-aspen-config")
@@ -209,7 +209,7 @@ func xmlEscape(value string) string {
 }
 
 // guideHTML is the four-step page shown when the certificate is not trusted.
-func guideHTML(base string) string {
+func guideHTML(base, caFingerprint string) string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>body{font:16px -apple-system;margin:24px;line-height:1.65}code{background:#f0f0f0;padding:2px 4px;border-radius:4px}</style>
@@ -219,11 +219,11 @@ func guideHTML(base string) string {
 <li><a href="/profile.mobileconfig">Download the profile</a></li>
 <li>Settings &rarr; Profile Downloaded &rarr; Install (enter the passcode)</li>
 <li>Settings &rarr; General &rarr; About &rarr; Certificate Trust Settings</li>
-<li>Turn on full trust for <b>DLiPA CA</b>, come back here and install again</li>
+<li>Turn on full trust for <b>DLiPA Rebuild CA</b>, fingerprint <code>%s</code>, come back here and install again</li>
 </ol>
 <p>The certificate is generated on this device and never leaves it. The installer
 refuses <code>%s</code> until step 4 is done.</p>
-</body></html>`, base)
+</body></html>`, caFingerprint, base)
 }
 
 // mobileConfig wraps the CA certificate in a profile the user can install.
