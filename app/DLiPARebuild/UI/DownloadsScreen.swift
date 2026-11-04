@@ -332,13 +332,22 @@ private struct Artwork: View {
         URLSession.shared.dataTask(with: request) { _, response, error in
             let trusted = error == nil && (response as? HTTPURLResponse)?.statusCode == 200
 
+            // Which failure it was, not just "not trusted": a rejected certificate, an
+            // unreachable host and a 404 all land here, and they need different fixes.
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            var detail = "status \(status)"
+
+            if let error = error as NSError? {
+                detail = "error \(error.domain)/\(error.code): \(error.localizedDescription)"
+            }
+
             DispatchQueue.main.async {
                 if trusted {
                     UIApplication.shared.open(link)
                     return
                 }
 
-                AppLog.warn("install: certificate not trusted, showing the guide", .download)
+                AppLog.warn("install: probe failed (" + detail + "), showing the guide", .download)
 
                 if let guide = SapbridgeInstallGuideURL(),
                    let guideURL = URL(string: guide) {
