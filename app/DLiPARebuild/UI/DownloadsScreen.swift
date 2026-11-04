@@ -195,7 +195,10 @@ private struct FinishedRow: View {
                 Text(metadata?.name ?? parts.bundleID)
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
-                Text(metadata?.bundleID ?? parts.bundleID)
+                // The same line the search results carry: version, the iOS it needs, and
+                // how large it is. The bundle id lives in the menu, out of the way.
+                Text(FinishedRow.metaText(file: file,
+                                          version: metadata?.version ?? parts.version))
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -203,16 +206,7 @@ private struct FinishedRow: View {
 
             Spacer(minLength: 8)
 
-            // Version above size, both on the trailing edge. Putting the
-            // version beside the bundle id lost it behind long identifiers.
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(metadata?.version ?? parts.version)
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
-                Text(FinishedRow.size(of: file))
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-            }
+
         }
         .padding(.vertical, 12)
     }
@@ -225,6 +219,24 @@ private struct FinishedRow: View {
 
         return (String(stem[stem.startIndex..<dash.lowerBound]),
                 String(stem[dash.upperBound...]))
+    }
+
+    /// "v14.30.1 · iOS15.0 · 342.4 MB", the line under every search result.
+    static func metaText(file: URL, version: String) -> String {
+        var parts: [String] = []
+
+        if !version.isEmpty {
+            parts.append("v" + version)
+        }
+
+        let minimumOS = SapbridgePackageMinimumOS(file.path) ?? ""
+        if !minimumOS.isEmpty {
+            parts.append("iOS" + minimumOS)
+        }
+
+        parts.append(size(of: file))
+
+        return parts.joined(separator: " · ")
     }
 
     static func size(of file: URL) -> String {
