@@ -266,14 +266,35 @@ private struct Artwork: View {
     /// The installer runs in another process, so the server has to outlive this
     /// call -- it does, the bridge keeps it alive for the process.
     private func installOverHTTPS(_ url: URL) {
+        // Application Support, not Caches: iOS purges Caches whenever it likes, and a
+        // regenerated certificate no longer matches the profile the user trusted.
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("dlipa", isDirectory: true)
+
         let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("dlipa", isDirectory: true).path
+            .appendingPathComponent("dlipa", isDirectory: true)
+
+        // The certificate used to live in Caches. Move it rather than let a new one
+        // be generated, which would silently invalidate the installed profile.
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+
+        for name in ["install-ca.pem", "install-cert.pem", "install-key.pem"] {
+            let target = support.appendingPathComponent(name)
+            let legacy = cache.appendingPathComponent(name)
+
+            if !FileManager.default.fileExists(atPath: target.path),
+               FileManager.default.fileExists(atPath: legacy.path) {
+                try? FileManager.default.copyItem(at: legacy, to: target)
+            }
+        }
+
+        let dataDir = support.path
 
         let metadata = DownloadMetadataStore.read(for: url)
         let parts = FinishedRow.split(url.deletingPathExtension().lastPathComponent)
 
         var failure: NSError?
-        let target = SapbridgeStartInstallServer(cache,
+        let target = SapbridgeStartInstallServer(dataDir,
                                                  url.path,
                                                  metadata?.bundleID ?? parts.bundleID,
                                                  metadata?.version ?? parts.version,

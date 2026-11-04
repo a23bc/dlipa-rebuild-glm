@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -302,6 +303,11 @@ func loadOrCreateCertificate(dataDir string) (tls.Certificate, []byte, error) {
 
 	if existing, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
 		if caPEM, err := os.ReadFile(caPath); err == nil {
+			// The fingerprint is what the user can compare against the profile in
+			// Settings: a mismatch means the installed profile belongs to an older
+			// certificate, which is exactly how "I trusted it already" happens.
+			fmt.Fprintf(os.Stderr, "[SAP] install: reusing CA %s\n", fingerprint(caPEM))
+
 			return existing, caPEM, nil
 		}
 	}
@@ -376,6 +382,8 @@ func loadOrCreateCertificate(dataDir string) (tls.Certificate, []byte, error) {
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "[SAP] install: generated CA %s\n", fingerprint(caPEM))
+
 	certificate, err := tls.X509KeyPair(leafPEM, keyPEM)
 	if err != nil {
 		return tls.Certificate{}, nil, fmt.Errorf("install: key pair: %w", err)
@@ -393,4 +401,16 @@ func serial() *big.Int {
 	}
 
 	return value
+}
+
+// fingerprint is the SHA-256 of the certificate, short enough to read out loud.
+func fingerprint(caPEM []byte) string {
+	block, _ := pem.Decode(caPEM)
+	if block == nil {
+		return "unknown"
+	}
+
+	sum := sha256.Sum256(block.Bytes)
+
+	return fmt.Sprintf("%X", sum[:8])
 }
