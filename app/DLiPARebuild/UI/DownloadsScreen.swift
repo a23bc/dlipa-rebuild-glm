@@ -290,12 +290,24 @@ private struct Artwork: View {
 
         let dataDir = support.path
 
+        // Serve the patched copy when there is one: the untouched download has no
+        // FairPlay data, so the installer takes it, then refuses it at verification --
+        // which is exactly what "cannot install, try again later" looks like.
+        let patched = url.deletingPathExtension().appendingPathExtension("patched.ipa")
+
+        var package = url
+        if FileManager.default.fileExists(atPath: patched.path) {
+            package = patched
+        }
+
+        AppLog.info("install: serving " + package.lastPathComponent, .download)
+
         let metadata = DownloadMetadataStore.read(for: url)
         let parts = FinishedRow.split(url.deletingPathExtension().lastPathComponent)
 
         var failure: NSError?
         let target = SapbridgeStartInstallServer(dataDir,
-                                                 url.path,
+                                                 package.path,
                                                  metadata?.bundleID ?? parts.bundleID,
                                                  metadata?.version ?? parts.version,
                                                  metadata?.name ?? parts.bundleID,
