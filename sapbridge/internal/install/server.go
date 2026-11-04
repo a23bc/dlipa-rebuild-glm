@@ -611,10 +611,18 @@ func readPackageIdentity(path string) (packageIdentity, bool) {
 		}
 
 		identity.BundleID = document.BundleID
-		identity.Version = document.Short
+
+		// CFBundleVersion, the build number, not the marketing version. That is what
+		// the manifest this was modelled on carries, and what the installer compares
+		// against -- a package whose manifest says 14.30.1 while its build number is
+		// something else is downloaded in full and then refused.
+		identity.Version = document.Version
 		if identity.Version == "" {
-			identity.Version = document.Version
+			identity.Version = document.Short
 		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] install: identity build=%q short=%q\n",
+			document.Version, document.Short)
 
 		identity.Title = document.DisplayName
 		if identity.Title == "" {

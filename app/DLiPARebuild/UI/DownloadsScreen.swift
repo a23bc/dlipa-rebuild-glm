@@ -295,10 +295,16 @@ private struct Artwork: View {
         // which is exactly what "cannot install, try again later" looks like.
         let patched = url.deletingPathExtension().appendingPathExtension("patched.ipa")
 
-        var package = url
-        if FileManager.default.fileExists(atPath: patched.path) {
-            package = patched
+        guard FileManager.default.fileExists(atPath: patched.path) else {
+            // Refusing beats serving the raw download: the installer would take it,
+            // download the whole thing and then reject it, which looks like a server
+            // problem and reads like one in the log.
+            AppLog.error("install: no patched copy for " + url.lastPathComponent, .download)
+
+            return
         }
+
+        let package = patched
 
         AppLog.info("install: serving " + package.lastPathComponent, .download)
 
