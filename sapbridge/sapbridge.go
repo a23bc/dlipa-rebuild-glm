@@ -423,7 +423,7 @@ func ParseDSID(value string) (int64, error) {
 // StartInstallServer serves a local package for itms-services and returns the URL
 // to open. The caller keeps the returned server alive until the install ends.
 func StartInstallServer(dataDir, packagePath, bundleID, version, title string) (url string, err error) {
-	server, url, startErr := install.Start(dataDir, install.Manifest{
+	server, url, guide, startErr := install.Start(dataDir, install.Manifest{
 		BundleID:    bundleID,
 		Version:     version,
 		Title:       title,
@@ -438,6 +438,7 @@ func StartInstallServer(dataDir, packagePath, bundleID, version, title string) (
 	// turn every install into a timeout.
 	installServersMu.Lock()
 	installServers = append(installServers, server)
+	lastGuide = guide
 	installServersMu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "[SAP] install server ready\n")
@@ -448,4 +449,15 @@ func StartInstallServer(dataDir, packagePath, bundleID, version, title string) (
 var (
 	installServersMu sync.Mutex
 	installServers   []*install.Server
+	lastGuide        string
 )
+
+// InstallGuideURL is the page explaining how to trust the certificate, for the
+// most recent server. The app opens it when the installer cannot connect, which
+// happens until the profile is installed and trusted.
+func InstallGuideURL() string {
+	installServersMu.Lock()
+	defer installServersMu.Unlock()
+
+	return lastGuide
+}

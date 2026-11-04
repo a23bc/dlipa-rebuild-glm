@@ -289,7 +289,37 @@ private struct Artwork: View {
         guard let target, let link = URL(string: target) else { return }
 
         AppLog.info("install via HTTPS: " + target, .download)
-        UIApplication.shared.open(link)
+
+        // Ask the server whether its own certificate is trusted before handing the
+        // URL to the installer. Without this the failure is silence: the installer
+        // tries, cannot verify the host, and stops -- nothing appears on screen to
+        // say so.
+        let probe = target
+            .replacingOccurrences(of: "itms-services://?action=download-manifest&url=", with: "")
+            .removingPercentEncoding
+
+        guard let probeURL = probe.flatMap(URL.init(string:)) else { return }
+
+        var request = URLRequest(url: probeURL)
+        request.timeoutInterval = 5
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            let trusted = error == nil && (response as? HTTPURLResponse)?.statusCode == 200
+
+            DispatchQueue.main.async {
+                if trusted {
+                    UIApplication.shared.open(link)
+                    return
+                }
+
+                AppLog.warn("install: certificate not trusted, showing the guide", .download)
+
+                if let guide = SapbridgeInstallGuideURL(),
+                   let guideURL = URL(string: guide) {
+                    UIApplication.shared.open(guideURL)
+                }
+            }
+        }.resume()
     }
 
 /// "Open in…" for a local package. The document interaction controller is the
