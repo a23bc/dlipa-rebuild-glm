@@ -10,7 +10,6 @@ struct SearchScreen: View {
     /// The result whose version list is open, and whether picking a version
     /// there starts a download.
     @State private var versionTarget: StoreApp?
-    @State private var versionPickEnabled = false
     /// The file or link the share sheet is showing.
     @State private var shareURL: URL?
 
@@ -44,12 +43,7 @@ struct SearchScreen: View {
                                     .default(Text("Download")) {
                                         Task { await model.download(app, versionID: nil) }
                                     },
-                                    .default(Text("Download a specific version")) {
-                                        versionPickEnabled = true
-                                        versionTarget = app
-                                    },
                                     .default(Text("Version history")) {
-                                        versionPickEnabled = false
                                         versionTarget = app
                                     },
                                     .default(Text("Copy bundle ID")) {
@@ -65,7 +59,7 @@ struct SearchScreen: View {
                                 ])
                 }
                 .sheet(item: $versionTarget, onDismiss: { versionTarget = nil }) { app in
-                    VersionListView(app: app, allowsDownload: versionPickEnabled) { versionID in
+                    VersionListView(app: app, allowsDownload: false) { versionID in
                         versionTarget = nil
                         Task { await model.download(app, versionID: versionID) }
                     }
