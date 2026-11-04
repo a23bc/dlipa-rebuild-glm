@@ -229,6 +229,9 @@ struct DownloadMetadata: Codable {
     var bundleID: String
     var version: String
     var artwork: String?
+    /// The iOS the app requires. Optional so sidecars written before it existed
+    /// still decode.
+    var minimumOS: String?
 }
 
 enum DownloadMetadataStore {
@@ -236,7 +239,8 @@ enum DownloadMetadataStore {
         let metadata = DownloadMetadata(name: app.trackName,
                                         bundleID: app.bundleId,
                                         version: app.version ?? versionID ?? "latest",
-                                        artwork: app.artworkUrl100 ?? app.artworkUrl60)
+                                        artwork: app.artworkUrl100 ?? app.artworkUrl60,
+                                        minimumOS: app.minimumOsVersion)
 
         guard let data = try? JSONEncoder().encode(metadata) else { return }
         try? data.write(to: sidecar(for: file))

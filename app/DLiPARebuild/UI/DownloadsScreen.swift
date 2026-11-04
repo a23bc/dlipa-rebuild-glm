@@ -198,7 +198,8 @@ private struct FinishedRow: View {
                 // The same line the search results carry: version, the iOS it needs, and
                 // how large it is. The bundle id lives in the menu, out of the way.
                 Text(FinishedRow.metaText(file: file,
-                                          version: metadata?.version ?? parts.version))
+                                          version: metadata?.version ?? parts.version,
+                                          minimumOS: metadata?.minimumOS ?? ""))
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -222,14 +223,13 @@ private struct FinishedRow: View {
     }
 
     /// "v14.30.1 · iOS15.0 · 342.4 MB", the line under every search result.
-    static func metaText(file: URL, version: String) -> String {
+    static func metaText(file: URL, version: String, minimumOS: String) -> String {
         var parts: [String] = []
 
         if !version.isEmpty {
             parts.append("v" + version)
         }
 
-        let minimumOS = SapbridgePackageMinimumOS(file.path) ?? ""
         if !minimumOS.isEmpty {
             parts.append("iOS" + minimumOS)
         }
