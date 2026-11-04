@@ -190,6 +190,13 @@ func writePatched(source *zip.ReadCloser, metadata []byte, outPath, tmpPath stri
 		}
 	}
 
+	// FairPlay authorisation data goes in last: the package installs without it, but
+	// the app cannot be decrypted at launch, which is what "install succeeded and
+	// then nothing opens" looks like.
+	if err := injectSinfs(source, writer); err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] patch ipa: sinfs not injected: %v\n", err)
+	}
+
 	if err := writer.Close(); err != nil {
 		_ = target.Close()
 
@@ -202,6 +209,141 @@ func writePatched(source *zip.ReadCloser, metadata []byte, outPath, tmpPath stri
 
 	if err := os.Rename(tmpPath, outPath); err != nil {
 		return fmt.Errorf("patch ipa: rename: %w", err)
+	}
+
+	return nil
+}
+
+// sinfRecord mirrors the response entry.
+type sinfRecord struct {
+	ID   int64  `plist:"id,omitempty"`
+	Sinf []byte `plist:"sinf,omitempty"`
+}
+
+// loadSinfs reads the array the bridge saved after the download.
+func loadSinfs() []sinfRecord {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		root = os.TempDir()
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, "dlipa", "last-sinfs.plist"))
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+
+	var records []sinfRecord
+	if _, err := plist.Unmarshal(raw, &records); err != nil {
+		return nil
+	}
+
+	return records
+}
+
+// injectSinfs writes the FairPlay data into the main app's SC_Info directory.
+//
+// The destination paths come from SC_Info/Manifest.plist's SinfPaths, paired with
+// the sinfs by index -- that is how the upstream tool does it, and the order is the
+// contract, not the id field.
+func injectSinfs(source *zip.ReadCloser, writer *zip.Writer) error {
+	records := loadSinfs()
+	if len(records) == 0 {
+		return fmt.Errorf("no sinfs were recorded for this download")
+	}
+
+	appDir := mainAppDirectory(source)
+	if appDir == "" {
+		return fmt.Errorf("no Payload/*.app in the package")
+	}
+
+	paths, err := sinfPaths(source, appDir)
+	if err != nil {
+		return err
+	}
+
+	if len(paths) == 0 {
+		return fmt.Errorf("no SinfPaths and no CFBundleExecutable to derive them from")
+	}
+
+	if len(records) < len(paths) {
+		// Fewer sinfs than destinations: write what matches rather than nothing.
+		paths = paths[:len(records)]
+	}
+
+	for index, relative := range paths {
+		entry, err := writer.Create(appDir + relative)
+		if err != nil {
+			return fmt.Errorf("create %s: %w", relative, err)
+		}
+
+		if _, err := entry.Write(records[index].Sinf); err != nil {
+			return fmt.Errorf("write %s: %w", relative, err)
+		}
+	}
+
+	return nil
+}
+
+// mainAppDirectory is "Payload/<name>.app/", the bundle the sinfs belong to.
+func mainAppDirectory(source *zip.ReadCloser) string {
+	for _, file := range source.File {
+		trimmed := strings.TrimPrefix(file.Name, "Payload/")
+		if trimmed == file.Name {
+			continue
+		}
+
+		if strings.HasSuffix(trimmed, ".app/") && !strings.Contains(trimmed, "/") {
+			return "Payload/" + trimmed
+		}
+	}
+
+	return ""
+}
+
+// sinfPaths prefers SC_Info/Manifest.plist, falling back to the executable name.
+func sinfPaths(source *zip.ReadCloser, appDir string) ([]string, error) {
+	if manifest := readZipFile(source, appDir+"SC_Info/Manifest.plist"); manifest != nil {
+		var document struct {
+			SinfPaths []string `plist:"SinfPaths"`
+		}
+
+		if _, err := plist.Unmarshal(manifest, &document); err == nil && len(document.SinfPaths) > 0 {
+			return document.SinfPaths, nil
+		}
+	}
+
+	if info := readZipFile(source, appDir+"Info.plist"); info != nil {
+		var document struct {
+			Executable string `plist:"CFBundleExecutable"`
+		}
+
+		if _, err := plist.Unmarshal(info, &document); err == nil && document.Executable != "" {
+			return []string{"SC_Info/" + document.Executable + ".sinf"}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func readZipFile(source *zip.ReadCloser, name string) []byte {
+	for _, file := range source.File {
+		if file.Name != name {
+			continue
+		}
+
+		reader, err := file.Open()
+		if err != nil {
+			return nil
+		}
+
+		defer reader.Close()
+
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return nil
+		}
+
+		return data
 	}
 
 	return nil

@@ -290,6 +290,10 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// the response's songList[0].metadata when it installs. Anything that installs
 	// the package itself has to add it, so the dictionary is kept here where the
 	// patch step can pick it up.
+	if err := storeDownloadSinfs(text); err != nil {
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store sinfs: %v\n", err)
+	}
+
 	if err := storeDownloadMetadata(text); err != nil {
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store metadata: %v\n", err)
 	}
@@ -450,6 +454,58 @@ func storeDownloadMetadata(body string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create metadata directory: %w", err)
 	}
+
+	return os.WriteFile(path, encoded, 0o600)
+}
+
+// sinfSlotPath is where the last response's sinfs are kept.
+//
+// They are the FairPlay authorisation data: without them the package installs but
+// the app cannot be decrypted at launch, which is why the patched copy needs them
+// written into SC_Info before it is handed to an installer.
+func sinfSlotPath() string {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		root = os.TempDir()
+	}
+
+	return filepath.Join(root, "dlipa", "last-sinfs.plist")
+}
+
+// SinfRecord is one entry of the response's sinfs array.
+type SinfRecord struct {
+	ID     int64  `plist:"id,omitempty"`
+	Sinf   []byte `plist:"sinf,omitempty"`
+	DPInfo []byte `plist:"dpInfo,omitempty"`
+}
+
+// storeDownloadSinfs writes songList[0].sinfs out as a binary plist.
+func storeDownloadSinfs(body string) error {
+	var document struct {
+		SongList []struct {
+			Sinfs []SinfRecord `plist:"sinfs"`
+		} `plist:"songList"`
+	}
+
+	if _, err := plist.Unmarshal([]byte(body), &document); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(document.SongList) == 0 || len(document.SongList[0].Sinfs) == 0 {
+		return errors.New("response carries no sinfs")
+	}
+
+	encoded, err := plist.Marshal(document.SongList[0].Sinfs, plist.BinaryFormat)
+	if err != nil {
+		return fmt.Errorf("encode sinfs: %w", err)
+	}
+
+	path := sinfSlotPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create sinf directory: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] ent download: stored %d sinf(s)\n", len(document.SongList[0].Sinfs))
 
 	return os.WriteFile(path, encoded, 0o600)
 }
