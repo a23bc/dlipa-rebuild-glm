@@ -76,9 +76,18 @@ final class BackgroundKeepAlive {
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
 
-            // The original app ships a blank track for exactly this purpose; using
-            // it keeps the behaviour identical rather than merely similar.
-            let url = Bundle.main.url(forResource: "blank_audio", withExtension: "mp3")
+            // The original app ships a blank track for exactly this purpose, and it
+            // rides in the Go binary: the resource phase did not pick the file up,
+            // and a keep-alive that quietly falls back to a synthesised track is
+            // worse than carrying 300 KB.
+            let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("dlipa", isDirectory: true).path
+
+            var failure: NSError?
+            let embedded = SapbridgeBlankAudioPath(cache, &failure)
+
+            let url = embedded.flatMap(URL.init(fileURLWithPath:))
+                ?? Bundle.main.url(forResource: "blank_audio", withExtension: "mp3")
                 ?? BackgroundKeepAlive.writeSyntheticTrack()
 
             guard let url else { return }

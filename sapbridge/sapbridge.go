@@ -461,3 +461,10 @@ func InstallGuideURL() string {
 
 	return lastGuide
 }
+
+// BlankAudioPath drops the embedded silent track in the cache directory and
+// returns where it landed. The keep-alive needs a URL, and Go is where the bytes
+// are guaranteed to be: the resource phase did not pick the file up.
+func BlankAudioPath(dataDir string) (path string, err error) {
+	return install.BlankAudioPath(dataDir)
+}
