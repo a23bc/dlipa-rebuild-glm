@@ -1086,17 +1086,11 @@ final class AppStoreClient {
 
     /// One shape of the buy request: where it goes and which token it carries.
     ///
-    /// The reference request is exact on both (ipatool, pkg/appstore/
-    /// appstore_purchase.go):
-    ///
-    ///     https://p<Pod>-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/buyProduct
-    ///     X-Token: acc.PasswordToken
-    ///
-    /// This app had drifted from it on each: the URL was the one the bag names
-    /// (MZBuy.woa) and the token was the session's X-Token cookie. Every earlier
-    /// attempt changed one thing at a time, so a device log records a rejection
-    /// without saying which difference caused it. A device run costs a build, so
-    /// every shape goes out in one pass and the log names the one that answers.
+    /// The reference request (ipatool, pkg/appstore/appstore_purchase.go) is the
+    /// right URL and the wrong credential: it sends acc.PasswordToken, and the
+    /// store answered 2034 ExpiredPasswordToken for that on this account while
+    /// accepting the mz_at0_fr cookie on the same request. The shape is kept as a
+    /// value so the log can name which one answered.
     private struct LicenceShape {
         let label: String
         let url: URL
@@ -1337,20 +1331,22 @@ final class AppStoreClient {
         return StoreError.failureType(failure, message)
     }
 
-    /// The shapes worth sending, likely first.
+    /// The shape the store accepts, and two fallbacks for accounts that never
+    /// captured the cookie it needs.
     ///
-    /// Host is settled: on 2026-11-06 04:21 the pod and the generic host answered
-    /// byte for byte the same dialog, so nothing is gained by leaving the pod.
-    /// Path is settled too, and it separates the two failures: the bag's MZBuy
-    /// path answers MZCommerce.SystemError with no failureType, while the
-    /// reference's MZFinance path answers 2034 ExpiredPasswordToken. Neither is a
-    /// verdict on the item, so both are probes.
+    /// One request settled this on the device (2026-11-06 04:53):
     ///
-    /// The pass at 04:39 showed what "no credential at all" looks like: 2083
-    /// MZCommerce.FamilyFreeProductAgeCheck, "sign in". The store therefore does
-    /// have something to check, and the account holds four candidates. Each gets
-    /// the reference path first -- it is the one that names the verdict -- and the
-    /// bag path straight after, which is the one that can actually buy.
+    ///     POST https://p47-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/buyProduct
+    ///     X-Token: the value of the mz_at0_fr-<dsid> cookie
+    ///
+    ///     -> jingleDocType purchaseSuccess, status 0
+    ///
+    /// It is conclusive rather than lucky because the other credentials were
+    /// refused by the same request, each with its own code: mz_at_ssl-<dsid>
+    /// answered 2002 MZCommerce.BadPasswordToken, the 52 character passwordToken
+    /// answered 2034 ExpiredPasswordToken, and sending no header at all answered
+    /// 2083 "sign in". The bag's MZBuy path answers MZCommerce.SystemError
+    /// whatever it is given, which is why the reference path is the one used.
     private func licenceShapes(account: Account, bag: StoreBag) -> [LicenceShape] {
         let podHost = (account.pod.isEmpty ? "" : "p" + account.pod + "-")
             + "buy.itunes.apple.com"
@@ -1360,33 +1356,21 @@ final class AppStoreClient {
         let referencePath = Self.moved("/WebObjects/MZFinance.woa/wa/buyProduct",
                                        onto: podHost)
 
-        // The store's own session cookies, named the way Apple names them: the
-        // DSID is part of the key. These are what the guest authenticates with,
-        // and none of them has ever been offered as X-Token. Lengths only -- they
-        // are session credentials.
-        let live = capturedCookieValues["X-Token"] ?? ""
-        let mzAtSsl = capturedCookieValues["mz_at_ssl-" + account.dsid] ?? ""
-        let mzAt0Fr = capturedCookieValues["mz_at0_fr-" + account.dsid] ?? ""
+        // The account's own store cookie, which is the credential the store
+        // actually checks for a buy. Apple also sets an unscoped `mz_at0_fr`, and
+        // an account signed in before the jar was captured per-DSID may only have
+        // that one. Lengths only -- this is a session credential.
+        let frontendToken = capturedCookieValues["mz_at0_fr-" + account.dsid]
+            ?? capturedCookieValues["mz_at0_fr"] ?? ""
 
-        let cookieState = live == account.sessionToken ? "matches session" : "differs"
-
-        AppLog.info("buyProduct credentials: sessionToken "
+        AppLog.info("buyProduct credential: mz_at0_fr " + String(frontendToken.count)
+                    + " chars, fallback sessionToken "
                     + String(account.sessionToken.count)
-                    + ", passwordToken " + String(account.passwordToken.count)
-                    + ", clearToken " + String(account.clearToken.count)
-                    + ", cookieToken " + String(live.count) + " (" + cookieState + ")"
-                    + ", mz_at_ssl " + String(mzAtSsl.count)
-                    + ", mz_at0_fr " + String(mzAt0Fr.count)
                     + ", dsid " + Self.masked(account.dsid), .download)
 
         let candidates: [(label: String, endpoint: String, token: String)] = [
-            ("reference/mzAtSsl", referencePath, mzAtSsl),
-            ("bag/mzAtSsl", bagPath, mzAtSsl),
-            ("reference/mzAt0Fr", referencePath, mzAt0Fr),
-            ("bag/mzAt0Fr", bagPath, mzAt0Fr),
-            ("reference/clearToken", referencePath, account.clearToken),
-            ("bag/clearToken", bagPath, account.clearToken),
-            ("reference/cookieToken", referencePath, live),
+            ("reference/mzAt0Fr", referencePath, frontendToken),
+            ("bag/mzAt0Fr", bagPath, frontendToken),
             ("bag/sessionToken", bagPath, account.sessionToken),
         ]
 
@@ -1394,9 +1378,9 @@ final class AppStoreClient {
         var seen: Set<String> = []
 
         for candidate in candidates {
-            // An empty credential is the shape the 04:39 pass already measured:
-            // 2083, no matter the path. Sending it again costs a request and adds
-            // nothing, so it is dropped here rather than deduped by accident.
+            // An empty credential is the shape that already measured 2083 "sign
+            // in", no matter the path. Dropped here rather than deduped by
+            // accident, which is how it slipped through once.
             guard !candidate.token.isEmpty,
                   let url = try? Self.trustedEndpoint(candidate.endpoint) else { continue }
 
