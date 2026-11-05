@@ -1,17 +1,36 @@
 import SwiftUI
 import UIKit
 
+/// What SearchScreen is presenting over itself.
+///
+/// One sheet drives all three. A view supports a single presentation of each
+/// kind, so the previous chain of two `.sheet` modifiers held only one that
+/// worked; a third would have made that worse.
+private enum SearchSheet: Identifiable {
+    case versions(StoreApp)
+    case licence(StoreApp)
+    case share(URL)
+
+    var id: String {
+        switch self {
+        case .versions(let app):
+            return "versions:" + String(app.trackId)
+        case .licence(let app):
+            return "licence:" + String(app.trackId)
+        case .share(let url):
+            return "share:" + url.absoluteString
+        }
+    }
+}
+
 /// Search, and the menu every result opens.
 struct SearchScreen: View {
     @StateObject private var model = SearchModel()
 
     /// The result whose action sheet is open.
     @State private var actionTarget: StoreApp?
-    /// The result whose version list is open, and whether picking a version
-    /// there starts a download.
-    @State private var versionTarget: StoreApp?
-    /// The file or link the share sheet is showing.
-    @State private var shareURL: URL?
+    /// The sheet that is open, if any.
+    @State private var sheet: SearchSheet?
 
     var body: some View {
         NavigationView {
@@ -35,41 +54,117 @@ struct SearchScreen: View {
                     }
                 }
                 .actionSheet(item: $actionTarget) { app in
-                    // Both lines go in the title. ActionSheet draws its message
-                    // after a blank line, which is the extra empty row that was
-                    // appearing above the buttons.
-                    ActionSheet(title: Text(app.trackName + "\n" + app.bundleId),
-                                buttons: [
-                                    .default(Text("Download")) {
-                                        Task { await model.download(app, versionID: nil) }
-                                    },
-                                    .default(Text("Version history")) {
-                                        versionTarget = app
-                                    },
-                                    .default(Text("Copy bundle ID")) {
-                                        UIPasteboard.general.string = app.bundleId
-                                    },
-                                    .default(Text("Copy app ID")) {
-                                        UIPasteboard.general.string = String(app.trackId)
-                                    },
-                                    .default(Text("Share")) {
-                                        shareURL = URL(string: "https://apps.apple.com/app/id" + String(app.trackId))
-                                    },
-                                    .cancel()
-                                ])
+                    actionSheet(for: app)
                 }
-                .sheet(item: $versionTarget, onDismiss: { versionTarget = nil }) { app in
-                    VersionListView(app: app) { versionID in
-                        versionTarget = nil
-                        Task { await model.download(app, versionID: versionID) }
-                    }
-                }
-                .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
-                                     set: { if $0 == nil { shareURL = nil } })) { item in
-                    ActivityView(activityItems: [item.url])
+                .sheet(item: $sheet) { target in
+                    sheetContent(for: target)
                 }
         }
         .navigationViewStyle(.stack)
+    }
+
+    // MARK: - The menu
+
+    /// The result menu.
+    ///
+    /// Built here rather than inline in `body`: that expression held a six
+    /// button ActionSheet with a closure apiece, and the type checker gave up on
+    /// it ("unable to type-check this expression in reasonable time") as soon as
+    /// one more item joined the list.
+    ///
+    /// Both title lines go in the title. ActionSheet draws its message after a
+    /// blank line, which is the extra empty row that was appearing above the
+    /// buttons.
+    private func actionSheet(for app: StoreApp) -> ActionSheet {
+        ActionSheet(title: Text(app.trackName + "\n" + app.bundleId),
+                    buttons: actions(for: app))
+    }
+
+    /// The button list on its own, with the array's type written down.
+    ///
+    /// The annotation is what does the work: with it each element is checked
+    /// against one known type instead of the literal and its seven closures
+    /// being inferred together.
+    private func actions(for app: StoreApp) -> [ActionSheet.Button] {
+        [
+            .default(Text("Download")) {
+                Task { await model.download(app, versionID: nil) }
+            },
+            .default(Text("Version history")) {
+                sheet = .versions(app)
+            },
+            .default(Text("Get licence")) {
+                sheet = .licence(app)
+            },
+            .default(Text("Copy bundle ID")) {
+                UIPasteboard.general.string = app.bundleId
+            },
+            .default(Text("Copy app ID")) {
+                UIPasteboard.general.string = String(app.trackId)
+            },
+            .default(Text("Share")) {
+                if let url = URL(string: "https://apps.apple.com/app/id" + String(app.trackId)) {
+                    sheet = .share(url)
+                }
+            },
+            .cancel()
+        ]
+    }
+
+    // MARK: - The sheets
+
+    /// One switch for the three sheets, so `body` only names them.
+    @ViewBuilder
+    private func sheetContent(for target: SearchSheet) -> some View {
+        switch target {
+        case .versions(let app):
+            VersionListView(app: app) { versionID in
+                sheet = nil
+                Task { await model.download(app, versionID: versionID) }
+            }
+        case .licence(let app):
+            LicencePrompt(app: app)
+        case .share(let url):
+            ActivityView(activityItems: [url])
+        }
+    }
+}
+
+/// What the store said about one app's licence.
+///
+/// Its own view rather than an alert assembled in SearchScreen's body: the
+/// inline `Binding(get:set:)` that drove that alert was part of what the type
+/// checker could not finish, and a request needs somewhere to keep its result.
+private struct LicencePrompt: View {
+    let app: StoreApp
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var message = "Asking the store..."
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 12) {
+                Text(app.trackName)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                Text(message)
+                    .multilineTextAlignment(.center)
+                    .foregroundColor(.secondary)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle("Licence")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        // Runs when the sheet appears, which is the first moment the question
+        // makes sense: opening the menu asks nothing, choosing the item does.
+        .task { message = await AppSession.shared.acquireLicence(for: app) }
     }
 }
 
