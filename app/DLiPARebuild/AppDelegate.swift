@@ -89,7 +89,28 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // A switch, not a policy. Opening the engine at launch is the one
             // step that can end the process before a screen is drawn; not opening
             // it costs two minutes on the first thing that needs the store.
-            // Off unless asked for. Opening the engine at launch is the step that
+            // A new build starts from no cached session material. The kbsync blobs carry
+        // the assumptions of the binary that wrote them, and after an upgrade the old
+        // one makes the guest reject the request in setup -- which looked like a
+        // broken account until a clean install worked.
+        let buildKey = "com.a23bc.dliparebuild.lastBuild"
+        let current = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0")
+            + "/" + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0")
+
+        if UserDefaults.standard.string(forKey: buildKey) != current {
+            var failure: NSError?
+            _ = SapbridgeClearCachedKBSync(&failure)
+
+            if let failure {
+                AppLog.warn("kbsync cache clear failed: " + failure.localizedDescription, .sap)
+            } else {
+                AppLog.info("new build " + current + ": kbsync cache cleared", .sap)
+            }
+
+            UserDefaults.standard.set(current, forKey: buildKey)
+        }
+
+        // Off unless asked for. Opening the engine at launch is the step that
             // can end the process before a screen is drawn, and it is now a
             // diagnostic switch rather than a default.
             let prewarm = UserDefaults.standard.bool(forKey: DiagnosticsScreen.prewarmKey)

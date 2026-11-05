@@ -492,3 +492,8 @@ func FetchSapAssets() (string, error) {
 
 	return fmt.Sprintf("%d bytes in %s", total, time.Since(started).Round(time.Second)), nil
 }
+
+// ClearCachedKBSync drops the per-account kbsync blobs left by a previous build.
+func ClearCachedKBSync() error {
+	return sap.ClearCachedKBSync()
+}

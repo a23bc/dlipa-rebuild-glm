@@ -580,3 +580,36 @@ func countryOf(storeFront string) string {
 
 	return countries[front]
 }
+
+// ClearCachedKBSync deletes the kbsync blobs kept for accounts.
+//
+// They are written by the binary that generated them and carry its assumptions. After
+// an upgrade, the old blob is presented to a new engine and the guest rejects the
+// request in setup -- "framework rejected response", with nothing about the cache in
+// it. A fresh install never saw that failure, which is what pointed here.
+func ClearCachedKBSync() error {
+	path := kbsyncCachePath(0)
+
+	dir := filepath.Dir(path)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		return err
+	}
+
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "kbsync-") {
+			continue
+		}
+
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
