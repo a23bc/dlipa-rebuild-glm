@@ -549,10 +549,10 @@ func storeDownloadSinfs(body string) error {
 
 // countryOf turns a storefront ("143465-19,34") into a country code.
 //
-// The number before the dash names the store; the tail is the same "1,34" for
-// several of them, which is why keying on it produced a country that Apple never sent.
-// The table here covers the stores this app is used from; anything else falls back to
-// the previous behaviour of asking the US catalogue.
+// The number before the dash names the store; the table behind it is the inverse of
+// upstream ipatool's map, so it covers every store that project knows. An unknown one
+// returns empty and the caller falls back to the US catalogue, which is what the loop
+// did for everything before.
 func countryOf(storeFront string) string {
 	front := strings.TrimSpace(storeFront)
 	if front == "" {
@@ -563,22 +563,7 @@ func countryOf(storeFront string) string {
 		front = front[:dash]
 	}
 
-	countries := map[string]string{
-		"143441": "us",
-		"143443": "de",
-		"143444": "gb",
-		"143455": "ca",
-		"143460": "au",
-		"143462": "jp",
-		"143463": "hk",
-		"143464": "sg",
-		"143465": "cn",
-		"143466": "kr",
-		"143470": "tw",
-		"143480": "tr",
-	}
-
-	return countries[front]
+	return storefrontCountries[front]
 }
 
 // ClearCachedKBSync deletes the kbsync blobs kept for accounts.
