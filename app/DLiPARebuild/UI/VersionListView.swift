@@ -55,18 +55,10 @@ struct VersionListView: View {
                                 }
                                 .contentShape(Rectangle())
                             }
-
-                        }
-                    }
-                    // Resolved one at a time, in list order. Asking for every
-                    // visible row at once put a dozen signed requests in flight
-                    // together and the screen stopped responding.
-                    .task(id: versions.identifiers.count) {
-                        for identifier in ordered(versions) where titles[identifier] == nil {
-                            if Task.isCancelled { return }
-
-                            titles[identifier] = await AppSession.shared
-                                .versionString(for: app, versionID: identifier)
+                            // Resolved when the row is reached, not when the sheet
+                            // opens: a long history should cost nothing until it is
+                            // scrolled through.
+                            .onAppear { enqueue(identifier) }
                         }
                     }
                 }
@@ -85,6 +77,36 @@ struct VersionListView: View {
 
     /// Newest first: the latest identifier, then the rest by descending id, which is
     /// chronological -- Apple increments these as builds ship.
+    /// Rows waiting for their version, in the order they were reached.
+    @State private var queue: [String] = []
+    @State private var resolving = false
+
+    private func enqueue(_ identifier: String) {
+        guard titles[identifier] == nil, !queue.contains(identifier) else { return }
+
+        queue.append(identifier)
+        resolveNext()
+    }
+
+    /// One request at a time: several in flight together made the sheet unresponsive.
+    private func resolveNext() {
+        guard !resolving, let next = queue.first else { return }
+
+        resolving = true
+
+        Task {
+            let version = await AppSession.shared.versionString(for: app, versionID: next)
+
+            if let version {
+                titles[next] = version
+            }
+
+            queue.removeAll { $0 == next }
+            resolving = false
+            resolveNext()
+        }
+    }
+
     private func ordered(_ list: AppStoreClient.VersionList) -> [String] {
         list.identifiers.sorted { left, right in
             if left == list.latest { return true }
