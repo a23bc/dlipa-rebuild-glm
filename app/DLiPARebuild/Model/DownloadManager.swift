@@ -336,10 +336,16 @@ enum DownloadMetadataStore {
             return metadata
         }
 
-        // Sidecars written before the switch are JSON beside the package.
+        // Older sidecars are .json beside the package, and some of those were written
+        // as a plist under the wrong extension -- the decoder is tried against both
+        // rather than assuming.
         let legacy = file.deletingPathExtension().appendingPathExtension("json")
 
         if let data = try? Data(contentsOf: legacy) {
+            if let metadata = try? PropertyListDecoder().decode(DownloadMetadata.self, from: data) {
+                return metadata
+            }
+
             return try? JSONDecoder().decode(DownloadMetadata.self, from: data)
         }
 
@@ -347,6 +353,6 @@ enum DownloadMetadataStore {
     }
 
     static func sidecar(for file: URL) -> URL {
-        file.deletingPathExtension().appendingPathExtension("json")
+        file.deletingPathExtension().appendingPathExtension("plist")
     }
 }
