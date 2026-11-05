@@ -663,7 +663,7 @@ final class AppStoreClient {
     /// the guest, which refuses a request carrying only X-Dsid and X-Token. The
     /// account's own DSID names the file, because these cookies are worthless
     /// to any other account.
-    func saveCookieSnapshot(forDSID dsid: String) {
+    func saveCookieSnapshot(forDSID dsid: String, quiet: Bool = false) {
         // httpShouldSetCookies is off for this session, so Set-Cookie never reaches
         // HTTPCookieStorage: the jar is empty even when the response set nineteen
         // cookies. The hand-copied values are the session; saving the jar saved
@@ -694,9 +694,12 @@ final class AppStoreClient {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
-            // Count only: every value in here is a session credential.
-            AppLog.info("saved " + String(entries.count) + " cookies for this account",
-                        .network)
+            // Count only: every value in here is a session credential. Silent on
+            // the refresh path, which runs after every store response.
+            if !quiet {
+                AppLog.info("saved " + String(entries.count) + " cookies for this account",
+                            .network)
+            }
         } catch {
             AppLog.warn("could not save the cookie snapshot: " + error.localizedDescription,
                         .network)
@@ -856,6 +859,17 @@ final class AppStoreClient {
                     + " cookies: " + names.joined(separator: ", "), .network)
 
         persistCookieJar()
+
+        // Keep the per-account snapshot as fresh as the live jar.
+        //
+        // It used to be written once, at sign-in, and never again: every relaunch
+        // then restored the session as it stood at sign-in and discarded whatever
+        // the store had rotated since. That is how a credential that bought an app
+        // one minute after signing in came back as 2034 ExpiredPasswordToken half
+        // an hour later. X-Dsid is the account these cookies belong to.
+        if let dsid = capturedCookieValues["X-Dsid"], !dsid.isEmpty {
+            saveCookieSnapshot(forDSID: dsid, quiet: true)
+        }
     }
 
     /// Header names with the values of anything carrying a credential replaced
