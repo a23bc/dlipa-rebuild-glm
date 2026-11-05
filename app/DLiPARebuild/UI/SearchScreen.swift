@@ -69,7 +69,7 @@ struct SearchScreen: View {
                     // the same shape of wait, and a second style would only make
                     // the screen noisier.
                     if let licence = model.licenceStatus {
-                        WorkingCard(text: licence)
+                        WorkingCard(text: licence, done: model.licenceDone)
                     } else if model.busy {
                         WorkingCard(text: model.status.isEmpty ? "Working..." : model.status)
                     }
@@ -193,10 +193,22 @@ struct SearchScreen: View {
 /// which defeats the point of saying anything at all.
 private struct WorkingCard: View {
     let text: String
+    /// Turns the spinner into a tick. SwiftUI has no built-in success mark --
+    /// `ProgressView` only draws a spinner or a bar -- so this is the usual
+    /// stand-in: an SF Symbol and a spring.
+    var done = false
 
     var body: some View {
         HStack(spacing: 10) {
-            ProgressView()
+            if done {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.green)
+                    .transition(.scale.combined(with: .opacity))
+            } else {
+                ProgressView()
+            }
+
             Text(text)
                 .font(.footnote)
                 .foregroundColor(.secondary)
@@ -210,6 +222,7 @@ private struct WorkingCard: View {
                 .fill(Color(UIColor.secondarySystemGroupedBackground))
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
         )
+        .animation(.spring(response: 0.32, dampingFraction: 0.62), value: done)
     }
 }
 
@@ -395,6 +408,8 @@ final class SearchModel: ObservableObject {
     @Published var alert: SearchAlert?
     /// The line in the waiting card while a licence is being taken.
     @Published private(set) var licenceStatus: String?
+    /// Whether that card has finished its work, which swaps the spinner for a tick.
+    @Published private(set) var licenceDone = false
 
     private var lastQuery = ""
     private var licenceVersion: String?
@@ -497,6 +512,7 @@ final class SearchModel: ObservableObject {
     /// and puts itself away; only a refusal needs an answer from the person.
     func acquireLicence(_ app: StoreApp) async {
         licenceStatus = "Getting the licence for " + app.trackName + "..."
+        licenceDone = false
         let outcome = await AppSession.shared.acquireLicenceResult(for: app)
 
         guard outcome.ok else {
@@ -509,9 +525,11 @@ final class SearchModel: ObservableObject {
         // Felt before it is read, then held long enough to be read: the same
         // order a finished download uses.
         licenceStatus = "Licence acquired"
+        licenceDone = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         try? await Task.sleep(nanoseconds: 1_200_000_000)
         licenceStatus = nil
+        licenceDone = false
     }
 
     /// Permission granted: take the licence, then queue the same download.
