@@ -75,38 +75,43 @@ struct VersionListView: View {
         .task { await load() }
     }
 
-    /// Newest first: the latest identifier, then the rest by descending id, which is
-    /// chronological -- Apple increments these as builds ship.
-    /// Rows waiting for their version, in the order they were reached.
+    /// Rows waiting for their version. The most recent arrival is served first: after
+    /// scrolling, what is on screen is what is being waited on, not whatever was
+    /// queued before the scroll.
     @State private var queue: [String] = []
-    @State private var resolving = false
+    @State private var inFlight = 0
+
+    /// Two at a time. One left the list crawling; more than two put enough signed
+    /// requests in flight to make the sheet stutter.
+    private let workers = 2
 
     private func enqueue(_ identifier: String) {
         guard titles[identifier] == nil, !queue.contains(identifier) else { return }
 
-        queue.append(identifier)
-        resolveNext()
+        queue.insert(identifier, at: 0)
+        pump()
     }
 
-    /// One request at a time: several in flight together made the sheet unresponsive.
-    private func resolveNext() {
-        guard !resolving, let next = queue.first else { return }
+    private func pump() {
+        while inFlight < workers, let next = queue.first {
+            queue.removeFirst()
+            inFlight += 1
 
-        resolving = true
+            Task {
+                let version = await AppSession.shared.versionString(for: app, versionID: next)
 
-        Task {
-            let version = await AppSession.shared.versionString(for: app, versionID: next)
+                if let version {
+                    titles[next] = version
+                }
 
-            if let version {
-                titles[next] = version
+                inFlight -= 1
+                pump()
             }
-
-            queue.removeAll { $0 == next }
-            resolving = false
-            resolveNext()
         }
     }
 
+    /// Newest first: the latest identifier, then the rest by descending id, which is
+    /// chronological -- Apple increments these as builds ship.
     private func ordered(_ list: AppStoreClient.VersionList) -> [String] {
         list.identifiers.sorted { left, right in
             if left == list.latest { return true }
