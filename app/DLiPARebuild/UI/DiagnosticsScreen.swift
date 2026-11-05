@@ -29,7 +29,6 @@ struct DiagnosticsScreen: View {
     @State private var recording = AppLog.isRecording
     @AppStorage(prewarmKey) private var prewarmAtLaunch = false
     @State private var logText = ""
-    @State private var fetchResult = ""
 
     var body: some View {
         NavigationView {
@@ -62,11 +61,7 @@ struct DiagnosticsScreen: View {
                         // allocation during the export step, which is enough to end the
                         // process -- worth knowing before it is called harmless.
                         Button("Fetch SAP assets (measure)") { fetchAssets() }
-                        if !fetchResult.isEmpty {
-                            Text(fetchResult)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+                            .disabled(running)
                     }
 
                     if running {
@@ -114,25 +109,23 @@ struct DiagnosticsScreen: View {
         .navigationViewStyle(.stack)
     }
 
+    /// Uses the screen's own running state and clock, like the other probes: a
+    /// second progress mechanism on the same screen is a second thing to go wrong.
     private func fetchAssets() {
-        fetchResult = "running..."
+        running = true
+        started = Date()
 
         Task.detached(priority: .utility) {
             var failure: NSError?
-            let started = Date()
-            let result = SapbridgeFetchSapAssets(&failure)
-            let seconds = Date().timeIntervalSince(started)
+            _ = SapbridgeFetchSapAssets(&failure)
 
-            await MainActor.run {
-                if let failure {
-                    fetchResult = "failed after " + String(format: "%.0f", seconds) + "s: "
-                        + failure.localizedDescription
-                } else {
-                    fetchResult = (result ?? "?") + " (" + String(format: "%.0f", seconds) + "s wall)"
-                }
-
-                AppLog.info("fetch assets: " + fetchResult, .sap)
+            if let failure {
+                AppLog.error("fetch assets failed: " + failure.localizedDescription, .sap)
+            } else {
+                AppLog.info("fetch assets finished", .sap)
             }
+
+            await MainActor.run { running = false }
         }
     }
 
