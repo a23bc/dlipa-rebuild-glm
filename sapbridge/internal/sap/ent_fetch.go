@@ -203,7 +203,10 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	}
 
 	if versionID == "" {
-		return EntDownloadResult{}, fmt.Errorf("ent download: no externalVersionId for %d", input.AppID)
+		return EntDownloadResult{}, fmt.Errorf(
+			"ent download: the store has no version of %d in storefront %q; "+
+				"either the app is not sold there or the lookup failed",
+			input.AppID, input.StoreFront)
 	}
 
 	address, err := runtime.EncodeProbe(endpoint, map[string]any{

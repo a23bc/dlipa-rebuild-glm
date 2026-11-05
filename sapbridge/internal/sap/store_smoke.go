@@ -1002,7 +1002,8 @@ func latestExternalVersionID(appID int64, countryCode string) string {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP] version lookup: HTTP %d, no externalId in the answer\n", response.StatusCode)
+	fmt.Fprintf(os.Stderr, "[SAP] version lookup: HTTP %d, no externalId in the answer for %s\n",
+		response.StatusCode, endpoint)
 
 	return ""
 }
