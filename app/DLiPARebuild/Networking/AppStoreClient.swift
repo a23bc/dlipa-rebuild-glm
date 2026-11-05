@@ -171,6 +171,17 @@ final class AppStoreClient {
         capturedCookieHeader = ""
         capturedCookieValues = [:]
 
+        // The pod belongs to the account that was signed in before. Carrying it into a
+        // different account's sign-in routes the request to that region's host: the
+        // second account's session then reports the first account's storefront, and
+        // every lookup for an app in the second account's own store comes back empty.
+        //
+        // Only on the first attempt: the 2FA retry has to reach the same pod the code
+        // was challenged from.
+        if attempt == 1 {
+            authenticationPod = nil
+        }
+
         // A missing trailing slash gets a 204 and nothing else happens.
         let url = endpoint.hasSuffix("/") ? endpoint : endpoint + "/"
         AppLog.info("authenticating against " + url + " attempt " + String(attempt)
