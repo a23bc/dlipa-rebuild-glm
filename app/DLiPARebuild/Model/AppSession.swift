@@ -629,6 +629,14 @@ func diagnosticKBSync() async -> String {
     /// No engine: buyProduct is a plain request, which is why this can answer in
     /// seconds instead of the minutes an ent/download costs.
     func acquireLicence(for app: StoreApp) async -> String {
+        let outcome = await acquireLicenceResult(for: app)
+
+        return outcome.ok ? "Licence acquired" : outcome.message
+    }
+
+    /// The same call with the verdict split from the wording, for callers that
+    /// only need to know whether to continue.
+    func acquireLicenceResult(for app: StoreApp) async -> (ok: Bool, message: String) {
         do {
             let (account, bag, signer) = try await ensureSession()
 
@@ -638,26 +646,41 @@ func diagnosticKBSync() async -> String {
                                             bag: bag,
                                             signer: signer)
 
-            return "Licence acquired"
+            return (true, "Licence acquired")
         } catch {
             // The store reports four things through one failureType value, and
             // the client has already folded the raw codes into these names.
             guard let store = error as? StoreError,
                   case .failureType(let code, let message) = store else {
-                return "Failed: " + error.localizedDescription
+                return (false, "Failed: " + error.localizedDescription)
             }
 
             switch code {
             case "licence-session-expired":
-                return "Sign in again: " + message
+                return (false, "Sign in again: " + message)
             case "licence-subscription":
-                return "Subscription required: " + message
+                return (false, "Subscription required: " + message)
             case "licence-unavailable":
-                return "Temporarily unavailable"
+                return (false, "Temporarily unavailable")
             default:
-                return "Failed (" + code + "): " + message
+                return (false, "Failed (" + code + "): " + message)
             }
         }
+    }
+
+    /// Whether this account already owns the app, asked of the cheap endpoint.
+    ///
+    /// nil means no verdict -- a gateway error or an answer the gate does not
+    /// understand -- and the download is left to decide for itself.
+    func licenceMissing(for app: StoreApp) async -> Bool? {
+        guard let (account, bag, signer) = try? await ensureSession() else { return nil }
+
+        return await client.licenceMissing(appId: String(app.trackId),
+                                           externalVersionId: nil,
+                                           guid: hardware.guid,
+                                           account: account.asAccount(),
+                                           bag: bag,
+                                           signer: signer)
     }
 
     /// The signed URL for an app, or for one specific version of it.

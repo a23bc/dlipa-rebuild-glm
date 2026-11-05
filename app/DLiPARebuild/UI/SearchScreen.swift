@@ -59,11 +59,34 @@ struct SearchScreen: View {
                 .sheet(item: $sheet) { target in
                     sheetContent(for: target)
                 }
+                // Asked after the licence check and before anything is taken:
+                // the alert carries the app so the two buttons know which one.
+                .alert(item: $model.licenceAsk) { app in
+                    licenceAlert(for: app)
+                }
         }
         .navigationViewStyle(.stack)
     }
 
     // MARK: - The menu
+
+    /// The question the download button asks before a licence is taken.
+    ///
+    /// Its own function for the same reason the action sheet is: the buttons'
+    /// closures are checked here against Alert.Button instead of being inferred
+    /// inside `body`.
+    private func licenceAlert(for app: StoreApp) -> Alert {
+        Alert(title: Text("Get licence?"),
+              message: Text(app.trackName
+                            + " is not in this account's library yet. Taking the free "
+                            + "licence adds it, and the download starts after that."),
+              primaryButton: .default(Text("Get and download")) {
+                  Task { await model.grantLicence(app) }
+              },
+              secondaryButton: .cancel(Text("Cancel")) {
+                  model.declineLicence()
+              })
+    }
 
     /// The result menu.
     ///
@@ -346,8 +369,11 @@ final class SearchModel: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var errorText: String?
     @Published private(set) var hasSearched = false
+    /// The app waiting for the person to allow its licence to be taken.
+    @Published var licenceAsk: StoreApp?
 
     private var lastQuery = ""
+    private var licenceVersion: String?
 
     private static let historyKey = "com.a23bc.dliparebuild.searchHistory"
     private static let historyLimit = 12
@@ -419,13 +445,50 @@ final class SearchModel: ObservableObject {
         }
     }
 
-    /// Hands the download to the manager and returns at once.
+    /// Checks the licence, then asks before taking one.
     ///
-    /// The request runs the emulated Store runtime, which takes minutes on
-    /// device; holding this screen busy for it was the reason the app felt
-    /// stuck. Progress belongs on the Downloads tab, not here.
+    /// The check is one plain request and answers in under a second; the licence
+    /// itself is only taken when the person says yes, and the download is queued
+    /// after that -- never before.
     func download(_ app: StoreApp, versionID: String?) async {
+        status = "Checking " + app.trackName + "..."
+        let missing = await AppSession.shared.licenceMissing(for: app)
+        status = ""
+
+        if missing == true {
+            licenceVersion = versionID
+            licenceAsk = app
+
+            return
+        }
+
         DownloadManager.shared.start(app, versionID: versionID)
         status = "Queued " + app.trackName
+    }
+
+    /// Permission granted: take the licence, then queue the same download.
+    func grantLicence(_ app: StoreApp) async {
+        licenceAsk = nil
+        status = "Taking the licence..."
+
+        let outcome = await AppSession.shared.acquireLicenceResult(for: app)
+        status = ""
+
+        guard outcome.ok else {
+            errorText = outcome.message
+
+            return
+        }
+
+        DownloadManager.shared.start(app, versionID: licenceVersion)
+        licenceVersion = nil
+        status = "Queued " + app.trackName
+    }
+
+    /// Permission refused. Nothing was requested from the store.
+    func declineLicence() {
+        licenceAsk = nil
+        licenceVersion = nil
+        status = ""
     }
 }

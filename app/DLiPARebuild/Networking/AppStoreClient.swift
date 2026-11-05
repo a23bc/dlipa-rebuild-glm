@@ -1415,8 +1415,6 @@ final class AppStoreClient {
                                  account: Account,
                                  bag: StoreBag,
                                  signer: SAPSigner) async throws -> [String: Any] {
-        var acquiredLicence = false
-
         // The licence gate, before the guest.
         //
         // ent/download needs the emulated Store runtime, and opening it costs
@@ -1430,43 +1428,63 @@ final class AppStoreClient {
         // is the path the bridge has been measured on, and this check is about
         // the licence, not about which endpoint serves the file.
         let gateStart = Date()
-        do {
-            _ = try await classicDownload(appId: appId, externalVersionId: externalVersionId,
-                                          guid: guid, account: account, bag: bag, signer: signer)
+        let missing = await licenceMissing(appId: appId,
+                                           externalVersionId: externalVersionId,
+                                           guid: guid, account: account,
+                                           bag: bag, signer: signer)
+
+        if missing == false {
             AppLog.info("licence gate: the account already owns this app ("
                         + Self.seconds(since: gateStart) + ")", .download)
-        } catch {
-            // Anything that is not one of the two licence answers -- a gateway
-            // error, a transport failure, a shape this guard does not know --
-            // leaves the decision to ent/download rather than blocking it.
-            var gap: String?
-            if let store = error as? StoreError,
-               case .failureType(let type, _) = store,
-               Self.licenceGapFailureTypes.contains(type) {
-                gap = type
-            }
-
-            guard let gap else {
-                AppLog.info("licence gate: no verdict (" + error.localizedDescription
-                            + ") in " + Self.seconds(since: gateStart)
-                            + "; leaving it to ent/download", .download)
-                return try await downloadWithRetries(
-                    appId: appId, externalVersionId: externalVersionId, guid: guid,
-                    account: account, bag: bag, signer: signer,
-                    acquiredLicence: acquiredLicence)
-            }
-
-            AppLog.info("licence gate: " + gap + " after " + Self.seconds(since: gateStart)
-                        + "; buying the licence before opening the runtime", .download)
-            acquiredLicence = true
-            try await acquireLicense(appId: appId, guid: guid, account: account,
-                                     bag: bag, signer: signer)
+        } else if missing == true {
+            // Not bought here on purpose: the licence belongs to the person, and
+            // the download button asks before anything is acquired. A download
+            // that reaches this line without that consent stops here instead of
+            // spending it.
+            AppLog.info("licence gate: no licence after " + Self.seconds(since: gateStart)
+                        + "; asking for one instead of buying it", .download)
+            throw StoreError.failureType("licence-required",
+                                         "This app needs a licence first")
+        } else {
+            // A gateway error, a transport failure, an answer this guard does not
+            // know: none of them is a licence verdict, so ent/download decides.
+            AppLog.info("licence gate: no verdict in " + Self.seconds(since: gateStart)
+                        + "; leaving it to ent/download", .download)
         }
 
         return try await downloadWithRetries(
             appId: appId, externalVersionId: externalVersionId, guid: guid,
             account: account, bag: bag, signer: signer,
-            acquiredLicence: acquiredLicence)
+            acquiredLicence: false)
+    }
+
+    /// Whether the account owns the app, asked of the cheap endpoint.
+    ///
+    /// A songList means it does, 9610 and 2042 mean it does not, and anything
+    /// else -- a gateway error, a transport failure -- is no verdict at all. The
+    /// callers that can ask the person first (the download button) use this
+    /// directly; the ones that cannot fall through to ent/download.
+    func licenceMissing(appId: String,
+                        externalVersionId: String?,
+                        guid: String,
+                        account: Account,
+                        bag: StoreBag,
+                        signer: SAPSigner) async -> Bool? {
+        do {
+            _ = try await classicDownload(appId: appId,
+                                          externalVersionId: externalVersionId,
+                                          guid: guid, account: account,
+                                          bag: bag, signer: signer)
+            return false
+        } catch {
+            guard let store = error as? StoreError,
+                  case .failureType(let type, _) = store,
+                  Self.licenceGapFailureTypes.contains(type) else {
+                return nil
+            }
+
+            return true
+        }
     }
 
     /// "12ms" or "1.4s", for the gate's two log lines.
