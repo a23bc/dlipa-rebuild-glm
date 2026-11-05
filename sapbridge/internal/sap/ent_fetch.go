@@ -57,6 +57,18 @@ type EntDownloadResult struct {
 // request and closes it, because the runtime cannot stay open across calls yet --
 // see the note on resident runtimes in the plan.
 func (s *Signer) EntDownload(image []byte, input EntDownloadInput) (string, error) {
+	// What this request is addressed to. A second account failing where the first
+	// works has to be one of these values, and printing them costs nothing.
+	token := input.Token
+	head := token
+	if len(head) > 8 {
+		head = head[:8]
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] ent input: dsid=%s storefront=%q token=%dch/%s cookies=%d app=%d\n",
+		input.DSID, input.StoreFront, len(token), head,
+		len(strings.Split(strings.TrimSpace(input.CookieHeader), ";")), input.AppID)
+
 	result, err := s.entDownload(image, input)
 	if err != nil {
 		return "", err

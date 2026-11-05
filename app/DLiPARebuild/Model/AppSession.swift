@@ -118,7 +118,13 @@ final class AppSession: ObservableObject {
         // callers, so this put a long-lived credential in the keychain for
         // nothing -- and remove(at:) did not take it back out.
         status = ""
-        AppLog.info("authenticated, DSID " + result.dsid, .auth)
+        // The two values that decide whether a download is addressed to the right
+        // store: the account's own storefront and the pod that minted the token. If
+        // the second account inherits either from the first, this line says so.
+        AppLog.info("authenticated, DSID " + result.dsid
+                    + " storefront=" + (result.storefront.isEmpty ? "none" : result.storefront)
+                    + " pod=" + (result.pod.isEmpty ? "none" : result.pod)
+                    + " token=" + String(result.passwordToken.count) + "ch", .auth)
     }
 
     // MARK: - The list
