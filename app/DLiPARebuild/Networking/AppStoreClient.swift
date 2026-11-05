@@ -1134,7 +1134,41 @@ final class AppStoreClient {
     /// purchase that had actually worked. The same 500 is also what a host that
     /// never accepted the request answers, so it is believed here only when no
     /// shape confirms anything better.
+    /// Called when the store retires the session's token (2034).
+    ///
+    /// The client cannot renew a session by itself -- no password, no bag -- so
+    /// the session layer signs in again and hands back the account that came of
+    /// it. This is upstream's flow: `ErrPasswordTokenExpired` is answered with a
+    /// fresh Login before the request is retried (cmd/download.go:55).
+    var refreshAccount: (@Sendable (Account) async -> Account?)?
+
+    /// Attaches a free licence for an app to the account, renewing the session
+    /// once if the store says its token has been retired.
     func acquireLicense(appId: String,
+                        guid: String,
+                        account: Account,
+                        bag: StoreBag,
+                        signer: SAPSigner) async throws {
+        do {
+            try await purchaseLicence(appId: appId, guid: guid, account: account,
+                                      bag: bag, signer: signer)
+        } catch let error as StoreError {
+            guard case .failureType(let type, let message) = error,
+                  type == "licence-session-expired",
+                  let refresh = refreshAccount,
+                  let fresh = await refresh(account) else {
+                throw error
+            }
+
+            AppLog.info("licence: retrying with the account the new sign-in produced",
+                        .download)
+            try await purchaseLicence(appId: appId, guid: guid, account: fresh,
+                                      bag: bag, signer: signer)
+        }
+    }
+
+    /// The buy itself, in every shape the account's credentials allow.
+    private func purchaseLicence(appId: String,
                         guid: String,
                         account: Account,
                         bag: StoreBag,
@@ -1146,6 +1180,10 @@ final class AppStoreClient {
                     + ", pod " + (account.pod.isEmpty ? "none" : account.pod) + ")", .download)
 
         var lastError: Error?
+        // Kept apart from lastError: a shape that was refused over its credential
+        // is the actionable verdict, and the shapes after it answer something
+        // vaguer that would otherwise hide it.
+        var sessionExpired: Error?
         var sawFiveHundred = false
         nextShape: for shape in shapes {
             var reply: LicenceReply
@@ -1209,7 +1247,11 @@ final class AppStoreClient {
                     throw Self.licenceFailure(reply.failure, reply.message)
                 }
 
-                lastError = Self.licenceFailure(reply.failure, reply.message)
+                let mapped = Self.licenceFailure(reply.failure, reply.message)
+                if Self.sessionExpiredCodes.contains(reply.failure) {
+                    sessionExpired = mapped
+                }
+                lastError = mapped
                 continue nextShape
             }
 
@@ -1244,6 +1286,10 @@ final class AppStoreClient {
             AppLog.error("buyProduct " + shape.label + " did not confirm the purchase: "
                          + detail, .download)
             lastError = StoreError.failureType("purchase", detail)
+        }
+
+        if let sessionExpired {
+            throw sessionExpired
         }
 
         if sawFiveHundred {
@@ -1338,8 +1384,12 @@ final class AppStoreClient {
     private static func licenceFailure(_ failure: String, _ message: String) -> Error {
         let lower = message.lowercased()
 
-        if ["signInRequired", "passwordTokenExpired", "deviceVerificationFailed"]
-            .contains(failure) || lower.contains("password") {
+        // The numeric codes are the ones the store actually sends: ipatool maps
+        // 2034 (ExpiredPasswordToken), 2042 (SignInRequired) and 2002
+        // (BadPasswordToken) to the same "sign in again" outcome, and the message
+        // is localised, so matching on its English word never fired here.
+        if ["signInRequired", "passwordTokenExpired", "deviceVerificationFailed",
+            "2034", "2042", "2002"].contains(failure) || lower.contains("password") {
             return StoreError.failureType("licence-session-expired",
                                           message.isEmpty ? "sign in again" : message)
         }

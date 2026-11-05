@@ -45,6 +45,56 @@ final class AppSession: ObservableObject {
         if let activeID {
             client.restoreCookies(forDSID: activeID)
         }
+
+        // The one thing this session adds to the client: a way back from an
+        // expired token. The client cannot sign in on its own -- it has no
+        // password and no bag -- so it asks here and gets a fresh account back.
+        client.refreshAccount = { [weak self] stale in
+            await self?.signInAgain(stale)
+        }
+    }
+
+    /// Signs the account in again with the password kept for it.
+    ///
+    /// This is upstream's answer to 2034 and the reason it keeps the password:
+    /// the download command notices `ErrPasswordTokenExpired`, calls Login with
+    /// the account's stored credentials, and retries with the account that comes
+    /// back (cmd/download.go:55). A 2FA account that Apple challenges again
+    /// cannot be renewed this way, and the caller then reports what the store
+    /// said -- the same wall upstream hits.
+    private func signInAgain(_ stale: StoreAccount) async -> AppStoreClient.Account? {
+        guard let password = Keychain.password(for: stale.email) else {
+            AppLog.warn("licence: no password kept for " + AppStoreClient.masked(stale.dsid)
+                        + ", so the expired token cannot be renewed", .auth)
+            return nil
+        }
+
+        do {
+            let (_, bag, signer) = try await ensureSession()
+            guard let endpoint = bag.authenticateAccount else { return nil }
+
+            AppLog.info("licence: the store retired this session's token; "
+                        + "signing in again", .auth)
+            let fresh = try await client.authenticate(email: stale.email,
+                                                      password: password,
+                                                      authCode: nil,
+                                                      guid: hardware.guid,
+                                                      endpoint: endpoint,
+                                                      signer: signer)
+            // Same DSID, new token and new cookie set: refresh the stored row
+            // rather than adding a second one, and drop the cached session that
+            // was built from the retired token.
+            upsert(StoreAccount(fresh))
+            activeID = fresh.dsid
+            persist()
+            invalidateSession()
+
+            return fresh
+        } catch {
+            AppLog.warn("licence: signing in again failed: "
+                        + error.localizedDescription, .auth)
+            return nil
+        }
     }
 
     /// Refreshed when the identity is regenerated from Settings, so the next
@@ -120,10 +170,10 @@ final class AppSession: ObservableObject {
         // was built with; keeping the old tuple hands the next download a
         // credential Apple has already retired.
         invalidateSession()
-        // The password is not kept. It was written here for a token refresh
-        // that was never built: the only reader was a private method with no
-        // callers, so this put a long-lived credential in the keychain for
-        // nothing -- and remove(at:) did not take it back out.
+        // Kept for the one job upstream gives it: signing in again when the
+        // store retires this session's token (see signInAgain). It is never used
+        // for anything else, and it goes away with the account.
+        Keychain.save(password, for: result.email)
         status = ""
         // The two values that decide whether a download is addressed to the right
         // store: the account's own storefront and the pod that minted the token. If
