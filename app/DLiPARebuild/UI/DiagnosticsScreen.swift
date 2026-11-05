@@ -29,6 +29,7 @@ struct DiagnosticsScreen: View {
     @State private var recording = AppLog.isRecording
     @AppStorage(prewarmKey) private var prewarmAtLaunch = false
     @State private var logText = ""
+    @State private var fetchResult = ""
 
     var body: some View {
         NavigationView {
@@ -44,6 +45,15 @@ struct DiagnosticsScreen: View {
                             }
                         Toggle("Open the SAP runtime at launch", isOn: $prewarmAtLaunch)
                             .onChange(of: prewarmAtLaunch) { _ in refresh() }
+
+                        // Measurement, not a feature yet: runs the same extraction CI
+                        // does, on this device, and reports how long it took.
+                        Button("Fetch SAP assets (measure)") { fetchAssets() }
+                        if !fetchResult.isEmpty {
+                            Text(fetchResult)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
 
                     Section {
@@ -100,6 +110,28 @@ struct DiagnosticsScreen: View {
             }
         }
         .navigationViewStyle(.stack)
+    }
+
+    private func fetchAssets() {
+        fetchResult = "running..."
+
+        Task.detached(priority: .utility) {
+            var failure: NSError?
+            let started = Date()
+            let result = SapbridgeFetchSapAssets(&failure)
+            let seconds = Date().timeIntervalSince(started)
+
+            await MainActor.run {
+                if let failure {
+                    fetchResult = "failed after " + String(format: "%.0f", seconds) + "s: "
+                        + failure.localizedDescription
+                } else {
+                    fetchResult = (result ?? "?") + " (" + String(format: "%.0f", seconds) + "s wall)"
+                }
+
+                AppLog.info("fetch assets: " + fetchResult, .sap)
+            }
+        }
     }
 
     private func refresh() {

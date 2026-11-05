@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -467,4 +468,27 @@ func InstallGuideURL() string {
 // are guaranteed to be: the resource phase did not pick the file up.
 func BlankAudioPath(dataDir string) (path string, err error) {
 	return install.BlankAudioPath(dataDir)
+}
+
+// FetchSapAssets runs the macOS restore-image extraction on this device and reports
+// how long it took.
+//
+// It exists to answer one question with a measurement rather than an estimate: the
+// same extraction takes 41 seconds on a CI runner, and the only way to know what it
+// costs on a phone is to run it there.
+func FetchSapAssets() (string, error) {
+	started := time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	bundle, err := assetsremote.Load(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetch sap assets: %w", err)
+	}
+
+	total := len(bundle.AppleMediaServices) + len(bundle.Commerce) +
+		len(bundle.CoreFP) + len(bundle.CoreFPICXS)
+
+	return fmt.Sprintf("%d bytes in %s", total, time.Since(started).Round(time.Second)), nil
 }

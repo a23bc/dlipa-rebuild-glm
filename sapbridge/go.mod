@@ -1,21 +1,40 @@
 module github.com/a23bc/dlipa-rebuild/sapbridge
 
-go 1.26.0
+go 1.27.1
 
 require (
-	github.com/blacktop/go-macho v1.1.282
+	github.com/blacktop/go-macho v1.1.296
+	github.com/deploymenttheory/go-macos-pkg v0.7.3
 	github.com/ebitengine/purego v0.10.2
+	github.com/go-compressions/lzfse v0.6.0
 	github.com/klauspost/compress v1.18.6
+	github.com/majd/go-apfs v1.0.29
 	github.com/majd/ipatool/v2 v2.7.0
-	golang.org/x/text v0.37.0
+	golang.org/x/text v0.42.0
 	howett.net/plist v1.0.1
 )
 
 require (
-	github.com/blacktop/go-dwarf v1.0.14 // indirect
+	github.com/VividCortex/ewma v1.2.0 // indirect
+	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d // indirect
+	github.com/apex/log v1.9.0 // indirect
+	github.com/blacktop/go-dwarf v1.1.0 // indirect
+	github.com/blacktop/go-plist v1.0.2 // indirect
+	github.com/dustin/go-humanize v1.1.0 // indirect
+	github.com/fatih/color v1.19.0 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-runewidth v0.0.16 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/ulikunitz/xz v0.5.17 // indirect
+	github.com/vbauerster/mpb/v7 v7.5.3 // indirect
+	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 	golang.org/x/mobile v0.0.0-20261011034528-197770444867 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 )
 
