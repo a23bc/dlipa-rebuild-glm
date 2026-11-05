@@ -1640,8 +1640,15 @@ final class AppStoreClient {
     /// repeat before the next shape is tried.
     private static let transientGatewayStatus: Set<Int> = [502, 503, 504]
 
-    /// The answers that mean "this account has no licence for the app".
-    private static let licenceGapFailureTypes: Set<String> = ["9610", "2042"]
+    /// The answer that means "this account has no licence for the app".
+    ///
+    /// Only 9610, "License not found". 2042 (MZCommerce.AuthTokenResumeFreeBuy)
+    /// was in this set and cost a download that had just been paid for: the
+    /// classic endpoint answers 2042 with a Buy dialog for an app whose licence
+    /// exists, which is why this project stopped using it as the download path in
+    /// the first place. A 2042 is the store asking for the buy, not a statement
+    /// about ownership, so the gate leaves it to ent/download.
+    private static let licenceGapFailureTypes: Set<String> = ["9610"]
 
     /// The answers that mean the session's token is no longer current. Upstream
     /// folds all of these into one outcome and signs in again before retrying.

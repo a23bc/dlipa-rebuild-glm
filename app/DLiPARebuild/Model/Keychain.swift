@@ -36,7 +36,11 @@ enum Keychain {
 
         let status = SecItemAdd(attributes as CFDictionary, nil)
 
-        if status != errSecSuccess {
+        // One line, no value: whether a 2034 can be recovered from is otherwise
+        // only knowable by waiting for a 2034.
+        if status == errSecSuccess {
+            AppLog.info("password kept for a session refresh", .auth)
+        } else {
             AppLog.warn("could not keep the password for a session refresh: "
                         + String(status), .auth)
         }
