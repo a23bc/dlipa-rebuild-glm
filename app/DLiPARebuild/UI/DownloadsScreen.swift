@@ -62,8 +62,7 @@ struct DownloadsScreen: View {
                     // showing under the subtitle.
                     return ActionSheet(title: Text(item.title + "\n" + item.subtitle),
                                        buttons: [
-                                        .default(Text("Install")) { InstallMenu.present(url) },
-                                        .default(Text("Install via local HTTPS")) { installOverHTTPS(url) },
+                                        .default(Text("Install")) { installOverHTTPS(url) },
                                         .default(Text("Share")) { shareURL = url },
                                         .cancel()
                                        ])
@@ -117,14 +116,11 @@ private struct DownloadTarget {
             ?? url.deletingPathExtension().lastPathComponent
     }
 
-    /// Bundle id and version on one line, the way the search sheet does it.
+    /// The identifier alone: the row already carries the version, the requirement
+    /// and the size, and repeating them in a menu is noise.
     var subtitle: String {
-        if let metadata = DownloadMetadataStore.read(for: url) {
-            return metadata.bundleID + " · " + metadata.version
-        }
-
-        let parts = FinishedRow.split(url.deletingPathExtension().lastPathComponent)
-        return parts.bundleID + (parts.version.isEmpty ? "" : " · " + parts.version)
+        DownloadMetadataStore.read(for: url)?.bundleID
+            ?? FinishedRow.split(url.deletingPathExtension().lastPathComponent).bundleID
     }
 }
 
@@ -178,7 +174,17 @@ private struct FinishedRow: View {
         let parts = FinishedRow.split(file.deletingPathExtension().lastPathComponent)
 
         HStack(spacing: 12) {
-            Artwork(url: metadata?.artwork.flatMap(URL.init(string:)), size: 48)
+            // The icon travels with the metadata: a package from last week draws
+            // without waiting for the network.
+            if let data = metadata?.artworkData, let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            } else {
+                Artwork(url: metadata?.artwork.flatMap(URL.init(string:)), size: 48)
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(metadata?.name ?? parts.bundleID)
