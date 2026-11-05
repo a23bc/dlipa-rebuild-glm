@@ -201,17 +201,27 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	versionID := input.ExternalVersionID
 
 	if versionID == "" {
-		// The account's storefront is numeric ("143480-2,34"); the catalog
-		// lookup wants a country code. Two tries cover both the account's
-		// storefront and the default one, which is what the probe has been
-		// doing with a hardcoded "tr".
-		for _, country := range []string{"tr", "us"} {
+		// The account's storefront is numeric ("143465-19,34"); the catalog lookup
+		// wants a country code, and the number that names the country is the prefix.
+		//
+		// This loop used to try a hardcoded "tr" and then "us", so a Chinese account
+		// asked the Turkish catalogue for a Chinese app and got an empty answer. The
+		// full prefix table lives in the app; the ones that matter here are repeated,
+		// with "us" kept as the last resort it always was.
+		countries := []string{countryOf(input.StoreFront), "us"}
+
+		for _, country := range countries {
+			if country == "" {
+				continue
+			}
+
 			if versionID = latestExternalVersionID(input.AppID, country); versionID != "" {
 				break
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "[SAP] ent download: externalVersionId looked up as %q\n", versionID)
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: externalVersionId looked up as %q (storefront %s)\n",
+			versionID, input.StoreFront)
 	}
 
 	if versionID == "" {
@@ -535,4 +545,38 @@ func storeDownloadSinfs(body string) error {
 	fmt.Fprintf(os.Stderr, "[SAP] ent download: stored %d sinf(s)\n", len(document.SongList[0].Sinfs))
 
 	return os.WriteFile(path, encoded, 0o600)
+}
+
+// countryOf turns a storefront ("143465-19,34") into a country code.
+//
+// The number before the dash names the store; the tail is the same "1,34" for
+// several of them, which is why keying on it produced a country that Apple never sent.
+// The table here covers the stores this app is used from; anything else falls back to
+// the previous behaviour of asking the US catalogue.
+func countryOf(storeFront string) string {
+	front := strings.TrimSpace(storeFront)
+	if front == "" {
+		return ""
+	}
+
+	if dash := strings.IndexByte(front, '-'); dash > 0 {
+		front = front[:dash]
+	}
+
+	countries := map[string]string{
+		"143441": "us",
+		"143443": "de",
+		"143444": "gb",
+		"143455": "ca",
+		"143460": "au",
+		"143462": "jp",
+		"143463": "hk",
+		"143464": "sg",
+		"143465": "cn",
+		"143466": "kr",
+		"143470": "tw",
+		"143480": "tr",
+	}
+
+	return countries[front]
 }
