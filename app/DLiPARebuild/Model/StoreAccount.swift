@@ -46,7 +46,12 @@ struct StoreAccount: Codable, Identifiable, Equatable {
     func asAccount() -> AppStoreClient.Account {
         AppStoreClient.Account(email: email,
                                passwordToken: passwordToken,
-                               sessionToken: sessionToken,
+                               // Accounts saved before the empty-cookie fix carry a
+                               // zero-length session token; the password token is
+                               // what the buy would have sent for them anyway, and
+                               // it is the only credential such an account has.
+                               sessionToken: sessionToken.isEmpty ? passwordToken
+                                                                  : sessionToken,
                                clearToken: clearToken,
                                dsid: dsid,
                                storefront: storefront,
