@@ -3,6 +3,7 @@ package sapbridge
 import (
 	"archive/zip"
 	"fmt"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
 	"io"
 	"os"
 	"path/filepath"
@@ -68,6 +69,17 @@ func PatchIPA(path, email string) (string, error) {
 
 	if err := os.Rename(tmpPath, path); err != nil {
 		return "", fmt.Errorf("patch ipa: rename: %w", err)
+	}
+
+	// What the package says about itself, left beside it for the app to read. The
+	// alternative is calling into the bridge or opening the zip again for every row.
+	if identity, ok := install.IdentityFor(path); ok {
+		sidecar := fmt.Sprintf(`{"bundleID":%q,"version":%q,"minimumOS":%q,"title":%q,"size":%d}`,
+			identity.BundleID, identity.Version, identity.MinimumOS, identity.Title, identity.Size)
+
+		if err := os.WriteFile(path+".identity.json", []byte(sidecar), 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] patch ipa: identity sidecar: %v\n", err)
+		}
 	}
 
 	return path, nil

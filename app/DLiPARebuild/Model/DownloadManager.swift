@@ -195,8 +195,6 @@ final class DownloadManager: ObservableObject {
                     Task { @MainActor in job.update(received: received, expected: expected) }
                 }
 
-                DownloadMetadataStore.write(app, version: job.versionText, for: file)
-
                 // Always: the package Apple serves has no FairPlay data, so an
                 // unpatched download installs and then refuses to launch. The file is
                 // patched in place -- there is no second copy to keep track of.
@@ -210,6 +208,23 @@ final class DownloadManager: ObservableObject {
                 } else {
                     AppLog.info("ipa patched: " + file.lastPathComponent, .download)
                 }
+
+                // Written after the patch: the package now says what it needs, and the
+                // deployment target comes from the package rather than from a catalogue
+                // field that may be missing.
+                let identity = DownloadIdentity.read(besideFile: file)
+                DownloadMetadataStore.write(app,
+                                            version: job.versionText,
+                                            minimumOS: identity?.minimumOS ?? app.minimumOsVersion,
+                                            for: file)
+
+                if let artwork = URL(string: app.artworkUrl100 ?? app.artworkUrl60 ?? "") {
+                    Task {
+                        guard let (data, _) = try? await URLSession.shared.data(from: artwork) else { return }
+                        DownloadMetadataStore.attachArtwork(data, for: file)
+                    }
+                }
+
                 job.finish(file.lastPathComponent, url: file)
                 AppLog.info("download finished: " + file.lastPathComponent, .download)
                 NotificationCenter.default.post(name: .downloadFinished, object: nil)
@@ -249,6 +264,30 @@ extension Notification.Name {
     static let downloadFinished = Notification.Name("com.a23bc.dliparebuild.downloadFinished")
 }
 
+/// What the package said about itself when the patch ran.
+///
+/// Written by the bridge beside the package and consumed once: the deployment target
+/// is in here, and reading it from the package each time a row is drawn would mean
+/// opening a 350 MB archive to look at a four kilobyte plist.
+struct DownloadIdentity: Decodable {
+    let bundleID: String
+    let version: String
+    let minimumOS: String
+    let title: String
+    let size: Int64
+
+    static func read(besideFile file: URL) -> DownloadIdentity? {
+        let path = URL(fileURLWithPath: file.path + ".identity.json")
+
+        guard let data = try? Data(contentsOf: path) else { return nil }
+
+        try? FileManager.default.removeItem(at: path)
+
+        return try? JSONDecoder().decode(DownloadIdentity.self, from: data)
+    }
+}
+
+
 /// What a finished file should look like after a relaunch.
 ///
 /// The row needs a name, an icon and a version, and none of that survives in a
@@ -259,26 +298,52 @@ struct DownloadMetadata: Codable {
     var bundleID: String
     var version: String
     var artwork: String?
-    /// The iOS the app requires. Optional so sidecars written before it existed
-    /// still decode.
+    /// The iOS the app requires, read out of the package. Optional so sidecars
+    /// written before it existed still decode.
     var minimumOS: String?
+    /// The icon itself, so the list does not need the network to draw a row that has
+    /// been sitting there for weeks.
+    var artworkData: Data?
 }
 
 enum DownloadMetadataStore {
-    static func write(_ app: StoreApp, version: String, for file: URL) {
+    static func write(_ app: StoreApp, version: String, minimumOS: String?, for file: URL) {
         let metadata = DownloadMetadata(name: app.trackName,
                                         bundleID: app.bundleId,
                                         version: version,
                                         artwork: app.artworkUrl100 ?? app.artworkUrl60,
-                                        minimumOS: app.minimumOsVersion)
+                                        minimumOS: minimumOS,
+                                        artworkData: nil)
 
-        guard let data = try? JSONEncoder().encode(metadata) else { return }
+        guard let data = try? PropertyListEncoder().encode(metadata) else { return }
         try? data.write(to: sidecar(for: file))
     }
 
+    /// Stores the icon inside the sidecar, so a row does not go to the network for a
+    /// package that was downloaded weeks ago.
+    static func attachArtwork(_ data: Data, for file: URL) {
+        guard var metadata = read(for: file) else { return }
+
+        metadata.artworkData = data
+
+        guard let encoded = try? PropertyListEncoder().encode(metadata) else { return }
+        try? encoded.write(to: sidecar(for: file))
+    }
+
     static func read(for file: URL) -> DownloadMetadata? {
-        guard let data = try? Data(contentsOf: sidecar(for: file)) else { return nil }
-        return try? JSONDecoder().decode(DownloadMetadata.self, from: data)
+        if let data = try? Data(contentsOf: sidecar(for: file)),
+           let metadata = try? PropertyListDecoder().decode(DownloadMetadata.self, from: data) {
+            return metadata
+        }
+
+        // Sidecars written before the switch are JSON beside the package.
+        let legacy = file.deletingPathExtension().appendingPathExtension("json")
+
+        if let data = try? Data(contentsOf: legacy) {
+            return try? JSONDecoder().decode(DownloadMetadata.self, from: data)
+        }
+
+        return nil
     }
 
     static func sidecar(for file: URL) -> URL {

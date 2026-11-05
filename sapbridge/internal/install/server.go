@@ -524,11 +524,12 @@ func keyIdentifier(public any) []byte {
 
 // packageIdentity is what the manifest has to declare, read from the package.
 type packageIdentity struct {
-	BundleID string
-	Version  string
-	Title    string
-	FairPlay bool
-	Size     int64
+	BundleID  string
+	Version   string
+	MinimumOS string
+	Title     string
+	FairPlay  bool
+	Size      int64
 }
 
 // readPackageIdentity pulls the identifiers out of Payload/<app>.app/Info.plist.
@@ -600,6 +601,7 @@ func readPackageIdentity(path string) (packageIdentity, bool) {
 
 		var document struct {
 			BundleID    string `plist:"CFBundleIdentifier"`
+			MinimumOS   string `plist:"MinimumOSVersion"`
 			Short       string `plist:"CFBundleShortVersionString"`
 			Version     string `plist:"CFBundleVersion"`
 			DisplayName string `plist:"CFBundleDisplayName"`
@@ -624,6 +626,7 @@ func readPackageIdentity(path string) (packageIdentity, bool) {
 		fmt.Fprintf(os.Stderr, "[SAP] install: identity build=%q short=%q\n",
 			document.Version, document.Short)
 
+		identity.MinimumOS = document.MinimumOS
 		identity.Title = document.DisplayName
 		if identity.Title == "" {
 			identity.Title = document.Name
@@ -656,4 +659,31 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	r.written += int64(written)
 
 	return written, err
+}
+
+// PackageIdentity is the part of a package's Info.plist the app needs after a
+// download.
+type PackageIdentity struct {
+	BundleID  string
+	Version   string
+	MinimumOS string
+	Title     string
+	Size      int64
+}
+
+// IdentityFor reads a package on disk. Failure is not fatal to a caller: the values
+// are for display.
+func IdentityFor(path string) (PackageIdentity, bool) {
+	identity, ok := readPackageIdentity(path)
+	if !ok {
+		return PackageIdentity{}, false
+	}
+
+	return PackageIdentity{
+		BundleID:  identity.BundleID,
+		Version:   identity.Version,
+		MinimumOS: identity.MinimumOS,
+		Title:     identity.Title,
+		Size:      identity.Size,
+	}, true
 }
