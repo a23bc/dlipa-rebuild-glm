@@ -68,8 +68,8 @@ struct SearchScreen: View {
                     // One card for both jobs: searching and taking a licence are
                     // the same shape of wait, and a second style would only make
                     // the screen noisier.
-                    if let licence = model.licenceStatus {
-                        WorkingCard(text: licence, done: model.licenceDone)
+                    if let working = model.workingStatus {
+                        WorkingCard(text: working, done: model.workingDone)
                     } else if model.busy {
                         WorkingCard(text: model.status.isEmpty ? "Working..." : model.status)
                     }
@@ -199,26 +199,34 @@ private struct WorkingCard: View {
     var done = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            if done {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.green)
-                    .transition(.scale.combined(with: .opacity))
-            } else {
-                ProgressView()
+        // Spinner above the line rather than beside it. Side by side, every
+        // extra word made the card wider and it ended up a banner; a fixed width
+        // keeps it a card and lets the line wrap instead.
+        VStack(spacing: 10) {
+            ZStack {
+                if done {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.green)
+                        .transition(.scale.combined(with: .opacity))
+                } else {
+                    ProgressView()
+                }
             }
+            // Fixed, so swapping one for the other does not move the line below.
+            .frame(height: 24)
 
             Text(text)
                 .font(.footnote)
                 .foregroundColor(.secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(width: 190)
+        .padding(.vertical, 18)
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color(UIColor.secondarySystemGroupedBackground))
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
         )
@@ -406,10 +414,12 @@ final class SearchModel: ObservableObject {
     @Published private(set) var hasSearched = false
     /// The question on screen, if any.
     @Published var alert: SearchAlert?
-    /// The line in the waiting card while a licence is being taken.
-    @Published private(set) var licenceStatus: String?
+    /// The line in the waiting card, for the two waits this screen owns: the
+    /// licence check that precedes a download, and taking a licence outright.
+    /// Search has its own (busy/status), because it was there first.
+    @Published private(set) var workingStatus: String?
     /// Whether that card has finished its work, which swaps the spinner for a tick.
-    @Published private(set) var licenceDone = false
+    @Published private(set) var workingDone = false
 
     private var lastQuery = ""
     private var licenceVersion: String?
@@ -490,9 +500,9 @@ final class SearchModel: ObservableObject {
     /// itself is only taken when the person says yes, and the download is queued
     /// after that -- never before.
     func download(_ app: StoreApp, versionID: String?) async {
-        status = "Checking " + app.trackName + "..."
+        workingStatus = "Checking the licence for " + app.trackName + "..."
         let missing = await AppSession.shared.licenceMissing(for: app)
-        status = ""
+        workingStatus = nil
 
         if missing == true {
             licenceVersion = versionID
@@ -506,49 +516,49 @@ final class SearchModel: ObservableObject {
     }
 
     /// Takes a licence without leaving the screen.
-    ///
-    /// This used to open a sheet with a Done button for a request that answers in
-    /// seconds and whose whole result is one line. The card says what is happening
-    /// and puts itself away; only a refusal needs an answer from the person.
     func acquireLicence(_ app: StoreApp) async {
-        licenceStatus = "Getting the licence for " + app.trackName + "..."
-        licenceDone = false
-        let outcome = await AppSession.shared.acquireLicenceResult(for: app)
-
-        guard outcome.ok else {
-            licenceStatus = nil
-            alert = .licenceFailed(outcome.message)
-
-            return
-        }
-
-        // Felt before it is read, then held long enough to be read: the same
-        // order a finished download uses.
-        licenceStatus = "Licence acquired"
-        licenceDone = true
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
-        licenceStatus = nil
-        licenceDone = false
+        _ = await takeLicence(app)
     }
 
     /// Permission granted: take the licence, then queue the same download.
     func grantLicence(_ app: StoreApp) async {
         alert = nil
-        status = "Taking the licence..."
 
-        let outcome = await AppSession.shared.acquireLicenceResult(for: app)
-        status = ""
-
-        guard outcome.ok else {
-            errorText = outcome.message
-
-            return
-        }
+        guard await takeLicence(app) else { return }
 
         DownloadManager.shared.start(app, versionID: licenceVersion)
         licenceVersion = nil
         status = "Queued " + app.trackName
+    }
+
+    /// Runs one licence request under the card, and says whether it worked.
+    ///
+    /// Both callers want the same thing -- the card, the tick, the store's words
+    /// when it refuses -- and they used to spell it out separately, which is how
+    /// one of them ended up writing the failure into `errorText`, where it belongs
+    /// to search and no one would have seen it.
+    private func takeLicence(_ app: StoreApp) async -> Bool {
+        workingStatus = "Getting the licence for " + app.trackName + "..."
+        workingDone = false
+        let outcome = await AppSession.shared.acquireLicenceResult(for: app)
+
+        guard outcome.ok else {
+            workingStatus = nil
+            alert = .licenceFailed(outcome.message)
+
+            return false
+        }
+
+        // Felt before it is read, then held long enough to be read: the same
+        // order a finished download uses.
+        workingStatus = "Licence acquired"
+        workingDone = true
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        workingStatus = nil
+        workingDone = false
+
+        return true
     }
 
     /// Permission refused. Nothing was requested from the store.
