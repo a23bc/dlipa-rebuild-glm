@@ -50,7 +50,9 @@ final class AppSession: ObservableObject {
         // expired token. The client cannot sign in on its own -- it has no
         // password and no bag -- so it asks here and gets a fresh account back.
         client.refreshAccount = { [weak self] stale in
-            await self?.signInAgain(stale)
+            guard let self else { return nil }
+
+            return await self.signInAgain(stale)
         }
     }
 
@@ -62,7 +64,7 @@ final class AppSession: ObservableObject {
     /// back (cmd/download.go:55). A 2FA account that Apple challenges again
     /// cannot be renewed this way, and the caller then reports what the store
     /// said -- the same wall upstream hits.
-    private func signInAgain(_ stale: StoreAccount) async -> AppStoreClient.Account? {
+    private func signInAgain(_ stale: AppStoreClient.Account) async -> AppStoreClient.Account? {
         guard let password = Keychain.password(for: stale.email) else {
             AppLog.warn("licence: no password kept for " + AppStoreClient.masked(stale.dsid)
                         + ", so the expired token cannot be renewed", .auth)

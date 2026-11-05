@@ -1153,7 +1153,7 @@ final class AppStoreClient {
             try await purchaseLicence(appId: appId, guid: guid, account: account,
                                       bag: bag, signer: signer)
         } catch let error as StoreError {
-            guard case .failureType(let type, let message) = error,
+            guard case .failureType(let type, _) = error,
                   type == "licence-session-expired",
                   let refresh = refreshAccount,
                   let fresh = await refresh(account) else {
@@ -1642,6 +1642,13 @@ final class AppStoreClient {
 
     /// The answers that mean "this account has no licence for the app".
     private static let licenceGapFailureTypes: Set<String> = ["9610", "2042"]
+
+    /// The answers that mean the session's token is no longer current. Upstream
+    /// folds all of these into one outcome and signs in again before retrying.
+    private static let sessionExpiredCodes: Set<String> = [
+        "2034", "2042", "2002", "signInRequired", "passwordTokenExpired",
+        "deviceVerificationFailed",
+    ]
 
     /// ent/download first, classic second -- the order ipatool uses.
     ///
