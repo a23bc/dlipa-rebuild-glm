@@ -131,6 +131,16 @@ final class AppSession: ObservableObject {
         if id != activeID {
             client.resetSession()
             invalidateSession()
+
+            // The store runtime is opened once per process and carries the account's
+            // session state inside the guest; a request for another account through it
+            // is refused by Apple in ways that read as framework errors. Dropping the
+            // signer is the only way to get a fresh one -- the engine, its pages and
+            // that runtime all belong to it.
+            signerBuild?.cancel()
+            signerBuild = nil
+            signer?.shutdown()
+            signer = nil
         }
         activeID = id
         persist()

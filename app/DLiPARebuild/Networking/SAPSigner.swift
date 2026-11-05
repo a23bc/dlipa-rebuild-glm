@@ -278,4 +278,19 @@ func kbsync(dsid: String) throws -> Data {
     private static func cacheKey(dsid: String, guid: String) -> NSString {
         return (dsid + ":" + guid) as NSString
     }
+
+    /// Ends the Go session and everything that belongs to it: the engine, the pages it
+    /// mapped, and the store runtime opened on top of them.
+    ///
+    /// Needed when the account changes. The store runtime carries the account's session
+    /// state inside the guest, and a request for another account through it comes back
+    /// from Apple as a framework error that names nothing.
+    func shutdown() {
+        var failure: NSError?
+
+        if !bridge.close(&failure) {
+            AppLog.warn("SAP signer close failed: "
+                        + (failure?.localizedDescription ?? "unknown"), .sap)
+        }
+    }
 }
