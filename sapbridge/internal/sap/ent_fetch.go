@@ -147,9 +147,21 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		}
 
 		s.storeRuntime = runtime
+		s.storeRuntimeDSID = dsid
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: store runtime opened\n")
 	} else {
+		// The guest is opened once and keeps the account's state: cookies, session
+		// objects, the lot. A download for a second account through it is answered
+		// with "framework rejected response" a minute later, which says nothing about
+		// the cause. Refuse it here, where the cause is still visible.
+		if s.storeRuntimeDSID != 0 && s.storeRuntimeDSID != dsid {
+			return EntDownloadResult{}, fmt.Errorf(
+				"ent download: the store runtime belongs to DSID %d, not %d; "+
+					"restart the app after switching accounts",
+				s.storeRuntimeDSID, dsid)
+		}
+
 		blob = s.kbsyncBlob
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing the store runtime\n")

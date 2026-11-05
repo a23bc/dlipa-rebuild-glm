@@ -35,6 +35,8 @@ type Signer struct {
 	// observed as "unknown receiver ... for setAccount:" on the first call after
 	// a second open. So it is opened once and reused until Close.
 	storeRuntime *emulator.Runtime
+	// The account the open runtime belongs to. Zero until one is opened.
+	storeRuntimeDSID uint64
 
 	// kbsyncBlob is the blob generated for kbsyncDSID. Generating one costs the
 	// better part of a minute, and the same account keeps the same blob for the
