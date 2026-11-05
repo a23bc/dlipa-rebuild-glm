@@ -6,17 +6,35 @@ import UIKit
 /// One sheet drives all three. A view supports a single presentation of each
 /// kind, so the previous chain of two `.sheet` modifiers held only one that
 /// worked; a third would have made that worse.
+/// What the screen is asking, if anything.
+///
+/// One alert drives both: a view supports a single presentation of each kind, and
+/// two `.alert` modifiers on the same hierarchy is how the two sheets in this file
+/// stopped working once.
+enum SearchAlert: Identifiable {
+    /// Permission to take a licence before a download starts.
+    case takeLicence(StoreApp)
+    /// The store refused, and its words are the only explanation there is.
+    case licenceFailed(String)
+
+    var id: String {
+        switch self {
+        case .takeLicence(let app):
+            return "ask:" + String(app.trackId)
+        case .licenceFailed(let message):
+            return "failed:" + message
+        }
+    }
+}
+
 private enum SearchSheet: Identifiable {
     case versions(StoreApp)
-    case licence(StoreApp)
     case share(URL)
 
     var id: String {
         switch self {
         case .versions(let app):
             return "versions:" + String(app.trackId)
-        case .licence(let app):
-            return "licence:" + String(app.trackId)
         case .share(let url):
             return "share:" + url.absoluteString
         }
@@ -47,10 +65,13 @@ struct SearchScreen: View {
                     if value.isEmpty { model.clear() }
                 }
                 .overlay {
-                    if model.busy {
-                        ProgressView(model.status.isEmpty ? "Working..." : model.status)
-                            .padding()
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    // One card for both jobs: searching and taking a licence are
+                    // the same shape of wait, and a second style would only make
+                    // the screen noisier.
+                    if let licence = model.licenceStatus {
+                        WorkingCard(text: licence)
+                    } else if model.busy {
+                        WorkingCard(text: model.status.isEmpty ? "Working..." : model.status)
                     }
                 }
                 .actionSheet(item: $actionTarget) { app in
@@ -61,8 +82,8 @@ struct SearchScreen: View {
                 }
                 // Asked after the licence check and before anything is taken:
                 // the alert carries the app so the two buttons know which one.
-                .alert(item: $model.licenceAsk) { app in
-                    licenceAlert(for: app)
+                .alert(item: $model.alert) { target in
+                    alertContent(for: target)
                 }
         }
         .navigationViewStyle(.stack)
@@ -70,22 +91,31 @@ struct SearchScreen: View {
 
     // MARK: - The menu
 
-    /// The question the download button asks before a licence is taken.
+    /// The two things this screen asks: permission before a licence is taken, and
+    /// the store's own words when it refuses one.
     ///
     /// Its own function for the same reason the action sheet is: the buttons'
     /// closures are checked here against Alert.Button instead of being inferred
     /// inside `body`.
-    private func licenceAlert(for app: StoreApp) -> Alert {
-        Alert(title: Text("Get licence?"),
-              message: Text(app.trackName
-                            + " is not in this account's library yet. Taking the free "
-                            + "licence adds it, and the download starts after that."),
-              primaryButton: .default(Text("Get and download")) {
-                  Task { await model.grantLicence(app) }
-              },
-              secondaryButton: .cancel(Text("Cancel")) {
-                  model.declineLicence()
-              })
+    private func alertContent(for target: SearchAlert) -> Alert {
+        switch target {
+        case .takeLicence(let app):
+            return Alert(title: Text("Get licence?"),
+                         message: Text(app.trackName
+                                       + " is not in this account's library yet. Taking the "
+                                       + "free licence adds it, and the download starts "
+                                       + "after that."),
+                         primaryButton: .default(Text("Get and download")) {
+                             Task { await model.grantLicence(app) }
+                         },
+                         secondaryButton: .cancel(Text("Cancel")) {
+                             model.declineLicence()
+                         })
+        case .licenceFailed(let message):
+            return Alert(title: Text("Licence"),
+                         message: Text(message),
+                         dismissButton: .default(Text("OK")))
+        }
     }
 
     /// The result menu.
@@ -117,7 +147,7 @@ struct SearchScreen: View {
                 sheet = .versions(app)
             },
             .default(Text("Get licence")) {
-                sheet = .licence(app)
+                Task { await model.acquireLicence(app) }
             },
             .default(Text("Copy bundle ID")) {
                 UIPasteboard.general.string = app.bundleId
@@ -145,8 +175,6 @@ struct SearchScreen: View {
                 sheet = nil
                 Task { await model.download(app, versionID: versionID) }
             }
-        case .licence(let app):
-            LicencePrompt(app: app)
         case .share(let url):
             ActivityView(activityItems: [url])
         }
@@ -158,36 +186,30 @@ struct SearchScreen: View {
 /// Its own view rather than an alert assembled in SearchScreen's body: the
 /// inline `Binding(get:set:)` that drove that alert was part of what the type
 /// checker could not finish, and a request needs somewhere to keep its result.
-private struct LicencePrompt: View {
-    let app: StoreApp
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var message = "Asking the store..."
+/// The waiting card, drawn over the screen while something takes a moment.
+///
+/// Opaque on purpose. A material let the results list read through the card, and
+/// the one line that explains the wait competed with whatever was behind it --
+/// which defeats the point of saying anything at all.
+private struct WorkingCard: View {
+    let text: String
 
     var body: some View {
-        NavigationView {
-            VStack(spacing: 12) {
-                Text(app.trackName)
-                    .font(.headline)
-                    .multilineTextAlignment(.center)
-                Text(message)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(.secondary)
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Licence")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
+        HStack(spacing: 10) {
+            ProgressView()
+            Text(text)
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
         }
-        .navigationViewStyle(.stack)
-        // Runs when the sheet appears, which is the first moment the question
-        // makes sense: opening the menu asks nothing, choosing the item does.
-        .task { message = await AppSession.shared.acquireLicence(for: app) }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(UIColor.secondarySystemGroupedBackground))
+                .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+        )
     }
 }
 
@@ -369,8 +391,10 @@ final class SearchModel: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var errorText: String?
     @Published private(set) var hasSearched = false
-    /// The app waiting for the person to allow its licence to be taken.
-    @Published var licenceAsk: StoreApp?
+    /// The question on screen, if any.
+    @Published var alert: SearchAlert?
+    /// The line in the waiting card while a licence is being taken.
+    @Published private(set) var licenceStatus: String?
 
     private var lastQuery = ""
     private var licenceVersion: String?
@@ -457,7 +481,7 @@ final class SearchModel: ObservableObject {
 
         if missing == true {
             licenceVersion = versionID
-            licenceAsk = app
+            alert = .takeLicence(app)
 
             return
         }
@@ -466,9 +490,33 @@ final class SearchModel: ObservableObject {
         status = "Queued " + app.trackName
     }
 
+    /// Takes a licence without leaving the screen.
+    ///
+    /// This used to open a sheet with a Done button for a request that answers in
+    /// seconds and whose whole result is one line. The card says what is happening
+    /// and puts itself away; only a refusal needs an answer from the person.
+    func acquireLicence(_ app: StoreApp) async {
+        licenceStatus = "Getting the licence for " + app.trackName + "..."
+        let outcome = await AppSession.shared.acquireLicenceResult(for: app)
+
+        guard outcome.ok else {
+            licenceStatus = nil
+            alert = .licenceFailed(outcome.message)
+
+            return
+        }
+
+        // Felt before it is read, then held long enough to be read: the same
+        // order a finished download uses.
+        licenceStatus = "Licence acquired"
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        licenceStatus = nil
+    }
+
     /// Permission granted: take the licence, then queue the same download.
     func grantLicence(_ app: StoreApp) async {
-        licenceAsk = nil
+        alert = nil
         status = "Taking the licence..."
 
         let outcome = await AppSession.shared.acquireLicenceResult(for: app)
@@ -487,7 +535,7 @@ final class SearchModel: ObservableObject {
 
     /// Permission refused. Nothing was requested from the store.
     func declineLicence() {
-        licenceAsk = nil
+        alert = nil
         licenceVersion = nil
         status = ""
     }
