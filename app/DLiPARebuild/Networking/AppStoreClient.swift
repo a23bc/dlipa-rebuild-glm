@@ -1173,7 +1173,18 @@ final class AppStoreClient {
         let dsid = account.dsid
         let token = account.passwordToken
         let storefront = account.storefront
-        let cookieHeader = capturedCookieHeader
+        // The guest's request setup needs the session cookies, and the jar can be
+        // nearly empty -- one cookie after an upgrade, where a fresh sign-in leaves
+        // eighteen. The two that matter are the ones the account already carries, so
+        // they are added when the jar does not have them.
+        var cookieHeader = capturedCookieHeader
+
+        if !cookieHeader.contains("X-Token=") {
+            let essentials = "X-Dsid=" + dsid + "; X-Token=" + account.sessionToken
+
+            cookieHeader = cookieHeader.isEmpty ? essentials : cookieHeader + "; " + essentials
+        }
+
         let version = externalVersionId ?? ""
 
         // Utility, not userInitiated: the guest mapping saturates a core for about a
