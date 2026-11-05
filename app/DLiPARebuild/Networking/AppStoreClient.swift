@@ -689,6 +689,23 @@ final class AppStoreClient {
         }
     }
 
+    /// Forgets one account's cookies when the account itself is gone.
+    ///
+    /// The file holds a live session; leaving it behind after the account is removed
+    /// keeps a credential that nothing can revoke from the app's side.
+    func deleteCookieSnapshot(forDSID dsid: String) {
+        guard let url = Self.cookieSnapshotURL(forDSID: dsid) else { return }
+
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            AppLog.warn("could not delete the cookie snapshot: " + error.localizedDescription,
+                        .network)
+        }
+    }
+
     /// Puts one account's cookies back into the jar.
     ///
     /// Whatever the jar holds for itunes.apple.com goes first: a sign-in, a

@@ -162,27 +162,41 @@ final class AppSession: ObservableObject {
     }
 
     func remove(at offsets: IndexSet) {
+        // Read before the list changes: comparing the removed ids against the
+        // replacement active id is what made this check always false, so deleting
+        // the account in hand left its cookies in the jar for the next one.
+        let wasActive = activeID
+
         let removedAccounts = offsets.map { accounts[$0] }
         let removed = removedAccounts.map { $0.id }
         accounts.remove(atOffsets: offsets)
-        if let activeID, removed.contains(activeID) {
+
+        if let wasActive, removed.contains(wasActive) {
             // The selected account went away; fall back to whatever is left.
             self.activeID = accounts.first?.id
         }
+
         // Only when the account being removed is the one whose session is in
         // hand. This used to run unconditionally, so deleting an account you
         // were not using took the current account's cookies with it and the
         // next download answered 2042.
-        if let activeID, removed.contains(activeID) || accounts.isEmpty {
+        if let wasActive, removed.contains(wasActive) || accounts.isEmpty {
             client.resetSession()
             invalidateSession()
+
+            if let next = activeID {
+                client.restoreCookies(forDSID: next)
+            }
         }
+
         // And so do anything keyed by that account: a password an earlier build
-        // wrote to the keychain, and the kbsync blob, which is keyed by dsid.
+        // wrote to the keychain, the kbsync blob, and the cookie snapshot.
         for account in removedAccounts {
             Keychain.delete(for: account.email)
             signer?.invalidateKBSync(dsid: account.id)
+            client.deleteCookieSnapshot(forDSID: account.id)
         }
+
         persist()
     }
 
