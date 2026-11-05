@@ -903,22 +903,25 @@ final class AppStoreClient {
         fputs("[DLiPA] " + message + "\n", stderr)
     }
 
-    /// Moves a URL onto the account's store pod, keeping path and query.
+    /// Moves an endpoint onto one host, keeping path and query.
     ///
-    /// Nothing here invents a path: Apple's bag names the endpoint, and the pod
-    /// only changes which host serves it. A host that is already prefixed is
-    /// returned untouched.
-    static func onStorePod(_ url: URL, pod: String) -> URL? {
-        guard !pod.isEmpty,
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let host = components.host,
-              !host.hasPrefix("p" + pod + "-") else {
-            return nil
+    /// Nothing here invents a path: Apple's bag names the endpoint, and the host
+    /// only decides which pod serves it. A bare path is put on the host as
+    /// given; an endpoint already on that host is returned untouched.
+    static func moved(_ endpoint: String, onto host: String) -> String {
+        guard var components = URLComponents(string: endpoint),
+              components.host != nil else {
+            return "https://" + host + endpoint
         }
 
-        components.host = "p" + pod + "-" + host
+        if components.host == host {
+            return endpoint
+        }
 
-        return components.url
+        components.host = host
+        components.scheme = "https"
+
+        return components.url?.absoluteString ?? ("https://" + host + endpoint)
     }
 
     /// Whether a header carries something that authorises the request.
@@ -1067,6 +1070,34 @@ final class AppStoreClient {
 
     // MARK: - Licence
 
+    /// One shape of the buy request: where it goes and which token it carries.
+    ///
+    /// The reference request is exact on both (ipatool, pkg/appstore/
+    /// appstore_purchase.go):
+    ///
+    ///     https://p<Pod>-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/buyProduct
+    ///     X-Token: acc.PasswordToken
+    ///
+    /// This app had drifted from it on each: the URL was the one the bag names
+    /// (MZBuy.woa) and the token was the session's X-Token cookie. Every earlier
+    /// attempt changed one thing at a time, so a device log records a rejection
+    /// without saying which difference caused it. A device run costs a build, so
+    /// every shape goes out in one pass and the log names the one that answers.
+    private struct LicenceShape {
+        let label: String
+        let url: URL
+        let token: String
+    }
+
+    /// The fields of a buy response this client acts on.
+    private struct LicenceReply {
+        let status: Int
+        let failure: String
+        let message: String
+        let docType: String
+        let jingleStatus: Int
+    }
+
     /// Attaches a free licence for an app to the account.
     ///
     /// Copied from ipatool (pkg/appstore/appstore_purchase.go), including the
@@ -1078,167 +1109,256 @@ final class AppStoreClient {
     ///
     /// A 500 from buyProduct means the licence is already there. Treating it as
     /// a failure is why this loop kept reporting "licence required" after a
-    /// purchase that had actually worked.
-    ///
-    /// The URL is the one the bag names, not the MZFinance.woa path hardcoded
-    /// in ipatool. Both were tried on the device, signed:
-    ///
-    ///     bag's MZBuy.woa      -> 500
-    ///     ipatool's MZFinance  -> 400
-    ///
-    /// and 500 is the code that means "licence exists". The body sends
-    /// salableAdamId as an integer, which is what ipatool passes.
+    /// purchase that had actually worked. The same 500 is also what a host that
+    /// never accepted the request answers, so it is believed here only when no
+    /// shape confirms anything better.
     func acquireLicense(appId: String,
                         guid: String,
                         account: Account,
                         bag: StoreBag,
                         signer: SAPSigner) async throws {
-        let podPrefix = account.pod.isEmpty ? "" : "p" + account.pod + "-"
-        let fallback = "https://" + podPrefix
-            + "buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"
-
-        // The account's store lives on a pod, and authenticate proves it: the
-        // same request answered 404 on the generic host and 200 on p22-buy.
-        // buyProduct still goes to whatever the bag names -- the generic host --
-        // and answers 500 with an empty body, the same shape of rejection that
-        // ent/download gives. The pod prefix was computed and then only used for
-        // the fallback, so it never applied to the URL that actually got sent.
-        guard let bagURL = try? Self.trustedEndpoint(bag.buyProduct ?? fallback) else {
-            throw StoreError.noBagEndpoint
-        }
-
-        let url = Self.onStorePod(bagURL, pod: account.pod) ?? bagURL
-        AppLog.info("buyProduct " + url.absoluteString + " for " + appId
+        let shapes = Self.licenceShapes(account: account, bag: bag)
+        AppLog.info("buyProduct: " + String(shapes.count) + " shapes for " + appId
                     + " (storefront "
-                    + (account.storefront.isEmpty ? "none" : account.storefront) + ")", .download)
+                    + (account.storefront.isEmpty ? "none" : account.storefront)
+                    + ", pod " + (account.pod.isEmpty ? "none" : account.pod) + ")", .download)
 
         var lastError: Error?
-        // STDQ is the normal pricing parameter; GAME is the Apple Arcade one
-        // ipatool falls back to when the item reports as temporarily
-        // unavailable.
-        for pricing in ["STDQ", "GAME"] {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
-            // The purchase operation is the one place upstream departs from the
-            // default agent: backend.go switches to 2.18 for "purchase".
-            request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
-            request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
-            request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
-            request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-            request.setValue(account.sessionToken.isEmpty ? account.passwordToken
-                                                          : account.sessionToken,
-                             forHTTPHeaderField: "X-Token")
-            if !capturedCookieHeader.isEmpty {
-                request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
+        var sawFiveHundred = false
+        nextShape: for shape in shapes {
+            var reply: LicenceReply
+            do {
+                reply = try await sendBuy(shape: shape, pricing: "STDQ",
+                                          appId: appId, guid: guid, account: account)
+                // STDQ is the normal pricing parameter; GAME is the Apple Arcade
+                // one ipatool falls back to when the item reports as temporarily
+                // unavailable.
+                if reply.failure == "2059" {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    reply = try await sendBuy(shape: shape, pricing: "GAME",
+                                              appId: appId, guid: guid, account: account)
+                }
+            } catch {
+                // A request that never left says nothing about the shape.
+                AppLog.warn("buyProduct " + shape.label + " could not be sent: "
+                            + error.localizedDescription, .download)
+                lastError = error
+                continue nextShape
             }
 
-            // Field for field what appstore_purchase.go sends. My previous
-            // version swapped buyWithoutAuthorization for the 2042 dialog's
-            // hasBeenAuthedForBuy and added creditDisplay and serialNumber from
-            // the dialog's buyParams; the store answered 200 with
-            // MZCommerce.SystemError, "Unable to process your request". The
-            // dialog's buyParams describe a different operation than this
-            // endpoint takes, so the reference payload is the one to send.
-            let payload: [String: Any] = [
-                "appExtVrsId": "0",
-                "hasAskedToFulfillPreorder": "true",
-                "buyWithoutAuthorization": "true",
-                "hasDoneAgeCheck": "true",
-                "guid": guid,
-                "needDiv": "0",
-                "origPage": "Software-" + appId,
-                "origPageLocation": "Buy",
-                "price": "0",
-                "pricingParameters": pricing,
-                "productType": "C",
-                // Integer, as ipatool sends it.
-                "salableAdamId": Int64(appId) ?? 0,
-            ]
-            request.httpBody = try PropertyListSerialization.data(
-                fromPropertyList: payload, format: .xml, options: 0)
-
-            // Signed. ipatool does not sign this, but its XMLPayload is encoded
-            // and sent by the emulated Store framework, which brings its own
-            // session. Posted raw, the same request gets 400 unsigned and 500
-            // signed, and 500 is the code ipatool reads as "licence exists".
-            // Unsigned, as appstore_purchase.go sends it.
-            let (data, signedResponse) = try await sendUnsigned(request)
-            let status = signedResponse.statusCode
-            let bodyText = String(data: data, encoding: .utf8) ?? ""
-            AppLog.info("buyProduct " + pricing + " returned HTTP " + String(status)
-                        + ", " + String(data.count) + " bytes", .download)
-            if !bodyText.isEmpty {
-                AppLog.info("buyProduct " + pricing + " body: "
-                            + String(bodyText.prefix(800)), .download)
-            }
-
-            let plist = (try? PropertyListSerialization.propertyList(
-                from: data, options: [], format: nil)) as? [String: Any] ?? [:]
-            let failure = plist["failureType"] as? String ?? ""
-            let message = plist["customerMessage"] as? String ?? ""
-            let docType = plist["jingleDocType"] as? String ?? ""
-
-            // The mapping ipatool relies on.
-            if status == 500 {
-                AppLog.info("buyProduct answered 500; per ipatool that means the "
-                            + "licence already exists", .download)
+            if reply.failure == "5002" {
+                AppLog.info("licence already present", .download)
                 return
             }
-            if failure == "5002" || failure == "2059" {
-                if failure == "5002" {
-                    AppLog.info("licence already present", .download)
-                    return
-                }
-                lastError = StoreError.failureType(failure, message)
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                continue
+            if reply.failure == "2059" {
+                lastError = StoreError.failureType(reply.failure, reply.message)
+                continue nextShape
             }
-            if !failure.isEmpty {
-                AppLog.error("buyProduct failed: " + failure + " " + message, .download)
-                // The store reports four different things through one field, and the
-                // caller can act on all four differently: sign in again, buy a
-                // subscription, wait, or read the message. Passing the raw code up
-                // made every one of them look like the same failure.
-                let lower = message.lowercased()
+            if !reply.failure.isEmpty {
+                // A refusal that names the credential is about this shape, not
+                // about the item: the account has already been refused with 2002
+                // carrying the passwordToken while the session cookie was
+                // accepted, so the next shape still deserves its turn. Every
+                // other code is the store's verdict on the purchase itself.
+                let aboutToken = ["signInRequired", "passwordTokenExpired",
+                                  "deviceVerificationFailed", "2002", "2034"]
+                    .contains(reply.failure)
+                    || reply.message.lowercased().contains("password")
 
-                if ["signInRequired", "passwordTokenExpired", "deviceVerificationFailed"]
-                    .contains(failure) || lower.contains("password") {
-                    throw StoreError.failureType("licence-session-expired",
-                                                 message.isEmpty ? "sign in again" : message)
+                AppLog.error("buyProduct " + shape.label + " failed: "
+                             + reply.failure + " " + reply.message, .download)
+
+                if !aboutToken {
+                    throw Self.licenceFailure(reply.failure, reply.message)
                 }
 
-                if lower.contains("subscription") || lower.contains("apple arcade") {
-                    throw StoreError.failureType("licence-subscription",
-                                                 message.isEmpty ? "subscription required" : message)
-                }
+                lastError = Self.licenceFailure(reply.failure, reply.message)
+                continue nextShape
+            }
 
-                if failure == "temporarilyUnavailable" {
-                    throw StoreError.failureType("licence-unavailable",
-                                                 message.isEmpty ? "temporarily unavailable" : message)
-                }
-
-                throw StoreError.failureType(failure, message)
+            // The mapping ipatool relies on, and in its order: a body that names
+            // a failure is read before the bare status is. 500 with nothing in it
+            // is "the licence already exists" -- but it is also what a host that
+            // never accepted the request answers, so this pass keeps probing and
+            // believes it only if nothing else answers.
+            if reply.status == 500 {
+                AppLog.info("buyProduct " + shape.label + " answered 500 with no failure "
+                            + "code; per ipatool that means the licence already exists",
+                            .download)
+                sawFiveHundred = true
+                lastError = StoreError.failureType("licence-unconfirmed",
+                                                   "HTTP 500 from " + shape.label)
+                continue nextShape
             }
 
             // purchaseWithParams requires jingleDocType == "purchaseSuccess" and
-            // status == 0, and treats anything else as a failure. The old check
+            // status == 0, and treats anything else as a failure. An earlier check
             // here accepted an empty docType, so a 200 carrying
             // MZCommerce.SystemError and "Unable to process your request" was
             // reported as "licence granted" -- and the download then retried
             // against a licence that had never been issued.
-            let jingleStatus = (plist["status"] as? Int) ?? 0
-            if docType == "purchaseSuccess", jingleStatus == 0 {
-                AppLog.info("licence granted", .download)
+            if reply.docType == "purchaseSuccess", reply.jingleStatus == 0 {
+                AppLog.info("licence granted via " + shape.label, .download)
                 return
             }
 
-            let detail = message.isEmpty ? "no purchaseSuccess in the response" : message
-            AppLog.error("buyProduct did not confirm the purchase: " + detail, .download)
+            let detail = reply.message.isEmpty ? "no purchaseSuccess in the response"
+                                              : reply.message
+            AppLog.error("buyProduct " + shape.label + " did not confirm the purchase: "
+                         + detail, .download)
             lastError = StoreError.failureType("purchase", detail)
         }
 
+        if sawFiveHundred {
+            // Nothing confirmed the purchase, but a 500 is ipatool's "the licence
+            // is already there". Returning lets the download be the judge instead
+            // of failing a purchase that may well have gone through.
+            AppLog.warn("no shape confirmed the purchase; a 500 says the licence exists",
+                        .download)
+            return
+        }
+
         throw lastError ?? StoreError.failureType("purchase", "no purchase response")
+    }
+
+    /// Posts one buy request and reads the fields the store reports.
+    ///
+    /// The payload is field for field what appstore_purchase.go sends, and the
+    /// User-Agent is the 2.18 one backend.go switches to for "purchase". Nothing
+    /// is signed: the reference does not sign this call, and a signed copy of the
+    /// same request was answered 400 on the device.
+    ///
+    /// A previous version swapped buyWithoutAuthorization for the 2042 dialog's
+    /// hasBeenAuthedForBuy and added creditDisplay and serialNumber from the
+    /// dialog's buyParams; the store answered 200 with MZCommerce.SystemError,
+    /// "Unable to process your request". The dialog's buyParams describe a
+    /// different operation than this endpoint takes.
+    private func sendBuy(shape: LicenceShape,
+                         pricing: String,
+                         appId: String,
+                         guid: String,
+                         account: Account) async throws -> LicenceReply {
+        var request = URLRequest(url: shape.url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
+        // The purchase operation is the one place upstream departs from the
+        // default agent: backend.go switches to 2.18 for "purchase".
+        request.setValue(Self.downloadUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
+        request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
+        request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+        request.setValue(shape.token, forHTTPHeaderField: "X-Token")
+        if !capturedCookieHeader.isEmpty {
+            request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
+        }
+
+        let payload: [String: Any] = [
+            "appExtVrsId": "0",
+            "hasAskedToFulfillPreorder": "true",
+            "buyWithoutAuthorization": "true",
+            "hasDoneAgeCheck": "true",
+            "guid": guid,
+            "needDiv": "0",
+            "origPage": "Software-" + appId,
+            "origPageLocation": "Buy",
+            "price": "0",
+            "pricingParameters": pricing,
+            "productType": "C",
+            // Integer, as ipatool sends it.
+            "salableAdamId": Int64(appId) ?? 0,
+        ]
+        request.httpBody = try PropertyListSerialization.data(fromPropertyList: payload,
+                                                              format: .xml, options: 0)
+
+        let (data, response) = try await sendUnsigned(request)
+        let status = response.statusCode
+        let body = String(data: data, encoding: .utf8) ?? ""
+        AppLog.info("buyProduct " + shape.label + " " + pricing + " -> HTTP "
+                    + String(status) + ", " + String(data.count) + " bytes, token "
+                    + String(shape.token.count) + " chars", .download)
+        if !body.isEmpty {
+            AppLog.info("buyProduct " + shape.label + " " + pricing + " body: "
+                        + String(body.prefix(800)), .download)
+        }
+
+        let plist = (try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil)) as? [String: Any] ?? [:]
+        return LicenceReply(status: status,
+                            failure: plist["failureType"] as? String ?? "",
+                            message: plist["customerMessage"] as? String ?? "",
+                            docType: plist["jingleDocType"] as? String ?? "",
+                            jingleStatus: plist["status"] as? Int ?? 0)
+    }
+
+    /// The four things the store reports through one field, named apart: sign in
+    /// again, buy a subscription, wait, or read the message. Passing the raw code
+    /// up made every one of them look like the same failure.
+    private static func licenceFailure(_ failure: String, _ message: String) -> Error {
+        let lower = message.lowercased()
+
+        if ["signInRequired", "passwordTokenExpired", "deviceVerificationFailed"]
+            .contains(failure) || lower.contains("password") {
+            return StoreError.failureType("licence-session-expired",
+                                          message.isEmpty ? "sign in again" : message)
+        }
+
+        if lower.contains("subscription") || lower.contains("apple arcade") {
+            return StoreError.failureType("licence-subscription",
+                                          message.isEmpty ? "subscription required" : message)
+        }
+
+        if failure == "temporarilyUnavailable" {
+            return StoreError.failureType("licence-unavailable",
+                                          message.isEmpty ? "temporarily unavailable" : message)
+        }
+
+        return StoreError.failureType(failure, message)
+    }
+
+    /// The shapes worth sending, likely first.
+    ///
+    /// The first four settle path and token against the account's own pod. The
+    /// last two drop the pod, which is the only difference left if none of them
+    /// answers: the pod comes from the sign-in redirect, and an account has been
+    /// seen on one that does not match its storefront (p47 with 143465) -- a
+    /// pairing upstream never produces, because both come from the same login.
+    private static func licenceShapes(account: Account, bag: StoreBag) -> [LicenceShape] {
+        let podHost = (account.pod.isEmpty ? "" : "p" + account.pod + "-")
+            + "buy.itunes.apple.com"
+        let genericHost = "buy.itunes.apple.com"
+        let reference = "/WebObjects/MZFinance.woa/wa/buyProduct"
+        let bagURL = bag.buyProduct
+            ?? ("https://" + genericHost + "/WebObjects/MZBuy.woa/wa/buyProduct")
+
+        let session = account.sessionToken.isEmpty ? account.passwordToken
+                                                  : account.sessionToken
+
+        var shapes: [LicenceShape] = []
+        var seen: Set<String> = []
+
+        func add(_ label: String, _ endpoint: String, _ token: String) {
+            guard let url = try? trustedEndpoint(endpoint) else { return }
+
+            let key = url.absoluteString + "\u{0}" + token
+            guard !seen.contains(key) else { return }
+
+            seen.insert(key)
+            shapes.append(LicenceShape(label: label, url: url, token: token))
+        }
+
+        // Session token first. The account already proved on the device that the
+        // 52 character passwordToken is refused with 2002 and that the session
+        // cookie is what the store accepts, so the shapes that carry the working
+        // credential go out before any that might invalidate it.
+        add("pod/bag/sessionToken", moved(bagURL, onto: podHost), session)
+        add("pod/reference/sessionToken", moved(reference, onto: podHost), session)
+        add("generic/reference/sessionToken", moved(reference, onto: genericHost), session)
+        add("generic/bag/sessionToken", moved(bagURL, onto: genericHost), session)
+        add("pod/reference/passwordToken", moved(reference, onto: podHost),
+            account.passwordToken)
+        add("pod/bag/passwordToken", moved(bagURL, onto: podHost), account.passwordToken)
+
+        return shapes
     }
 
     /// The `ent/download` round trip, acquring a licence first if Apple says
