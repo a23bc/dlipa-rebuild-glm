@@ -45,15 +45,6 @@ struct DiagnosticsScreen: View {
                             }
                         Toggle("Open the SAP runtime at launch", isOn: $prewarmAtLaunch)
                             .onChange(of: prewarmAtLaunch) { _ in refresh() }
-
-                        // Measurement, not a feature yet: runs the same extraction CI
-                        // does, on this device, and reports how long it took.
-                        Button("Fetch SAP assets (measure)") { fetchAssets() }
-                        if !fetchResult.isEmpty {
-                            Text(fetchResult)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
                     }
 
                     Section {
@@ -65,6 +56,17 @@ struct DiagnosticsScreen: View {
                             .disabled(running)
                         Button("Open Store runtime (E1-a)") { runStoreSmoke() }
                             .disabled(running)
+
+                        // Measurement, not a feature: the same extraction CI runs, on
+                        // this device. It asks go-macho for about 1.6 GB in one
+                        // allocation during the export step, which is enough to end the
+                        // process -- worth knowing before it is called harmless.
+                        Button("Fetch SAP assets (measure)") { fetchAssets() }
+                        if !fetchResult.isEmpty {
+                            Text(fetchResult)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
 
                     if running {
