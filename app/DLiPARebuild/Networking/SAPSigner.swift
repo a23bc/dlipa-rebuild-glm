@@ -288,9 +288,10 @@ func kbsync(dsid: String) throws -> Data {
     func shutdown() {
         var failure: NSError?
 
-        if !bridge.close(&failure) {
-            AppLog.warn("SAP signer close failed: "
-                        + (failure?.localizedDescription ?? "unknown"), .sap)
+        _ = bridge.close(&failure)
+
+        if let failure {
+            AppLog.warn("SAP signer close failed: " + failure.localizedDescription, .sap)
         }
     }
 }
