@@ -1196,6 +1196,28 @@ final class AppStoreClient {
             }
             if !failure.isEmpty {
                 AppLog.error("buyProduct failed: " + failure + " " + message, .download)
+                // The store reports four different things through one field, and the
+                // caller can act on all four differently: sign in again, buy a
+                // subscription, wait, or read the message. Passing the raw code up
+                // made every one of them look like the same failure.
+                let lower = message.lowercased()
+
+                if ["signInRequired", "passwordTokenExpired", "deviceVerificationFailed"]
+                    .contains(failure) || lower.contains("password") {
+                    throw StoreError.failureType("licence-session-expired",
+                                                 message.isEmpty ? "sign in again" : message)
+                }
+
+                if lower.contains("subscription") || lower.contains("apple arcade") {
+                    throw StoreError.failureType("licence-subscription",
+                                                 message.isEmpty ? "subscription required" : message)
+                }
+
+                if failure == "temporarilyUnavailable" {
+                    throw StoreError.failureType("licence-unavailable",
+                                                 message.isEmpty ? "temporarily unavailable" : message)
+                }
+
                 throw StoreError.failureType(failure, message)
             }
 
