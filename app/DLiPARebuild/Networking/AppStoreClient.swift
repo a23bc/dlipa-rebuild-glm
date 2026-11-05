@@ -1138,6 +1138,18 @@ final class AppStoreClient {
             do {
                 reply = try await sendBuy(shape: shape, pricing: "STDQ",
                                           appId: appId, guid: guid, account: account)
+                // A gateway error is Apple's edge, not a verdict. It cost a whole
+                // run once -- the reference shape answered 504, the two fallbacks
+                // answered their usual SystemError, and the app reported "unable
+                // to process your request" for a credential that had worked ten
+                // minutes earlier.
+                if Self.transientGatewayStatus.contains(reply.status) {
+                    AppLog.warn("buyProduct " + shape.label + " answered HTTP "
+                                + String(reply.status) + "; retrying once", .download)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    reply = try await sendBuy(shape: shape, pricing: "STDQ",
+                                              appId: appId, guid: guid, account: account)
+                }
                 // STDQ is the normal pricing parameter; GAME is the Apple Arcade
                 // one ipatool falls back to when the item reports as temporarily
                 // unavailable.
@@ -1404,6 +1416,77 @@ final class AppStoreClient {
                                  bag: StoreBag,
                                  signer: SAPSigner) async throws -> [String: Any] {
         var acquiredLicence = false
+
+        // The licence gate, before the guest.
+        //
+        // ent/download needs the emulated Store runtime, and opening it costs
+        // about a minute and a half of mapping on device. Discovering only after
+        // that mapping that the account has no licence -- and then buying, which
+        // is a plain request that answers in a second -- is what this removes:
+        // the classic endpoint answers the ownership question in one request, so
+        // the buy happens before the runtime is touched.
+        //
+        // The gate's own songList is dropped on a positive answer: ent/download
+        // is the path the bridge has been measured on, and this check is about
+        // the licence, not about which endpoint serves the file.
+        let gateStart = Date()
+        do {
+            _ = try await classicDownload(appId: appId, externalVersionId: externalVersionId,
+                                          guid: guid, account: account, bag: bag, signer: signer)
+            AppLog.info("licence gate: the account already owns this app ("
+                        + Self.seconds(since: gateStart) + ")", .download)
+        } catch {
+            // Anything that is not one of the two licence answers -- a gateway
+            // error, a transport failure, a shape this guard does not know --
+            // leaves the decision to ent/download rather than blocking it.
+            var gap: String?
+            if let store = error as? StoreError,
+               case .failureType(let type, _) = store,
+               Self.licenceGapFailureTypes.contains(type) {
+                gap = type
+            }
+
+            guard let gap else {
+                AppLog.info("licence gate: no verdict (" + error.localizedDescription
+                            + ") in " + Self.seconds(since: gateStart)
+                            + "; leaving it to ent/download", .download)
+                return try await downloadWithRetries(
+                    appId: appId, externalVersionId: externalVersionId, guid: guid,
+                    account: account, bag: bag, signer: signer,
+                    acquiredLicence: acquiredLicence)
+            }
+
+            AppLog.info("licence gate: " + gap + " after " + Self.seconds(since: gateStart)
+                        + "; buying the licence before opening the runtime", .download)
+            acquiredLicence = true
+            try await acquireLicense(appId: appId, guid: guid, account: account,
+                                     bag: bag, signer: signer)
+        }
+
+        return try await downloadWithRetries(
+            appId: appId, externalVersionId: externalVersionId, guid: guid,
+            account: account, bag: bag, signer: signer,
+            acquiredLicence: acquiredLicence)
+    }
+
+    /// "12ms" or "1.4s", for the gate's two log lines.
+    private static func seconds(since start: Date) -> String {
+        let elapsed = Date().timeIntervalSince(start)
+
+        return elapsed < 1
+            ? String(Int(elapsed * 1000)) + "ms"
+            : String(format: "%.1fs", elapsed)
+    }
+
+    /// The download itself, with the licence and blob retries.
+    private func downloadWithRetries(appId: String,
+                                     externalVersionId: String?,
+                                     guid: String,
+                                     account: Account,
+                                     bag: StoreBag,
+                                     signer: SAPSigner,
+                                     acquiredLicence: Bool) async throws -> [String: Any] {
+        var acquiredLicence = acquiredLicence
         var resumedBuy = false
         var discardedBlob = false
 
@@ -1469,6 +1552,14 @@ final class AppStoreClient {
     /// because a licence that was granted and still draws "licence required" is
     /// the same symptom one layer up.
     private static let staleBlobFailureTypes: Set<String> = ["9610", "2042", "2034"]
+
+    /// Apple's edge answers these when the request never reached a store pod.
+    /// They say nothing about the credential, so the same request deserves one
+    /// repeat before the next shape is tried.
+    private static let transientGatewayStatus: Set<Int> = [502, 503, 504]
+
+    /// The answers that mean "this account has no licence for the app".
+    private static let licenceGapFailureTypes: Set<String> = ["9610", "2042"]
 
     /// ent/download first, classic second -- the order ipatool uses.
     ///
