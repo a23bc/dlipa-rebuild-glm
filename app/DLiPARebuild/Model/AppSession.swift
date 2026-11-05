@@ -624,6 +624,40 @@ func diagnosticKBSync() async -> String {
                                                signer: signer)
     }
 
+    /// Asks the store for this app's licence and reports what it said.
+    ///
+    /// No engine: buyProduct is a plain request, which is why this can answer in
+    /// seconds instead of the minutes an ent/download costs.
+    func acquireLicence(for app: StoreApp) async -> String {
+        do {
+            let (account, bag, signer) = try await ensureSession()
+
+            try await client.acquireLicense(appId: String(app.trackId),
+                                            guid: hardware.guid,
+                                            account: account.asAccount(),
+                                            bag: bag,
+                                            signer: signer)
+
+            return "Licence acquired"
+        } catch {
+            guard let store = error as? StoreError,
+                  case .failureType(let code, let message) = store else {
+                return "Failed: " + error.localizedDescription
+            }
+
+            switch code {
+            case "licence-session-expired":
+                return "Sign in again: " + message
+            case "licence-subscription":
+                return "Subscription required: " + message
+            case "licence-unavailable":
+                return "Temporarily unavailable"
+            default:
+                return "Failed (" + code + "): " + message
+            }
+        }
+    }
+
     /// The signed URL for an app, or for one specific version of it.
     func downloadURL(for app: StoreApp,
                      externalVersionId: String?) async throws -> URL {

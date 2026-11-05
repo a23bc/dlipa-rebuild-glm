@@ -13,6 +13,9 @@ struct SearchScreen: View {
     /// The file or link the share sheet is showing.
     @State private var shareURL: URL?
 
+    /// What the store said about the licence, or nil when nothing was asked.
+    @State private var licenceMessage: String?
+
     var body: some View {
         NavigationView {
             // The body is its own view so it can read the search state through
@@ -46,6 +49,9 @@ struct SearchScreen: View {
                                     .default(Text("Version history")) {
                                         versionTarget = app
                                     },
+                                    .default(Text("Get licence")) {
+                                        Task { licenceMessage = await model.acquireLicence(for: app) }
+                                    },
                                     .default(Text("Copy bundle ID")) {
                                         UIPasteboard.general.string = app.bundleId
                                     },
@@ -58,7 +64,14 @@ struct SearchScreen: View {
                                     .cancel()
                                 ])
                 }
-                .sheet(item: $versionTarget, onDismiss: { versionTarget = nil }) { app in
+                .alert("Licence",
+                   isPresented: Binding(get: { licenceMessage != nil },
+                                        set: { if !$0 { licenceMessage = nil } })) {
+                Button("OK") { licenceMessage = nil }
+            } message: {
+                Text(licenceMessage ?? "")
+            }
+            .sheet(item: $versionTarget, onDismiss: { versionTarget = nil }) { app in
                     VersionListView(app: app) { versionID in
                         versionTarget = nil
                         Task { await model.download(app, versionID: versionID) }
