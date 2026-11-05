@@ -159,6 +159,18 @@ final class AppStoreClient {
                       endpoint: String,
                       signer: SAPSigner,
                       attempt: Int = 1) async throws -> Account {
+        // A sign-in starts from an empty jar. The launch restores the previous
+        // account's cookies, and signing in the second account on top of them left
+        // that account's X-Token and DSID in the values this call captures -- the new
+        // session was minted against the old one and every download through it failed
+        // in the guest's request setup.
+        //
+        // Only the cookie state is dropped: the pod routing belongs to the 2FA retry,
+        // and resetSession() would clear it between the two attempts.
+        clearPersistedCookieJar()
+        capturedCookieHeader = ""
+        capturedCookieValues = [:]
+
         // A missing trailing slash gets a 204 and nothing else happens.
         let url = endpoint.hasSuffix("/") ? endpoint : endpoint + "/"
         AppLog.info("authenticating against " + url + " attempt " + String(attempt)
