@@ -52,10 +52,6 @@ struct VersionListView: View {
                                             .foregroundColor(.secondary)
                                     }
                                     Spacer()
-                                    if identifier == versions.latest {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(.accentColor)
-                                    }
                                 }
                                 .contentShape(Rectangle())
                             }
