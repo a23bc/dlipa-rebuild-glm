@@ -158,7 +158,13 @@ private struct AccountRow: View {
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("DSID: " + account.dsid)
-                    Text("Storefront: " + Storefront.label(account.storefront))
+                    // The raw value goes with the label. The label is derived from the
+                            // leading number, and two accounts with different regions can
+                            // share it -- so the part that actually names the store is the
+                            // tail, and hiding it lets the row claim a country Apple did
+                            // not give.
+                            Text("Storefront: " + Storefront.label(account.storefront)
+                                 + (account.storefront.isEmpty ? "" : "  (" + account.storefront + ")"))
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)
