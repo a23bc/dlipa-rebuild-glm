@@ -38,6 +38,13 @@ final class AppSession: ObservableObject {
         if activeID == nil || !accounts.contains(where: { $0.id == activeID }) {
             activeID = accounts.first?.id
         }
+        // The cookies are per account now and the process starts with an empty
+        // jar, so restoring the account has to restore its session as well.
+        // Without this, the first download after a relaunch was sent with the
+        // two cookies the account itself carries, which the guest refuses.
+        if let activeID {
+            client.restoreCookies(forDSID: activeID)
+        }
     }
 
     /// Refreshed when the identity is regenerated from Settings, so the next
@@ -137,6 +144,12 @@ final class AppSession: ObservableObject {
         if id != activeID {
             client.resetSession()
             invalidateSession()
+
+            // The cookies belong to the account, and each one's full set was
+            // written at its own sign-in. Putting them back here is what makes
+            // switching accounts survive a relaunch: without it the new
+            // account's downloads left with an empty jar.
+            client.restoreCookies(forDSID: id)
 
             // The engine is not closed here. Closing it and opening another in the
             // same process fails: the guest memory at 0x100000000 is still mapped, so

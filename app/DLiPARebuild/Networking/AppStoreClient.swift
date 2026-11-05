@@ -359,6 +359,12 @@ final class AppStoreClient {
         // The sign-in is finished; the pod address belongs to it alone.
         authenticationPod = nil
 
+        // This response is the only place the full session exists. Save it
+        // against the DSID before handing the account back, because the jar is
+        // reset the moment anything else is signed in, and a relaunch restores
+        // the account without a sign-in to rebuild these cookies.
+        saveCookieSnapshot(forDSID: dsid)
+
         return Account(
             email: accountInfo["appleId"] as? String ?? email,
             passwordToken: passwordToken,
@@ -592,6 +598,152 @@ final class AppStoreClient {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: Self.cookieJarHeaderKey)
         defaults.removeObject(forKey: Self.cookieJarValuesKey)
+    }
+
+    // MARK: - Per-account cookie snapshots
+
+    /// One cookie of an account's store session, as it is written to disk.
+    ///
+    /// The whole record is kept, not only name and value: HTTPCookie needs a
+    /// domain and a path to be rebuilt, and a cookie restored under the wrong
+    /// domain is either invisible to the store or attached to the wrong host.
+    private struct CookieSnapshotEntry: Codable {
+        let name: String
+        let value: String
+        let domain: String
+        let path: String
+        let expires: Date?
+        let secure: Bool
+    }
+
+    private static let cookieSnapshotFolder = "cookies"
+
+    private static func cookieSnapshotDirectory() -> URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else {
+            return nil
+        }
+        return base.appendingPathComponent(cookieSnapshotFolder, isDirectory: true)
+    }
+
+    /// `<application support>/cookies/<dsid>.json`.
+    ///
+    /// The DSID is numeric; anything else is dropped rather than escaped so a
+    /// malformed one cannot name a path outside the folder.
+    private static func cookieSnapshotURL(forDSID dsid: String) -> URL? {
+        let name = dsid.filter { $0.isLetter || $0.isNumber }
+        guard !name.isEmpty, let directory = cookieSnapshotDirectory() else { return nil }
+        return directory.appendingPathComponent(name + ".json", isDirectory: false)
+    }
+
+    /// The store cookies the session's jar holds right now.
+    private func storeCookies() -> [HTTPCookie] {
+        guard let storage = session.configuration.httpCookieStorage else { return [] }
+        return (storage.cookies ?? []).filter { $0.domain.contains("itunes.apple.com") }
+    }
+
+    /// Writes the whole store session for one DSID.
+    ///
+    /// A sign-in is the only moment the complete set exists -- eighteen cookies
+    /// on device -- and the handful that survive a relaunch is not enough for
+    /// the guest, which refuses a request carrying only X-Dsid and X-Token. The
+    /// account's own DSID names the file, because these cookies are worthless
+    /// to any other account.
+    func saveCookieSnapshot(forDSID dsid: String) {
+        let cookies = storeCookies()
+        // An empty jar would replace a good snapshot with nothing; the sign-in
+        // that led here has already logged the names it captured.
+        guard !cookies.isEmpty else {
+            AppLog.warn("no store cookies to save for this account", .network)
+            return
+        }
+        guard let url = Self.cookieSnapshotURL(forDSID: dsid) else { return }
+
+        let entries = cookies.map {
+            CookieSnapshotEntry(name: $0.name, value: $0.value, domain: $0.domain,
+                                path: $0.path, expires: $0.expiresDate,
+                                secure: $0.isSecure)
+        }
+
+        do {
+            let data = try JSONEncoder().encode(entries)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            // Count only: every value in here is a session credential.
+            let saved = entries.count
+            AppLog.info("saved " + String(saved) + " cookies for this account", .network)
+        } catch {
+            AppLog.warn("could not save the cookie snapshot: " + error.localizedDescription,
+                        .network)
+        }
+    }
+
+    /// Puts one account's cookies back into the jar.
+    ///
+    /// Whatever the jar holds for itunes.apple.com goes first: a sign-in, a
+    /// different account, or the previous launch all leave cookies there, and
+    /// two accounts' cookies replayed together is what made the second one
+    /// fail.
+    func restoreCookies(forDSID dsid: String) {
+        guard let url = Self.cookieSnapshotURL(forDSID: dsid) else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            // The normal case for an account signed in by a build that had no
+            // snapshots. The next sign-in writes one.
+            AppLog.info("no saved cookies for this account yet", .network)
+            return
+        }
+
+        let entries: [CookieSnapshotEntry]
+        do {
+            let data = try Data(contentsOf: url)
+            entries = try JSONDecoder().decode([CookieSnapshotEntry].self, from: data)
+        } catch {
+            AppLog.warn("could not read the cookie snapshot: " + error.localizedDescription,
+                        .network)
+            return
+        }
+
+        guard let storage = session.configuration.httpCookieStorage else { return }
+        let stale = (storage.cookies ?? [])
+            .filter { $0.domain.contains("itunes.apple.com") }
+        for cookie in stale { storage.deleteCookie(cookie) }
+
+        var installed = 0
+        var pairs: [String] = []
+        var values: [String: String] = [:]
+        for entry in entries {
+            guard let cookie = Self.cookie(from: entry) else { continue }
+            storage.setCookie(cookie)
+            installed += 1
+            pairs.append(entry.name + "=" + entry.value)
+            values[entry.name] = entry.value
+        }
+
+        // The guest never reads HTTPCookieStorage: entDownload replays this
+        // header, so restoring the jar alone would restore a session nothing
+        // uses. Built from the snapshot instead of merged into the existing
+        // header, so no cookie from another account can survive here.
+        capturedCookieHeader = pairs.joined(separator: "; ")
+        capturedCookieValues = values
+
+        AppLog.info("restored " + String(installed) + " cookies for this account", .network)
+    }
+
+    private static func cookie(from entry: CookieSnapshotEntry) -> HTTPCookie? {
+        var properties: [HTTPCookiePropertyKey: Any] = [
+            .name: entry.name,
+            .value: entry.value,
+            .domain: entry.domain,
+            .path: entry.path.isEmpty ? "/" : entry.path,
+        ]
+        if let expires = entry.expires {
+            properties[.expires] = expires
+        }
+        if entry.secure {
+            properties[.secure] = "TRUE"
+        }
+        return HTTPCookie(properties: properties)
     }
 
     /// POSTs without the SAP signature.
