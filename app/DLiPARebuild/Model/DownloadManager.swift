@@ -86,7 +86,11 @@ final class DownloadJob: ObservableObject, Identifiable {
 
         switch state {
         case .requesting:
-            return "Requesting"
+            // Most of this wait is the emulated Store runtime, not the network:
+            // 101 seconds of page mapping against 3 seconds of transfer in the
+            // 06:41 run. Sixty seconds of "Requesting" with nothing moving reads
+            // as a hang, which is exactly how it was read.
+            return "Starting the download engine (1-2 min)"
         case .downloading:
             if expected > 0 {
                 return DownloadJob.size(received) + " / " + DownloadJob.size(expected)
