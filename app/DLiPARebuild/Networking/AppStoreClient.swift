@@ -230,6 +230,16 @@ final class AppStoreClient {
                 attemptRequest.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
                 attemptRequest.httpBody = body
 
+                // What actually goes out, header by header. Apple routes a sign-in to
+                // a regional pod, and a value in here is the only thing that can carry
+                // the previous account's region into this one.
+                let described = attemptRequest.allHTTPHeaderFields?
+                    .map { key, value in key + "=" + String(value.prefix(24)) }
+                    .sorted()
+                    .joined(separator: " ") ?? "none"
+                AppLog.info("authenticate request to " + attemptRequest.url!.absoluteString
+                            + " headers: " + described, .auth)
+
                 let result = try await signedRequest(
                     attemptRequest, signer: signer, redirects: 4)
                 outcome = result

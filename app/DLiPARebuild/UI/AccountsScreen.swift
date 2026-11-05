@@ -12,7 +12,7 @@ struct AccountsScreen: View {
     @State private var twoFactor: TwoFactorChallenge?
     /// Which row is showing its identifiers. Only one at a time, and only via
     /// the disclosure control: tapping the row itself selects the account.
-    @State private var expandedID: String?
+    @State private var expanded: Set<String> = []
 
     var body: some View {
         NavigationView {
@@ -29,7 +29,7 @@ struct AccountsScreen: View {
                             AccountRow(
                                 account: account,
                                 isActive: account.id == model.activeAccount?.id,
-                                isExpanded: expandedID == account.id,
+                                isExpanded: expanded.contains(account.id),
                                 onSelect: { model.select(account.id) },
                                 onToggleExpand: {
                                     // Deliberately not animated. The detail block is a dozen
@@ -37,7 +37,11 @@ struct AccountsScreen: View {
                     // as a twitch rather than a transition: every row animates
                     // its own height at once. The chevron animates instead,
                     // which is the part that can move smoothly.
-                    expandedID = (expandedID == account.id) ? nil : account.id
+                    if expanded.contains(account.id) {
+                    expanded.remove(account.id)
+                } else {
+                    expanded.insert(account.id)
+                }
                                 })
                         }
                         .onDelete { model.remove(at: $0) }
