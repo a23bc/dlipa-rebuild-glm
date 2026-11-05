@@ -650,20 +650,30 @@ final class AppStoreClient {
     /// account's own DSID names the file, because these cookies are worthless
     /// to any other account.
     func saveCookieSnapshot(forDSID dsid: String) {
-        let cookies = storeCookies()
-        // An empty jar would replace a good snapshot with nothing; the sign-in
-        // that led here has already logged the names it captured.
-        guard !cookies.isEmpty else {
-            AppLog.warn("no store cookies to save for this account", .network)
-            return
-        }
-        guard let url = Self.cookieSnapshotURL(forDSID: dsid) else { return }
-
-        let entries = cookies.map {
+        // httpShouldSetCookies is off for this session, so Set-Cookie never reaches
+        // HTTPCookieStorage: the jar is empty even when the response set nineteen
+        // cookies. The hand-copied values are the session; saving the jar saved
+        // nothing, which is why the log said "store cookies: none" beside them.
+        var entries = storeCookies().map {
             CookieSnapshotEntry(name: $0.name, value: $0.value, domain: $0.domain,
                                 path: $0.path, expires: $0.expiresDate,
                                 secure: $0.isSecure)
         }
+
+        if entries.isEmpty {
+            entries = capturedCookieValues.map {
+                CookieSnapshotEntry(name: $0.key, value: $0.value,
+                                    domain: "itunes.apple.com", path: "/",
+                                    expires: nil, secure: true)
+            }
+        }
+
+        guard !entries.isEmpty else {
+            AppLog.warn("no store cookies to save for this account", .network)
+            return
+        }
+
+        guard let url = Self.cookieSnapshotURL(forDSID: dsid) else { return }
 
         do {
             let data = try JSONEncoder().encode(entries)
@@ -671,8 +681,8 @@ final class AppStoreClient {
                                                     withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
             // Count only: every value in here is a session credential.
-            let saved = entries.count
-            AppLog.info("saved " + String(saved) + " cookies for this account", .network)
+            AppLog.info("saved " + String(entries.count) + " cookies for this account",
+                        .network)
         } catch {
             AppLog.warn("could not save the cookie snapshot: " + error.localizedDescription,
                         .network)
