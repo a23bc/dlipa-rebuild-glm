@@ -286,12 +286,11 @@ func kbsync(dsid: String) throws -> Data {
     /// state inside the guest, and a request for another account through it comes back
     /// from Apple as a framework error that names nothing.
     func shutdown() {
-        var failure: NSError?
-
-        _ = bridge.close(&failure)
-
-        if let failure {
-            AppLog.warn("SAP signer close failed: " + failure.localizedDescription, .sap)
+        // BOOL plus NSError** imports as throws, so there is no out parameter here.
+        do {
+            try bridge.close()
+        } catch {
+            AppLog.warn("SAP signer close failed: " + error.localizedDescription, .sap)
         }
     }
 }
