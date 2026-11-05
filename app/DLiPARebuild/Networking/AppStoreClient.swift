@@ -1117,7 +1117,7 @@ final class AppStoreClient {
                         account: Account,
                         bag: StoreBag,
                         signer: SAPSigner) async throws {
-        let shapes = Self.licenceShapes(account: account, bag: bag)
+        let shapes = licenceShapes(account: account, bag: bag)
         AppLog.info("buyProduct: " + String(shapes.count) + " shapes for " + appId
                     + " (storefront "
                     + (account.storefront.isEmpty ? "none" : account.storefront)
@@ -1247,7 +1247,12 @@ final class AppStoreClient {
         request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
         request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
         request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
-        request.setValue(shape.token, forHTTPHeaderField: "X-Token")
+        // An empty token is a shape of its own: the request then relies on the
+        // session cookie alone, which is what the download endpoint ended up
+        // needing.
+        if !shape.token.isEmpty {
+            request.setValue(shape.token, forHTTPHeaderField: "X-Token")
+        }
         if !capturedCookieHeader.isEmpty {
             request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
         }
@@ -1317,46 +1322,67 @@ final class AppStoreClient {
 
     /// The shapes worth sending, likely first.
     ///
-    /// The first four settle path and token against the account's own pod. The
-    /// last two drop the pod, which is the only difference left if none of them
-    /// answers: the pod comes from the sign-in redirect, and an account has been
-    /// seen on one that does not match its storefront (p47 with 143465) -- a
-    /// pairing upstream never produces, because both come from the same login.
-    private static func licenceShapes(account: Account, bag: StoreBag) -> [LicenceShape] {
+    /// Host is settled: on 2026-11-06 04:21 the pod and the generic host answered
+    /// byte for byte the same dialog, so nothing is gained by leaving the pod.
+    /// Path is settled too, and it is what tells the two failures apart -- the
+    /// bag's MZBuy path answers MZCommerce.SystemError with no failureType, while
+    /// the reference's MZFinance path answers 2034 ExpiredPasswordToken. 2034
+    /// names the credential, and the account holds three of them, so the
+    /// credential is what this pass varies.
+    ///
+    /// Sending no X-Token at all leads, because this codebase has already seen a
+    /// header disagree with the cookie that carries the same name: the classic
+    /// download answered 2042 with the header and without it, and the session
+    /// cookie was what worked in the end. A header that poisons an otherwise
+    /// good cookie session is cheap to rule out here too.
+    private func licenceShapes(account: Account, bag: StoreBag) -> [LicenceShape] {
         let podHost = (account.pod.isEmpty ? "" : "p" + account.pod + "-")
             + "buy.itunes.apple.com"
-        let genericHost = "buy.itunes.apple.com"
-        let reference = "/WebObjects/MZFinance.woa/wa/buyProduct"
-        let bagURL = bag.buyProduct
-            ?? ("https://" + genericHost + "/WebObjects/MZBuy.woa/wa/buyProduct")
+        let bagPath = Self.moved(bag.buyProduct
+            ?? ("https://buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"),
+            onto: podHost)
+        let referencePath = Self.moved("/WebObjects/MZFinance.woa/wa/buyProduct",
+                                       onto: podHost)
 
-        let session = account.sessionToken.isEmpty ? account.passwordToken
-                                                  : account.sessionToken
+        // The live cookie, refreshed by captureCookies on every response, and the
+        // value the account kept from sign-in. They need not agree: the account's
+        // copy is frozen at sign-in, and the store re-issues the cookie on every
+        // reply. Lengths only -- these are session credentials.
+        let live = capturedCookieValues["X-Token"] ?? ""
+
+        let cookieState = live == account.sessionToken ? "matches session" : "differs"
+
+        AppLog.info("buyProduct credentials: sessionToken "
+                    + String(account.sessionToken.count)
+                    + ", passwordToken " + String(account.passwordToken.count)
+                    + ", clearToken " + String(account.clearToken.count)
+                    + ", cookieToken " + String(live.count) + " (" + cookieState + ")"
+                    + ", dsid " + Self.masked(account.dsid), .download)
+
+        let candidates: [(label: String, endpoint: String, token: String)] = [
+            ("bag/noToken", bagPath, ""),
+            ("bag/sessionToken", bagPath, account.sessionToken),
+            ("reference/noToken", referencePath, ""),
+            ("reference/sessionToken", referencePath, account.sessionToken),
+            ("bag/clearToken", bagPath, account.clearToken),
+            ("reference/clearToken", referencePath, account.clearToken),
+            ("bag/cookieToken", bagPath, live),
+            ("reference/cookieToken", referencePath, live),
+        ]
 
         var shapes: [LicenceShape] = []
         var seen: Set<String> = []
 
-        func add(_ label: String, _ endpoint: String, _ token: String) {
-            guard let url = try? trustedEndpoint(endpoint) else { return }
+        for candidate in candidates {
+            guard let url = try? Self.trustedEndpoint(candidate.endpoint) else { continue }
 
-            let key = url.absoluteString + "\u{0}" + token
-            guard !seen.contains(key) else { return }
+            let key = url.absoluteString + "\u{0}" + candidate.token
+            guard !seen.contains(key) else { continue }
 
             seen.insert(key)
-            shapes.append(LicenceShape(label: label, url: url, token: token))
+            shapes.append(LicenceShape(label: candidate.label, url: url,
+                                       token: candidate.token))
         }
-
-        // Session token first. The account already proved on the device that the
-        // 52 character passwordToken is refused with 2002 and that the session
-        // cookie is what the store accepts, so the shapes that carry the working
-        // credential go out before any that might invalidate it.
-        add("pod/bag/sessionToken", moved(bagURL, onto: podHost), session)
-        add("pod/reference/sessionToken", moved(reference, onto: podHost), session)
-        add("generic/reference/sessionToken", moved(reference, onto: genericHost), session)
-        add("generic/bag/sessionToken", moved(bagURL, onto: genericHost), session)
-        add("pod/reference/passwordToken", moved(reference, onto: podHost),
-            account.passwordToken)
-        add("pod/bag/passwordToken", moved(bagURL, onto: podHost), account.passwordToken)
 
         return shapes
     }
