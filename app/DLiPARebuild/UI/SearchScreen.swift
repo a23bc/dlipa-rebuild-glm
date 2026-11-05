@@ -500,6 +500,12 @@ final class SearchModel: ObservableObject {
     /// itself is only taken when the person says yes, and the download is queued
     /// after that -- never before.
     func download(_ app: StoreApp, versionID: String?) async {
+        // The card here is an indicator and nothing else: no tick, no hold, no
+        // haptic. The check either lets the download start or turns into the
+        // question, and either way the card has done its job the moment it ends.
+        // `workingDone` is cleared because a licence taken a minute ago left it
+        // set, and this card would otherwise open on someone else's tick.
+        workingDone = false
         workingStatus = "Checking the licence for " + app.trackName + "..."
         let missing = await AppSession.shared.licenceMissing(for: app)
         workingStatus = nil
