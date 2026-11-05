@@ -132,15 +132,11 @@ final class AppSession: ObservableObject {
             client.resetSession()
             invalidateSession()
 
-            // The store runtime is opened once per process and carries the account's
-            // session state inside the guest; a request for another account through it
-            // is refused by Apple in ways that read as framework errors. Dropping the
-            // signer is the only way to get a fresh one -- the engine, its pages and
-            // that runtime all belong to it.
-            signerBuild?.cancel()
-            signerBuild = nil
-            signer?.shutdown()
-            signer = nil
+            // The engine is not closed here. Closing it and opening another in the
+            // same process fails: the guest memory at 0x100000000 is still mapped, so
+            // the next open dies with UC_ERR_MAP and everything after it reports a
+            // closed engine. Account B works through the one engine that exists --
+            // that is what the successful YouTube fetch showed.
         }
         activeID = id
         persist()
