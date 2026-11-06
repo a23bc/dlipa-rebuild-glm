@@ -8,8 +8,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -21,6 +23,19 @@ import (
 	profileformat "github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile/format"
 	"github.com/blacktop/go-macho"
 )
+
+// chunkLabel names one bucket of the map census by the span it covers, so the
+// line reads as sizes rather than as bit counts. bits.Len64 files a value under
+// the bucket whose floor is the power of two at or below it, which is exactly
+// the 4 MiB / 2 MiB / ... boundary the mapping loop works against.
+func chunkLabel(length int) string {
+	span := uint64(1) << uint(length-1)
+	if span < 1<<20 {
+		return fmt.Sprintf("%d KiB", span>>10)
+	}
+
+	return fmt.Sprintf("%d MiB", span>>20)
+}
 
 const heapBase = uint64(0x400000000000)
 const heapSize = uint64(64 << 20)
@@ -489,6 +504,29 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	var regionTime time.Duration
 
+	// mapCell is one cell of the map-cost census: what a single uc_mem_map
+	// covering this much address space cost, taken once this much had already
+	// been mapped.
+	//
+	// Both axes are needed because the tree disagrees with itself about which
+	// one matters. The comment inside the loop says one 19 MiB region cost 38.3
+	// s while the 2-4 MiB ones around it cost 0.2-3.6 s; the cache-pages line
+	// above says 8.4 ms per call whatever the call covered; and the page loop
+	// writes 40 MB in 13 ms, roughly 300 times cheaper per byte than the
+	// mapping around it. The eight "took" lines a 200 ms filter let through -- of
+	// a phase that cost a minute -- cannot separate those three, so every call is
+	// now recorded and summarised by bucket.
+	type mapCell struct {
+		count   int
+		total   time.Duration
+		worst   time.Duration
+		samples []time.Duration
+	}
+
+	cells := map[[2]int]*mapCell{}
+
+	var mappedInPhase uint64
+
 	for _, region := range regions {
 		if err = ctx.Err(); err != nil {
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
@@ -515,15 +553,65 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			spent := time.Since(regionMark)
 			regionTime += spent
 
-			if spent > 200*time.Millisecond {
-				fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x took %s\n",
-					region.address+offset, size, spent.Round(time.Millisecond))
+			// The second key is MiB mapped by this phase so far, in 16 MiB
+			// steps. It is a proxy for the engine's own region bookkeeping --
+			// what the "grows with what is already there" hypothesis is about
+			// -- and it starts with the phase, not with the process, so it
+			// under-states the pressure the images and the cache pages already
+			// put on it. Reading a fixed size down that row is still the test.
+			key := [2]int{bits.Len64(size), int(mappedInPhase >> 24)}
+
+			cell := cells[key]
+			if cell == nil {
+				cell = &mapCell{}
+				cells[key] = cell
 			}
+
+			cell.count++
+			cell.total += spent
+			cell.samples = append(cell.samples, spent)
+
+			if spent > cell.worst {
+				cell.worst = spent
+			}
+
+			mappedInPhase += size
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] open(): %d regions mapped in %s\n",
 		len(regions), regionTime.Round(time.Millisecond))
+
+	// The census, one line per cell used, ordered by span so a fixed size can be
+	// read down the progress axis. Growing medians along a row mean the cost is
+	// the bookkeeping of what is already mapped -- then mapping in a different
+	// order, or once per arena instead of once per gap, is the lever. Flat rows
+	// that rise with span mean bytes -- then only mapping less helps, which is
+	// what the architecture document claims and this data exists to test.
+	keys := make([][2]int, 0, len(cells))
+	for key := range cells {
+		keys = append(keys, key)
+	}
+
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i][0] != keys[j][0] {
+			return keys[i][0] < keys[j][0]
+		}
+
+		return keys[i][1] < keys[j][1]
+	})
+
+	for _, key := range keys {
+		cell := cells[key]
+		sort.Slice(cell.samples, func(i, j int) bool { return cell.samples[i] < cell.samples[j] })
+
+		fmt.Fprintf(os.Stderr,
+			"[SAP]   map census: %s at +%d MiB: n=%d total=%s median=%s worst=%s\n",
+			chunkLabel(key[0]), key[1], cell.count,
+			cell.total.Round(time.Millisecond),
+			cell.samples[len(cell.samples)/2].Round(time.Millisecond),
+			cell.worst.Round(time.Millisecond))
+	}
 
 	r.deferFlush = false
 
