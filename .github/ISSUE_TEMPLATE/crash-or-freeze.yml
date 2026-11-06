@@ -1,0 +1,80 @@
+name: Crash or freeze
+description: The app disappears, stops responding, or is killed -- with or without a crash report.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two of the failure modes here do not produce a crash report: the guest
+        engine can end the process while it initialises, and iOS can kill the app
+        for memory while the emulated runtime works. That is why the questions
+        below ask *when* rather than *what*.
+
+  - type: dropdown
+    id: moment
+    attributes:
+      label: When did it happen
+      description: Pick the closest one -- it changes which part of the code is suspect.
+      options:
+        - Immediately at launch, before a screen appeared
+        - On the first tap after launch
+        - During sign-in
+        - During a search
+        - After tapping download, while the app said it was working
+        - While the app was in the background
+        - Only sometimes, no pattern
+    validations:
+      required: true
+
+  - type: dropdown
+    id: report
+    attributes:
+      label: Is there a crash report?
+      description: Settings -> Privacy & Security -> Analytics Data -> `DLiPARebuild-...ips`. "No report" is a real answer and it is useful.
+      options:
+        - Yes, attached below
+        - No report at all
+        - Did not look
+    validations:
+      required: true
+
+  - type: textarea
+    id: ips
+    attributes:
+      label: Crash report or `.ips` file
+      description: The first 40 lines are enough, including the `Exception Type` and the top frames. Skip if there is no report.
+      render: text
+
+  - type: textarea
+    id: log
+    attributes:
+      label: App log
+      description: Diagnostics tab -> share, if the app survives long enough to export. Keep the five `BuildID:` lines. If the app dies before you can reach that screen, say so and describe how long it took.
+      render: text
+
+  - type: dropdown
+    id: installed
+    attributes:
+      label: How the app got onto the device
+      options:
+        - TrollStore
+        - Sideloaded with a certificate (AltStore, Xcode, third-party signing)
+        - Updated over an existing install
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: ios
+    attributes:
+      label: iOS version and device
+      description: The device model matters as much as the version -- the emulated runtime is single-threaded and memory-tight, and older devices feel it first.
+      placeholder: 16.7.10, iPhone X
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How often, and can you repeat it
+      description: Once in ten launches is a different bug from every time. If it repeats, the exact steps matter more than anything else in this form.

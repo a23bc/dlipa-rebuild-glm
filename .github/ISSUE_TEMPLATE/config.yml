@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation and usage
+    url: https://github.com/a23bc/dlipa-rebuild-glm#installing
+    about: How to get the artifact, install it, and what the app does. Read this before reporting that something does not work.
