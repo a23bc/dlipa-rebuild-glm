@@ -54,6 +54,21 @@ enum AssetStaging {
             .appendingPathComponent("SapAssets", isDirectory: true)
     }
 
+    /// Whether signing anything right now would mean taking about 212 MB that
+    /// is neither on the device nor agreed to.
+    ///
+    /// One answer for three screens -- the shell at launch, the account sheet
+    /// before a handshake, the search screen before a download -- because they
+    /// have to agree. It is false for a build that stages from its own bundle,
+    /// false once the four files are in the cache (SapbridgeAssetsCached stats
+    /// them and reads no byte, so a device that already paid is not asked
+    /// again), and false for the rest of a session after someone has said yes,
+    /// which is what keeps a fetch that was allowed and then failed from
+    /// re-asking on every action.
+    static func needsConsent() -> Bool {
+        resolvesOnDemand && !SapbridgeAssetsCached() && !SapbridgeAssetFetchAllowed()
+    }
+
     /// Stages the assets in the background.
     ///
     /// @param progress called on a background queue with 0...1, or nil.

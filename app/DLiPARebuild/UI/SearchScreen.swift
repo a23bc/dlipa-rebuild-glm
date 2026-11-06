@@ -536,7 +536,7 @@ final class SearchModel: ObservableObject {
         // after: that check answers by signing a request, and signing is what
         // needs them. Asking afterwards would either mean the data was already
         // spent, or mean a refusal the person cannot explain.
-        if assetsAreMissing() {
+        if AssetStaging.needsConsent() {
             pendingAssets = (app, versionID)
             alert = .fetchAssets(app)
 
@@ -563,18 +563,6 @@ final class SearchModel: ObservableObject {
         queueDownload(app, versionID: versionID)
     }
 
-    /// Whether signing anything right now would mean taking 212 MB that is
-    /// neither on the device nor agreed to.
-    ///
-    /// Three conditions, because there are three ways this is not a question:
-    /// the build ships the binaries, they are already cached -- `SapbridgeAssetsCached`
-    /// stats them and reads no byte, so asking again on a device that paid once
-    /// would be a false alarm -- or a person has already said yes this session,
-    /// which the bridge remembers and the download path is allowed to assume.
-    private func assetsAreMissing() -> Bool {
-        AssetStaging.resolvesOnDemand && !SapbridgeAssetsCached() && !SapbridgeAssetFetchAllowed()
-    }
-
     /// Queues a download -- or asks first, if signing it would mean fetching
     /// 212 MB that is not on this device yet.
     ///
@@ -582,7 +570,7 @@ final class SearchModel: ObservableObject {
     /// the point of handover, because the two are reached from different places:
     /// a licence taken from the alert comes back here without the first gate.
     private func queueDownload(_ app: StoreApp, versionID: String?) {
-        if assetsAreMissing() {
+        if AssetStaging.needsConsent() {
             pendingAssets = (app, versionID)
             alert = .fetchAssets(app)
 

@@ -194,6 +194,13 @@ struct SignInView: View {
     @State private var email = ""
     @State private var password = ""
     @State private var errorText = ""
+    /// The notice that the handshake needs the signing components and nobody
+    /// has agreed to fetch them. Shown instead of a refusal: this is the screen
+    /// a first-time user reaches, and the launch question deliberately does not
+    /// ask them (RootTabView) because nobody wants a 212 MB modal before they
+    /// have chosen an account.
+    @State private var needsAssetFetch = false
+    @State private var fetchingAssets = false
 
     var body: some View {
         NavigationView {
@@ -210,9 +217,28 @@ struct SignInView: View {
                         Text(errorText).foregroundColor(.red)
                     }
                 }
+                // Asked here rather than assumed: signing in opens the signer,
+                // and the signer is the first thing that loads the binaries.
+                if needsAssetFetch {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("DLiPA has to open the signing runtime before Apple "
+                                 + "will look at these credentials, and this build does not "
+                                 + "carry the four components it runs. Taking them from "
+                                 + "Apple's restore image costs about 212 MB, once, and takes "
+                                 + "around a minute on a phone.")
+                                .font(.footnote)
+                            Button(fetchingAssets ? "Fetching..." : "Fetch and sign in") {
+                                fetchAssets()
+                            }
+                            .disabled(fetchingAssets)
+                        }
+                    }
+                }
                 Section {
                     Button("Sign in") { submit() }
-                        .disabled(model.busy || email.isEmpty || password.isEmpty)
+                        .disabled(model.busy || email.isEmpty || password.isEmpty
+                                  || fetchingAssets)
                 }
             }
             .navigationTitle("Add Account")
@@ -229,6 +255,46 @@ struct SignInView: View {
 
     private func submit() {
         errorText = ""
+
+        // Asked before anything is sent. Attempting the handshake anyway would
+        // only turn a question into an error line, and the bridge refuses
+        // while nobody has agreed, so nothing here can spend the data by
+        // accident.
+        if AssetStaging.needsConsent() {
+            needsAssetFetch = true
+
+            return
+        }
+
+        signIn()
+    }
+
+    /// Permission granted inside the sheet: fetch, then carry on with the
+    /// sign-in that was already asked for.
+    private func fetchAssets() {
+        fetchingAssets = true
+
+        Task {
+            do {
+                _ = try await AssetStaging.resolveFromApple()
+            } catch {
+                fetchingAssets = false
+                errorText = error.localizedDescription
+                AppLog.error("asset fetch from the sign-in sheet failed: "
+                                + error.localizedDescription, .assets)
+
+                return
+            }
+
+            fetchingAssets = false
+            needsAssetFetch = false
+            signIn()
+        }
+    }
+
+    /// One sign-in attempt, shared by the button and by the fetch that has to
+    /// come first on a device without the binaries.
+    private func signIn() {
         Task {
             do {
                 try await model.signIn(email: email, password: password, authCode: nil)
@@ -236,6 +302,10 @@ struct SignInView: View {
             } catch StoreError.twoFactorRequired {
                 onTwoFactorRequired(email, password)
                 dismiss()
+            } catch StoreError.assetsNotFetched {
+                // The launch question is deliberately not asked of a device
+                // with no account, so this is where that person hears it.
+                needsAssetFetch = true
             } catch {
                 errorText = error.localizedDescription
                 AppLog.error("sign-in failed: " + error.localizedDescription, .auth)

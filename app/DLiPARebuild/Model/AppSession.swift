@@ -428,6 +428,14 @@ final class AppSession: ObservableObject {
         guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
             throw StoreError.noBagEndpoint
         }
+        // Opening the signer is the first thing that loads the four Apple
+        // binaries, so it is where an unbundled build would silently take
+        // 212 MB of someone's data. The bridge refuses while nobody has
+        // agreed; saying so here, before the Task exists, keeps a refused
+        // handshake from being cached as a build that can never finish.
+        if AssetStaging.needsConsent() {
+            throw StoreError.assetsNotFetched
+        }
         let version = bag.signSapVersion
         let identity = hardware
         let build = Task {

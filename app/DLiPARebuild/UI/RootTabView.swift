@@ -88,21 +88,28 @@ struct RootTabView: View {
     // MARK: - The signing components
 
     /// Asks, once per launch, whether to take the binaries this build does not
-    /// carry.
+    /// carry -- and only of someone who already has an account.
     ///
-    /// The question lives here rather than next to the download because that is
-    /// not where the spending starts: creating a signer loads them, so the first
-    /// sign-in or a pre-warm reaches them long before anything is queued. The
-    /// bridge keeps the fetch closed until this screen is told yes, so "Later"
-    /// means no data leaves the phone, not merely no dialog.
+    /// Two reasons for the account test. Someone who has signed in before and
+    /// finds the cache empty is looking at a real event: iOS deleted a Caches
+    /// directory it is allowed to evict, or the folder was removed by hand, and
+    /// the next signed request will fail without those bytes. Asking then is the
+    /// whole point. Someone setting the app up for the first time is not: they
+    /// have not asked for anything yet, and a modal about 212 MB in the face of
+    /// a person who has not even chosen an account is how an app gets
+    /// uninstalled. That one is asked where the need actually appears, in the
+    /// account sheet before the handshake (AccountsScreen), which is the same
+    /// notice with the same button.
+    ///
+    /// The bridge holds the line either way: nothing downloads while the answer
+    /// is no, so a missed question shows up as a refusal, not a bill.
     ///
     /// `stageIfNeeded` was already called by AppDelegate; this joins that run
     /// and reads the answer it leaves behind.
     private func askAboutAssets() {
         AssetStaging.stageIfNeeded(progress: nil) { _ in
-            guard AssetStaging.resolvesOnDemand,
-                  !SapbridgeAssetsCached(),
-                  !SapbridgeAssetFetchAllowed() else { return }
+            guard AppSession.shared.activeAccount != nil,
+                  AssetStaging.needsConsent() else { return }
 
             Task { @MainActor in alert = .askAssets }
         }
