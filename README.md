@@ -2,28 +2,13 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-DLiPA stopped working because Apple now requires App Store private-API requests
-to carry an `X-Apple-ActionSignature` header, and because the download endpoint
-advertised in `bag.xml` moved to `ent/download`. This repository rebuilds the
-app with both changes, and builds an installable IPA on GitHub Actions.
+DLiPA stopped working because Apple now requires App Store private-API requests to carry an `X-Apple-ActionSignature` header, and because the download endpoint advertised in `bag.xml` moved to `ent/download`. This repository rebuilds the app with both changes, and builds an installable IPA on GitHub Actions.
 
-**Current state:** sign-in, kbsync, signing, search, account handling, version
-history and **download** all work on device. The download no longer goes through
-the classic `volumeStoreDownloadProduct` request — the Store's own code builds the
-`ent/download` request inside an emulated guest, which is what Apple now requires
-and what this project spent most of its effort arriving at. See
-[`docs/architecture.md`](docs/architecture.md) for how that works and why each
-piece is shaped the way it is.
+**Current state:** sign-in, kbsync, signing, search, account handling, version history and **download** all work on device. The download no longer goes through the classic `volumeStoreDownloadProduct` request — the Store's own code builds the `ent/download` request inside an emulated guest, which is what Apple now requires and what this project spent most of its effort arriving at. See [`docs/architecture.md`](docs/architecture.md) for how that works and why each piece is shaped the way it is.
 
-Downloads run in the background: starting one returns immediately, progress is on
-the Downloads tab, and the app stays usable while the emulated Store runtime
-works. Opening that runtime takes about a second on device now; it used to take
-a minute and a half, which is what "the app stays usable" was originally a
-promise about.
+Downloads run in the background: starting one returns immediately, progress is on the Downloads tab, and the app stays usable while the emulated Store runtime works. Opening that runtime takes about a second on device now; it used to take a minute and a half, which is what "the app stays usable" was originally a promise about.
 
-**No Apple Developer account is required.** The IPA is sealed but not signed with a certificate, and you
-sign it with your own Apple ID using AltStore or Sideloadly — the same flow the
-original DLiPA README recommended.
+**No Apple Developer account is required.** The IPA is sealed but not signed with a certificate, and you sign it with your own Apple ID using AltStore or Sideloadly — the same flow the original DLiPA README recommended.
 
 ---
 
@@ -39,8 +24,7 @@ original DLiPA README recommended.
 | guid was a random UUID | `ent/download` requires a 6-byte GUID | `HardwareIdentity.stable()` |
 | dsid was a string | `ent/download` requires a decimal DSID | `SAPSigner.parseDSID` |
 
-The controlled experiment behind the first two rows is in
-`../SIGNATURE_EXPERIMENT.md`.
+The controlled experiment behind the first two rows is in `../SIGNATURE_EXPERIMENT.md`.
 
 ---
 
@@ -92,18 +76,11 @@ The controlled experiment behind the first two rows is in
 
 ## Documentation
 
-* **[docs/architecture.md](docs/architecture.md)** — how the pieces fit: the two
-  tenants on one guest, why the Store runtime is opened once and kept open, the
-  download flow end to end, the decisions that were forced by specific failures,
-  and where the time goes on device.
-* **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to work on this without a Mac:
-  the two CI layers and what each can prove, the commit-message rules that
-  actually fail pushes, and what counts as verified.
+* **[docs/architecture.md](docs/architecture.md)** — how the pieces fit: the two tenants on one guest, why the Store runtime is opened once and kept open, the download flow end to end, the decisions that were forced by specific failures, and where the time goes on device.
+* **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to work on this without a Mac: the two CI layers and what each can prove, the commit-message rules that actually fail pushes, and what counts as verified.
 * `DELIVERY_STATUS.md` — what works today, what does not, and the evidence.
 * `sapbridge/VERIFICATION.md` — build and test matrix for the Go side.
-* **[docs/RELEASING.md](docs/RELEASING.md)** — which version field is a decision and
-  which is a run counter, what the artifact name carries, and how the bundle is
-  sealed.
+* **[docs/RELEASING.md](docs/RELEASING.md)** — which version field is a decision and which is a run counter, what the artifact name carries, and how the bundle is sealed.
 
 ---
 
@@ -113,14 +90,8 @@ The controlled experiment behind the first two rows is in
 
 Push to `main` or open a pull request. The workflow runs two jobs:
 
-1. **go-bridge** — unit tests, cross-compiles Unicorn for iOS arm64, binds the
-   Go module into `SapBridge.framework` with gomobile.
-2. **app** — downloads the framework and builds the app. Nothing here touches
-   the four Apple binaries: they are not in the bundle, and the app fetches
-   them from Apple on the device the first time it needs to sign. The job then
-   seals it with a generated CodeResources, packages it as
-   `DLiPARebuild-<digest>.ipa`, uploads it as an artifact. Tagged pushes also
-   attach it to a release.
+1. **go-bridge** — unit tests, cross-compiles Unicorn for iOS arm64, binds the Go module into `SapBridge.framework` with gomobile.
+2. **app** — downloads the framework and builds the app. Nothing here touches the four Apple binaries: they are not in the bundle, and the app fetches them from Apple on the device the first time it needs to sign. The job then seals it with a generated CodeResources, packages it as `DLiPARebuild-<digest>.ipa`, uploads it as an artifact. Tagged pushes also attach it to a release.
 
 Run it manually from the Actions tab with **Run workflow**.
 
@@ -150,61 +121,36 @@ Run it manually from the Actions tab with **Run workflow**.
 
 ## Installing
 
-Download the `DLiPARebuild-<digest>.ipa` artifact from the workflow run - the name
-carries a short digest of the binary, so a stale copy cannot be mistaken for the
-current build (or a release), then:
+Download the `DLiPARebuild-<digest>.ipa` artifact from the workflow run - the name carries a short digest of the binary, so a stale copy cannot be mistaken for the current build (or a release), then:
 
 - **AltStore** — My Apps tab, tap +, choose the IPA, sign in with your Apple ID
 - **Sideloadly** — drag the IPA in, sign in
 
-Free Apple IDs get a 7-day certificate, so re-sign weekly. A paid developer
-account lasts a year.
+Free Apple IDs get a 7-day certificate, so re-sign weekly. A paid developer account lasts a year.
 
 ---
 
 ## Scope
 
-This is a **functional core**, not a full UI recreation of DLiPA 1.4. It
-implements sign-in, search, version history and the signed download path — the
-parts that needed fixing.
+This is a **functional core**, not a full UI recreation of DLiPA 1.4. It implements sign-in, search, version history and the signed download path — the parts that needed fixing.
 
 Known gaps, in the order they are likely to matter:
 
-* the classic `volumeStoreDownloadProduct` path is still present as a fallback.
-  It answers `2042` and its `buyProduct` fallback answers `SystemError`, so it
-  contributes nothing; it goes once the encoder path has run in the field.
-* purchases, and therefore apps the account does not already own, are not
-  supported. This downloads, not buys.
-* the store runtime is opened once per process and belongs to one account, so a
-  second account in the same launch is refused rather than served — restarting
-  the app is the workaround today. The open itself takes about a second (the
-  architecture note records what it used to cost, and why).
+* the classic `volumeStoreDownloadProduct` path is still present as a fallback. It answers `2042` and its `buyProduct` fallback answers `SystemError`, so it contributes nothing; it goes once the encoder path has run in the field.
+* purchases, and therefore apps the account does not already own, are not supported. This downloads, not buys.
+* the store runtime is opened once per process and belongs to one account, so a second account in the same launch is refused rather than served — restarting the app is the workaround today. The open itself takes about a second (the architecture note records what it used to cost, and why).
 
-The original app's 100 Objective-C classes, 12 localisations, CocoaHTTPServer
-install flow and SSZipArchive packaging are not reproduced; the source was never
-published, only the compiled IPA.
+The original app's 100 Objective-C classes, 12 localisations, CocoaHTTPServer install flow and SSZipArchive packaging are not reproduced; the source was never published, only the compiled IPA.
 
 ## Licence
 
-This project's own code is [AGPL-3.0](LICENSE). Code inherited from DLiPA and
-ipatool stays under MIT; see [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+This project's own code is [AGPL-3.0](LICENSE). Code inherited from DLiPA and ipatool stays under MIT; see [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
-Components it depends on keep their own terms, and some of them matter:
-**Unicorn is GNU GPL v2 and is statically linked**, so its terms travel with
-the binary. It is not upstream Unicorn: the build uses
-[1rhino2/unicorn-tci](https://github.com/1rhino2/unicorn-tci), a fork with the
-QEMU TCI interpreter restored, pinned at a commit. Upstream ships only the JIT,
-and iOS refuses executable anonymous memory on a non-jailed device, so the
-translation cache cannot be allocated at all. The full breakdown - ipatool, Unicorn, the Go dependencies, the
-Apple binaries, and the resources taken from the original DLiPA 1.4 - is in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+Components it depends on keep their own terms, and some of them matter: **Unicorn is GNU GPL v2 and is statically linked**, so its terms travel with the binary. It is not upstream Unicorn: the build uses [1rhino2/unicorn-tci](https://github.com/1rhino2/unicorn-tci), a fork with the QEMU TCI interpreter restored, pinned at a commit. Upstream ships only the JIT, and iOS refuses executable anonymous memory on a non-jailed device, so the translation cache cannot be allocated at all. The full breakdown - ipatool, Unicorn, the Go dependencies, the Apple binaries, and the resources taken from the original DLiPA 1.4 - is in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Acknowledgements
 
-- [unicorn-tci](https://github.com/1rhino2/unicorn-tci) by 1rhino2 — the TCI fork
-  of Unicorn this app is built against, GPL v2 with a linking exception
-- [Unicorn](https://github.com/unicorn-engine/unicorn) by Nguyen Anh Quynh and
-  contributors — the CPU emulator that fork derives from
-- [ipatool](https://github.com/majd/ipatool) by Majd Alfhaily — the SAP signing
-  stack this project vendors, MIT licensed
+- [unicorn-tci](https://github.com/1rhino2/unicorn-tci) by 1rhino2 — the TCI fork of Unicorn this app is built against, GPL v2 with a linking exception
+- [Unicorn](https://github.com/unicorn-engine/unicorn) by Nguyen Anh Quynh and contributors — the CPU emulator that fork derives from
+- [ipatool](https://github.com/majd/ipatool) by Majd Alfhaily — the SAP signing stack this project vendors, MIT licensed
 - [DLiPA](https://github.com/AhmedBafkir/DLiPA) by Ahmed Bafkir — the original app
