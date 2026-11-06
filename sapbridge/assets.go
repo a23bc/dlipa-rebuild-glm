@@ -3,10 +3,12 @@ package sapbridge
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
 )
 
 // BundleDir is where the app looks for the four Apple binaries. The iOS app
@@ -67,13 +69,41 @@ func loadBundle() (assets.Bundle, error) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	bundle, err := assets.Load(ctx)
+	cancel()
+	if err == nil {
+		bundleCache = &bundle
+		bundleCached = dir
+		return bundle, nil
+	}
+
+	// Nothing staged and nothing cached. Resolve the profile from Apple's pinned
+	// restore image: the extractor checks size and SHA-256 before it writes, so
+	// the cache ends up holding exactly the bytes the digests describe, or
+	// nothing. A phone measured this at 211.7 MiB over 457 range requests in
+	// 52 seconds, which is why it gets its own generous context -- the 30 second
+	// budget above is for reading a local copy, not for a download.
+	fmt.Fprintf(os.Stderr,
+		"sap assets: not cached (%v); resolving from Apple, about 212 MB\n", err)
+
+	fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancelFetch()
+	if _, fetchErr := assetsremote.Load(fetchCtx); fetchErr != nil {
+		return assets.Bundle{}, fmt.Errorf(
+			"fetch Apple SAP assets after a cache miss (%v): %w", err, fetchErr)
+	}
+
+	// Read the result back through the caching loader instead of memoising what
+	// the extractor returned: that one is the fat 125 MB image, and a handshake
+	// already leaves the process near 215 MB resident. Holding both is the copy
+	// that jetsam used to kill silently between the handshake and the next step;
+	// readCache hands back the arm64 slices the engine actually maps.
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelRead()
+
+	bundle, err = assets.Load(readCtx)
 	if err != nil {
-		msg := "Apple SAP assets are not present in the cache directory; "
-		msg += "copy the four pinned binaries there or call SetBundleDir: "
-		return assets.Bundle{}, fmt.Errorf("%s%w", msg, err)
+		return assets.Bundle{}, fmt.Errorf("read the fetched SAP asset cache: %w", err)
 	}
 
 	bundleCache = &bundle
