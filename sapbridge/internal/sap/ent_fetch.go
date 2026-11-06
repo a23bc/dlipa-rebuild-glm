@@ -163,26 +163,8 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 				s.storeRuntimeDSID, dsid)
 		}
 
-		// The blob is the one per-account input this request has, and generating it
-		// needs a machine with no store session mapped into it -- the note above,
-		// and E3 died exactly there. So a cross-account download runs on a blob that
-		// memory or disk already holds, and a missing one is refused rather than
-		// generated in front of an open session.
-		var cached bool
-
-		blob, cached = s.cachedKBSync(dsid)
-		if !cached {
-			return EntDownloadResult{}, fmt.Errorf(
-				"ent download: DSID %d has no cached kbsync to reuse the store runtime with; "+
-					"download once with this account after a restart to generate one "+
-					"(generating it while a store session is open is the failure the note above records)",
-				dsid)
-		}
-
-		fromCache = true
-
-		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing DSID %d's store runtime for DSID %d (kbsync %d bytes)\n",
-			s.storeRuntimeDSID, dsid, len(blob))
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing DSID %d's store runtime for DSID %d\n",
+			s.storeRuntimeDSID, dsid)
 	}
 
 	if runtime == nil {
@@ -212,11 +194,27 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: store runtime opened\n")
 	} else {
-		// Same account, or the cross-account reuse above -- which already set both
-		// the blob and fromCache, so it must not be overwritten from the slot here.
-		if len(blob) == 0 {
-			blob = s.kbsyncBlob
+		// The blob belongs to the account, not to the session, and the slot holds
+		// whichever account used it last: after a cross-account request the slot is
+		// that other account's. Reading it here without asking which dsid it carries
+		// is what sent A's request with B's blob on device and came back as
+		// `ent/download (encoder) HTTP 500, 0 bytes` with an empty body -- and it is
+		// the most likely author of the note that a second account is answered with a
+		// framework error, since the slot has only ever held one blob.
+		//
+		// Resolution is memory or disk only. Generating runs the guest, and a store
+		// session is mapped in it right now.
+		var cached bool
+
+		blob, cached = s.cachedKBSync(dsid)
+		if !cached {
+			return EntDownloadResult{}, fmt.Errorf(
+				"ent download: no cached kbsync for DSID %d while its store session is open; "+
+					"restart the app and download once with this account to generate one",
+				dsid)
 		}
+
+		fromCache = true
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing the store runtime\n")
 	}
