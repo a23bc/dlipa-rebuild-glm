@@ -165,10 +165,12 @@ every phase that follows:
 | `phase hooks` | `1m33.985s` – `1m39.383s` | `1.006s` – `1.215s` |
 
 The on-demand open maps *more* regions (193 against 170) and finishes that phase
-in 127 ms instead of 62.1 s, so the regions were never what it was paying for —
-the shared cache already mapped when the phase ran was. That is the mechanism
-behind "map less", and the reason the default now indexes the cache and hands out
-a page per fault:
+in 127 ms instead of 62.1 s. The region set barely differs between the two runs,
+so neither the count nor the bytes in it can account for a 490-fold gap. What
+does differ, by 38.8 MiB, is the shared cache already in the address space when
+the phase runs — which makes the 0.8 s per MiB a rate paid inside the eager
+configuration rather than a constant of the call. That is the reason the default
+now indexes the cache and hands out a page per fault:
 
 ```
 open(): indexed 9903 shared-cache pages in 3833 runs, 336 ms, mapped none (1631 dropped: inside a loaded image, 186130 instructions rewritten)
