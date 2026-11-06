@@ -1,5 +1,7 @@
 # DLiPA — SAP-adapted rebuild
 
+[English](README.md) · [简体中文](README.zh-CN.md)
+
 DLiPA stopped working because Apple now requires App Store private-API requests
 to carry an `X-Apple-ActionSignature` header, and because the download endpoint
 advertised in `bag.xml` moved to `ent/download`. This repository rebuilds the
@@ -52,7 +54,8 @@ The controlled experiment behind the first two rows is in
           AppStoreClient.swift   signed transport, bag, login, download
           StoreBag.swift         bag.xml parsing (handles loc- prefix)
           SAPSigner.swift        wraps the Go bridge
-          AssetStaging.swift     copies the 126 MB assets out of the bundle
+          AssetStaging.swift     stages the SAP binaries: copied from the bundle
+                                 when one ships them, fetched from Apple otherwise
         Model/
           AppSession.swift       session, account, the download primitive
           DownloadManager.swift  jobs that outlive the screen that started them
@@ -90,7 +93,7 @@ The controlled experiment behind the first two rows is in
 ## Documentation
 
 * **[docs/architecture.md](docs/architecture.md)** — how the pieces fit: the two
-  tenants on one guest, why the Store runtime can only be opened once, the
+  tenants on one guest, why the Store runtime is opened once and kept open, the
   download flow end to end, the decisions that were forced by specific failures,
   and where the time goes on device.
 * **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to work on this without a Mac:
@@ -98,6 +101,9 @@ The controlled experiment behind the first two rows is in
   actually fail pushes, and what counts as verified.
 * `DELIVERY_STATUS.md` — what works today, what does not, and the evidence.
 * `sapbridge/VERIFICATION.md` — build and test matrix for the Go side.
+* **[docs/RELEASING.md](docs/RELEASING.md)** — which version field is a decision and
+  which is a run counter, what the artifact name carries, and how the bundle is
+  sealed.
 
 ---
 
@@ -112,8 +118,9 @@ Push to `main` or open a pull request. The workflow runs two jobs:
 2. **app** — downloads the framework and builds the app. Nothing here touches
    the four Apple binaries: they are not in the bundle, and the app fetches
    them from Apple on the device the first time it needs to sign. The job then
-   seals it with a generated CodeResources, packages it as `DLiPA-<digest>.ipa`, uploads it
-   as an artifact. Tagged pushes also attach it to a release.
+   seals it with a generated CodeResources, packages it as
+   `DLiPARebuild-<digest>.ipa`, uploads it as an artifact. Tagged pushes also
+   attach it to a release.
 
 Run it manually from the Actions tab with **Run workflow**.
 
