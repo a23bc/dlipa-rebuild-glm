@@ -112,6 +112,19 @@ type Runtime struct {
 	// The address the last step was called for, so a guard that fires can say
 	// which instruction branched to the bad target.
 	lastPC uint64
+	// Hook census, printed once per bounded run and never read for behaviour.
+	//
+	// open() installs r.step as a code hook over the whole address space, so
+	// every guest instruction costs a call back into Go, two map lookups and a
+	// deferred recover. Whether that is worth cutting -- by registering the 13,370
+	// recorded call sites as point hooks instead -- depends on how often the hook
+	// actually fires, and on whether Unicorn's TCI calls it per instruction or per
+	// translated block. hookGaps answers the granularity question: a guest running
+	// straight lines sees address == previousPC+4, so gaps near zero means every
+	// instruction, while a large gap count means only block starts.
+	hookCalls uint64
+	hookGaps  uint64
+	hookHits  uint64
 	// Which host writes have already been reported, keyed by reason.
 	hostWriteSaid map[string]bool
 	// Set before the hook is removed, and read at the top of step. The hook has
@@ -1446,7 +1459,20 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 
 	// No wall-clock timeout: the instruction budget bounds the run, and the
 	// timeout's QEMU timer thread is a resource this process ran out of.
+	runStart := time.Now()
+
 	err = r.engine.StartBounded(entry, returnPC, 0, 20_000_000)
+
+	// The census, printed with every bounded run. The four counts are
+	// cumulative rather than per run: the diagnostics tab shows the log tail, so
+	// the difference between two lines is one run's cost and the line itself says
+	// what the whole-address-space hook has been called for all session. The wall
+	// time is measured around the run, not around the callback, because one clock
+	// read per run is free and one per instruction would be the thing under
+	// measurement.
+	fmt.Fprintf(os.Stderr,
+		"[SAP] hook census: %d entries (%d driving, %d not the next instruction, %d dispatch hits) last run %s\n",
+		r.hookCalls, r.steps, r.hookGaps, r.hookHits, time.Since(runStart).Round(time.Millisecond))
 
 	if r.fault != nil {
 		return 0, r.fault
@@ -1486,6 +1512,11 @@ func (r *Runtime) step(address uint64, _ uint32) {
 
 	previousPC := r.lastPC
 	r.lastPC = address
+	r.hookCalls++
+
+	if previousPC != 0 && address != previousPC+4 {
+		r.hookGaps++
+	}
 
 	// Dispatch first, whoever is driving. Call sites and callbacks are keyed by
 	// address, so they are unambiguous on a shared engine -- and the guest that
@@ -1589,6 +1620,7 @@ func (r *Runtime) step(address uint64, _ uint32) {
 // returning its own argument.
 func (r *Runtime) dispatch(address uint64) bool {
 	if callback := r.callbacks[address]; callback != nil {
+		r.hookHits++
 		callback()
 
 		return true
@@ -1598,6 +1630,7 @@ func (r *Runtime) dispatch(address uint64) bool {
 	// runs under the SAP machine: gated on r.running it stayed empty exactly
 	// during the calls worth seeing.
 	if name := r.entries[address]; name != "" {
+		r.hookHits++
 		receiver, _ := r.engine.RegRead(unicorn.RegX0)
 		r.trace = append(r.trace, fmt.Sprintf("%s(recv=%#x)", name, receiver))
 		if len(r.trace) > 32 {
