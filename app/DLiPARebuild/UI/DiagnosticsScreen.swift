@@ -111,22 +111,23 @@ struct DiagnosticsScreen: View {
 
     /// Uses the screen's own running state and clock, like the other probes: a
     /// second progress mechanism on the same screen is a second thing to go wrong.
+    ///
+    /// Through AssetStaging rather than straight at the bridge, so that pressing
+    /// this while a download is already waiting on the same fetch joins that run
+    /// instead of starting a second 212 MB download of the same restore image.
     private func fetchAssets() {
         running = true
         started = Date()
 
-        Task.detached(priority: .utility) {
-            var failure: NSError?
-            let report = SapbridgeFetchSapAssets(&failure)
-
-            if let failure {
+        AssetStaging.resolveFromApple { report, error in
+            if let error {
                 // The cost rides inside the error too, so this line is the whole answer.
-                AppLog.error("fetch assets failed: " + failure.localizedDescription, .sap)
+                AppLog.error("fetch assets failed: " + error.localizedDescription, .sap)
             } else {
                 AppLog.info("fetch assets finished: " + (report ?? "no report"), .sap)
             }
 
-            await MainActor.run { running = false }
+            Task { @MainActor in running = false }
         }
     }
 

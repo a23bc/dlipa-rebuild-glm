@@ -45,6 +45,11 @@ FOUNDATION_EXPORT SapbridgeSigner * _Nullable SapbridgeNew(NSString * _Nullable 
 FOUNDATION_EXPORT BOOL SapbridgeParseDSID(NSString * _Nullable value, int64_t * _Nullable ret0_, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT NSString * _Nonnull SapbridgeSerialNumber(NSData * _Nullable hardwareID, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT void SapbridgeSetBundleDir(NSString * _Nullable path);
+// No error parameter in the Go signature, so gomobile emits a plain BOOL and
+// the generated header keeps this line inside the nonnull region. Copying it
+// below NS_ASSUME_NONNULL_END, where its neighbours are nullable, is what makes
+// the generated and hand-written headers disagree.
+FOUNDATION_EXPORT BOOL SapbridgeAssetsCached(void);
 
 NS_ASSUME_NONNULL_END
 FOUNDATION_EXPORT NSString * _Nullable SapbridgePatchIPA(NSString * _Nullable path, NSString * _Nullable email, NSError * _Nullable * _Nullable error);

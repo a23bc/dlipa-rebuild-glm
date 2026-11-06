@@ -16,6 +16,13 @@ enum SearchAlert: Identifiable {
     case takeLicence(StoreApp)
     /// The store refused, and its words are the only explanation there is.
     case licenceFailed(String)
+    /// Permission to fetch the signing components. This build does not carry
+    /// them, and the first signature needs them, so the alternative to asking
+    /// is a download that quietly spends 212 MB of someone else's data.
+    case fetchAssets(StoreApp)
+    /// Apple refused, or the phone did. The bridge's own words, which carry the
+    /// cost it reached before stopping.
+    case fetchFailed(String)
 
     var id: String {
         switch self {
@@ -23,6 +30,10 @@ enum SearchAlert: Identifiable {
             return "ask:" + String(app.trackId)
         case .licenceFailed(let message):
             return "failed:" + message
+        case .fetchAssets(let app):
+            return "assets:" + String(app.trackId)
+        case .fetchFailed(let message):
+            return "fetch-failed:" + message
         }
     }
 }
@@ -91,8 +102,9 @@ struct SearchScreen: View {
 
     // MARK: - The menu
 
-    /// The two things this screen asks: permission before a licence is taken, and
-    /// the store's own words when it refuses one.
+    /// The questions this screen asks: permission before a licence is taken,
+    /// permission before 212 MB is fetched from Apple, and the store's or
+    /// Apple's own words when either refuses.
     ///
     /// Its own function for the same reason the action sheet is: the buttons'
     /// closures are checked here against Alert.Button instead of being inferred
@@ -113,6 +125,24 @@ struct SearchScreen: View {
                          })
         case .licenceFailed(let message):
             return Alert(title: Text("Licence"),
+                         message: Text(message),
+                         dismissButton: .default(Text("OK")))
+        case .fetchAssets(let app):
+            return Alert(title: Text("Fetch the signing components?"),
+                         message: Text("This build does not carry the four Apple binaries. "
+                                       + "Signing " + app.trackName + " needs them, so the app "
+                                       + "takes them from Apple's macOS restore image: about "
+                                       + "212 MB over roughly 450 requests, around a minute on "
+                                       + "a phone. It happens once, and the download is queued "
+                                       + "after it."),
+                         primaryButton: .default(Text("Fetch and download")) {
+                             Task { await model.grantAssetsFetch() }
+                         },
+                         secondaryButton: .cancel(Text("Cancel")) {
+                             model.declineAssetsFetch()
+                         })
+        case .fetchFailed(let message):
+            return Alert(title: Text("Signing components"),
                          message: Text(message),
                          dismissButton: .default(Text("OK")))
         }
@@ -423,6 +453,8 @@ final class SearchModel: ObservableObject {
 
     private var lastQuery = ""
     private var licenceVersion: String?
+    /// The download waiting behind the question about the signing components.
+    private var pendingAssets: (app: StoreApp, versionID: String?)?
 
     private static let historyKey = "com.a23bc.dliparebuild.searchHistory"
     private static let historyLimit = 12
@@ -517,8 +549,61 @@ final class SearchModel: ObservableObject {
             return
         }
 
+        queueDownload(app, versionID: versionID)
+    }
+
+    /// Queues a download -- or asks first, if signing it would mean fetching
+    /// 212 MB that is not on this device yet.
+    ///
+    /// The question is only for the builds that ship without the binaries, and
+    /// only while they are genuinely absent: `SapbridgeAssetsCached` stats the
+    /// cache rather than reading it, so a device that already fetched once is
+    /// not asked to pay again.
+    private func queueDownload(_ app: StoreApp, versionID: String?) {
+        if !AssetStaging.isReady, AssetStaging.resolvesOnDemand, !SapbridgeAssetsCached() {
+            pendingAssets = (app, versionID)
+            alert = .fetchAssets(app)
+
+            return
+        }
+
         DownloadManager.shared.start(app, versionID: versionID)
         status = "Queued " + app.trackName
+    }
+
+    /// Permission granted: fetch, then queue the download that waited for it.
+    func grantAssetsFetch() async {
+        alert = nil
+
+        guard let pending = pendingAssets else { return }
+        pendingAssets = nil
+
+        // A minute of nothing happening on screen reads as a hung app, so the
+        // wait uses the card the licence wait already uses.
+        workingStatus = "Fetching the signing components from Apple..."
+        workingDone = false
+        defer { workingStatus = nil }
+
+        do {
+            let report = try await AssetStaging.resolveFromApple()
+            AppLog.info("signing components fetched before a download: " + report, .assets)
+        } catch {
+            AppLog.error("fetching the signing components failed: "
+                            + error.localizedDescription, .assets)
+            alert = .fetchFailed(error.localizedDescription)
+
+            return
+        }
+
+        DownloadManager.shared.start(pending.app, versionID: pending.versionID)
+        status = "Queued " + pending.app.trackName
+    }
+
+    /// Permission refused. Nothing was fetched and nothing was queued.
+    func declineAssetsFetch() {
+        alert = nil
+        pendingAssets = nil
+        status = ""
     }
 
     /// Takes a licence without leaving the screen.
@@ -532,9 +617,12 @@ final class SearchModel: ObservableObject {
 
         guard await takeLicence(app) else { return }
 
-        DownloadManager.shared.start(app, versionID: licenceVersion)
+        // Through queueDownload rather than straight at the manager: the licence
+        // can be the second question in a row, and the one about the signing
+        // components still has to be asked.
+        let versionID = licenceVersion
         licenceVersion = nil
-        status = "Queued " + app.trackName
+        queueDownload(app, versionID: versionID)
     }
 
     /// Runs one licence request under the card, and says whether it worked.

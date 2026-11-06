@@ -112,6 +112,17 @@ func loadBundle() (assets.Bundle, error) {
 	return bundle, nil
 }
 
+// AssetsCached reports whether the four Apple binaries are already on this
+// device, in the cache the loader writes.
+//
+// The app asks before it offers to fetch them. It only needs to ask when there
+// is a fetch to make: the download costs about 212 MB once, and after that the
+// answer is on disk, so asking again would be a false alarm about someone else
+// data plan.
+func AssetsCached() bool {
+	return assets.Cached()
+}
+
 // appleMediaServicesImage returns the AppleMediaServices bytes the store
 // runtime signs with.
 //

@@ -37,6 +37,13 @@ enum AssetStaging {
     private static var isStaging = false
     private static let stagingLock = NSLock()
 
+    /// True while a resolveFromApple run is in flight, so a second caller joins
+    /// it instead of starting a second download of the same restore image.
+    private static var isResolving = false
+
+    /// Callers that arrived during a resolve; answered with that run's result.
+    private static var resolveWaiters: [(String?, Error?) -> Void] = []
+
     /// Callers that arrived while a staging run was already in flight. They are
     /// answered when that run finishes, with the same error the first caller
     /// gets -- returning nil to them meant "ready" before anything was copied.
@@ -210,6 +217,55 @@ enum AssetStaging {
         DispatchQueue.main.async {
             completion(nil)
             for waiter in pending { waiter(nil) }
+        }
+    }
+
+    /// Fetches the four binaries from Apple through the bridge.
+    ///
+    /// A build that ships no binaries needs this before it can sign anything,
+    /// and it costs about 212 MB of someone else's data, so callers ask first
+    /// rather than running it from the launch path.
+    ///
+    /// @param completion called on the main queue once with the bridge's cost
+    ///   line, or with an error. A call that arrives while a fetch is running
+    ///   is answered with that run's result instead of starting a second one.
+    static func resolveFromApple(completion: @escaping (String?, Error?) -> Void) {
+        stagingLock.lock()
+        if isResolving {
+            resolveWaiters.append(completion)
+            stagingLock.unlock()
+            return
+        }
+        isResolving = true
+        stagingLock.unlock()
+
+        DispatchQueue.global(qos: .utility).async {
+            var failure: NSError?
+            let report = SapbridgeFetchSapAssets(&failure)
+
+            stagingLock.lock()
+            isResolving = false
+            let pending = resolveWaiters
+            resolveWaiters.removeAll()
+            stagingLock.unlock()
+
+            DispatchQueue.main.async {
+                completion(report, failure)
+                for waiter in pending { waiter(report, failure) }
+            }
+        }
+    }
+
+    /// The same fetch, for the callers that queue a download behind it.
+    static func resolveFromApple() async throws -> String {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+            resolveFromApple { report, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume(returning: report ?? "no report")
+                }
+            }
         }
     }
 }
