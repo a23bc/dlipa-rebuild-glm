@@ -357,6 +357,11 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	return result, nil
 }
 
+// SetLazyCachePages decides whether the store runtime maps the shared cache up
+// front or hands it out a page at a time. It sits beside the open that reads it,
+// because that call is where the consequence lands.
+func SetLazyCachePages(on bool) { emulator.SetLazyCachePages(on) }
+
 // kbsyncCachePath is beside the staged assets: writable, already created by the
 // staging step, and wiped with the app.
 func kbsyncCachePath(dsid uint64) string {

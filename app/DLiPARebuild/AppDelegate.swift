@@ -108,6 +108,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             UserDefaults.standard.set(current, forKey: buildKey)
         }
 
+        // Read before anything can open the store runtime: open() decides once,
+        // from this, whether the shared cache is mapped up front or handed out a
+        // page at a time, and a decision made after the open would be a decision
+        // about the next launch while reporting this one.
+        if UserDefaults.standard.bool(forKey: DiagnosticsScreen.lazyCacheKey) {
+            SapbridgeEnableLazyCachePages()
+            AppLog.info("shared cache: pages will be mapped on demand", .sap)
+        }
+
         // Off unless asked for. Opening the engine at launch is the step that
             // can end the process before a screen is drawn, and it is now a
             // diagnostic switch rather than a default.

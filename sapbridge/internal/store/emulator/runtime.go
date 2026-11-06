@@ -44,6 +44,29 @@ func chunkLabel(length int) string {
 // numbers were right and whose axis was 16 times too small.
 const progressStep = 16 << 20
 
+// lazyCachePages decides how the shared-cache pages reach the guest: all of them
+// mapped during open(), or indexed then handed out one at a time when the guest
+// faults on them.
+//
+// It is a switch rather than a behaviour because the two are a bet on the same
+// number -- the census prices mapping at about 0.8 s per MiB, so 38.8 MiB of
+// shared cache costs 32.8 s every launch, while demand paging pays nothing up
+// front and about 4 ms per page touched. Whoever touches less than half the
+// cache wins; nobody has measured that yet, and this tree has already been
+// wrong twice about which side of that line the guest is on. The lazy census
+// printed after each run is the measurement that decides, which is why the
+// switch ships before the default changes.
+var lazyCachePages atomic.Bool
+
+// SetLazyCachePages turns demand paging on or off. It has to be called before
+// the store runtime opens: open() reads it once, and an already-open runtime
+// has either mapped the cache or installed the hook, not both.
+func SetLazyCachePages(on bool) { lazyCachePages.Store(on) }
+
+// LazyCachePages reports the current setting, for a screen that has to say
+// which of the two shapes its log lines will take.
+func LazyCachePages() bool { return lazyCachePages.Load() }
+
 const heapBase = uint64(0x400000000000)
 const heapSize = uint64(64 << 20)
 const stackBase = uint64(0x500000000000)
@@ -115,10 +138,26 @@ type Runtime struct {
 	objects                     map[uint64]*Object
 	pages                       map[uint64]bool
 	cachePages                  map[uint64]bool
-	profilePages                map[uint64]bool
-	cursor                      uint64
-	fault                       error
-	trace                       []string
+	// The indexed shared cache, live only when lazyCachePages is set: the
+	// pages that can still be handed out, and the counters the census prints.
+	// Everything here is written from the thread driving the engine -- the
+	// unmapped hook runs inside emu_start, and so does the print at the end of
+	// a run -- except the index itself, built in open() before any guest code
+	// exists.
+	lazyPages    map[uint64][]byte
+	lazyHook     *unicorn.Hook
+	lazyStripped int
+	lazySkipped  int
+	lazyTotal    int
+	lazyFaults   uint64
+	lazyBytes    uint64
+	lazyMs       int64
+	lazyAbsent   uint64
+	lazyPrinted  uint64
+	profilePages map[uint64]bool
+	cursor       uint64
+	fault        error
+	trace        []string
 
 	entries map[uint64]string
 	hook    *unicorn.Hook
@@ -401,64 +440,26 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	cacheStart := time.Now()
 	runs := cachepages.Runs(cachePages)
 
-	// Same batching as the profile regions: 3,833 runs would otherwise each
-	// invalidate every translation in the engine.
-	r.deferFlush = true
-
-	var stripped int
-
-	for _, run := range runs {
-		// The blob is a slice of the real shared cache, built for Apple silicon,
-		// so its code carries PAuth and RCpc instructions this CPU cannot
-		// execute. The SAP machine signs by calling into these pages -- the
-		// first ldapr it met aborted the signature -- so they have to be
-		// rewritten before anything runs from them.
-		stripped += machimage.StripPAC(run.Data)
-
-		// Pages the machine already mapped hold the machine's values, which are
-		// newer than the blob's. Writing the blob back would undo whatever the
-		// handshake initialised.
-		pieces := unmappedPieces(r, run.Address, run.Data)
-
-		total := 0
-		for _, piece := range pieces {
-			total += len(piece.data)
+	// Two ways to get the shared cache into the guest. The census settled the
+	// price of the first: mapping costs about 0.8 s per MiB of new bytes, no
+	// matter how the bytes are chopped, so these 38.8 MiB cost the 32.8 s the
+	// line below reports every launch. The second stops paying for pages the
+	// guest never touches -- it indexes them and maps one when the guest faults
+	// on it -- and the census printed after each run says how many of the 9,927
+	// were actually asked for. That number is the whole argument for the extra
+	// machinery, so it is printed whether the switch is on or off.
+	if LazyCachePages() {
+		if err = r.indexCachePages(runs); err != nil {
+			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 
-		if total != len(run.Data) {
-			skippedCachePages += (len(run.Data) - total) / 4096
+		fmt.Fprintf(os.Stderr,
+			"[SAP] open(): indexed %d shared-cache pages in %d runs, %d ms, mapped none (%d dropped: inside a loaded image, %d instructions rewritten)\n",
+			len(r.lazyPages), len(runs), time.Since(cacheStart).Milliseconds(), dropped, r.lazyStripped)
+	} else {
+		if skippedCachePages, err = r.mapCachePages(runs, len(cachePages), dropped, skippedCachePages); err != nil {
+			return nil, err
 		}
-
-		for _, piece := range pieces {
-			if err = r.MemMap(piece.address, uint64(len(piece.data))); err != nil {
-				return nil, fmt.Errorf("prepare store runtime: map cache run %#x: %w", piece.address, err)
-			}
-
-			if err = r.MemWrite(piece.address, piece.data); err != nil {
-				return nil, fmt.Errorf("prepare store runtime: write cache run %#x: %w", piece.address, err)
-			}
-		}
-
-		// Remembered so a fault can say whether the missing page was in
-		// this blob at all, rather than only that it is unmapped now.
-		if r.cachePages == nil {
-			r.cachePages = map[uint64]bool{}
-		}
-
-		for offset := 0; offset < len(run.Data); offset += 4096 {
-			r.cachePages[run.Address+uint64(offset)] = true
-		}
-	}
-
-	if len(cachePages) > 0 {
-		r.deferFlush = false
-
-		if err = r.engine.FlushTranslations(); err != nil {
-			return nil, fmt.Errorf("prepare store runtime: flush translations: %w", err)
-		}
-
-		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages in %d runs, %d ms (%d dropped: inside a loaded image, %d instructions rewritten)\n",
-			len(cachePages), len(runs), time.Since(cacheStart).Milliseconds(), dropped, stripped)
 	}
 
 	mark("cache pages")
@@ -977,6 +978,18 @@ func (r *Runtime) Close() error {
 		hookErr = r.hook.Close()
 		r.hook = nil
 	}
+
+	if r.lazyHook != nil {
+		if err := r.lazyHook.Close(); err != nil && hookErr == nil {
+			hookErr = err
+		}
+
+		r.lazyHook = nil
+	}
+
+	// The index aliases the decoded blob: holding it keeps 47 MB of pages
+	// resident for as long as anything could still be handed one.
+	r.lazyPages = nil
 
 	// Put the call sites back before anything else is cleared. Everything
 	// after this point treats the engine as the SAP machine's again.
@@ -1550,6 +1563,7 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	// machine is supposed to do.
 	r.running = true
 	defer func() { r.running = false }()
+	// Printed here rather than at Close: the store runtime is kept open for the	// life of the process, and the question -- how much of the cache did the	// guest actually touch -- is answered by the first download, not by quitting.	defer r.lazyCensus()
 
 	// No wall-clock timeout: the instruction budget bounds the run, and the
 	// timeout's QEMU timer thread is a resource this process ran out of.
@@ -2020,4 +2034,197 @@ func unmappedPieces(r *Runtime, address uint64, data []byte) []unmappedPiece {
 	}
 
 	return pieces
+}
+
+// mapCachePages brings the shared-cache blob into the guest up front: rewrite
+// the instructions this CPU cannot execute, skip the pages another tenant
+// already holds, and map the rest in contiguous runs.
+//
+// The runs are the point of the loop -- 3,833 individual maps would each
+// invalidate every translation in the engine -- and the mapping is what the
+// census priced at about 0.8 s per MiB, which is why this costs the launch
+// 32.8 s whatever unit the bytes are chopped into.
+func (r *Runtime) mapCachePages(runs []cachepages.Run, pages, dropped, skipped int) (int, error) {
+	// Same batching as the profile regions.
+	r.deferFlush = true
+
+	start := time.Now()
+
+	var stripped int
+
+	for _, run := range runs {
+		// The blob is a slice of the real shared cache, built for Apple silicon,
+		// so its code carries PAuth and RCpc instructions this CPU cannot
+		// execute. The SAP machine signs by calling into these pages -- the
+		// first ldapr it met aborted the signature -- so they have to be
+		// rewritten before anything runs from them.
+		stripped += machimage.StripPAC(run.Data)
+
+		// Pages the machine already mapped hold the machine's values, which are
+		// newer than the blob's. Writing the blob back would undo whatever the
+		// handshake initialised.
+		pieces := unmappedPieces(r, run.Address, run.Data)
+
+		total := 0
+		for _, piece := range pieces {
+			total += len(piece.data)
+		}
+
+		if total != len(run.Data) {
+			skipped += (len(run.Data) - total) / 4096
+		}
+
+		for _, piece := range pieces {
+			if err := r.MemMap(piece.address, uint64(len(piece.data))); err != nil {
+				return skipped, fmt.Errorf("prepare store runtime: map cache run %#x: %w", piece.address, err)
+			}
+
+			if err := r.MemWrite(piece.address, piece.data); err != nil {
+				return skipped, fmt.Errorf("prepare store runtime: write cache run %#x: %w", piece.address, err)
+			}
+		}
+
+		// Remembered so a fault can say whether the missing page was in
+		// this blob at all, rather than only that it is unmapped now.
+		if r.cachePages == nil {
+			r.cachePages = map[uint64]bool{}
+		}
+
+		for offset := 0; offset < len(run.Data); offset += 4096 {
+			r.cachePages[run.Address+uint64(offset)] = true
+		}
+	}
+
+	if len(runs) > 0 {
+		r.deferFlush = false
+
+		if err := r.engine.FlushTranslations(); err != nil {
+			return skipped, fmt.Errorf("prepare store runtime: flush translations: %w", err)
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] open(): mapped %d shared-cache pages in %d runs, %d ms (%d dropped: inside a loaded image, %d instructions rewritten)\n",
+			pages, len(runs), time.Since(start).Milliseconds(), dropped, stripped)
+	}
+
+	return skipped, nil
+}
+
+// indexCachePages is the other half of the same money: prepare every page the
+// guest might need without mapping any of it, then supply a page when the guest
+// touches it.
+//
+// Stripping happens here, over the whole blob, because it is a pass over the
+// bytes and not a mapping -- a few tens of ms against the 32.8 s the mapping
+// costs -- and the page must be safe to execute the moment it is mapped. Pages
+// another tenant already holds are left out of the index for the same reason
+// the eager path skips writing them: the machine's copy is newer, and the blob
+// would undo a live handshake.
+//
+// r.cachePages is filled at index time rather than at map time. It answers
+// "was this address ever ours to give?", and a page still waiting in the index
+// is exactly as much the answer as one already mapped.
+func (r *Runtime) indexCachePages(runs []cachepages.Run) error {
+	if r.lazyHook != nil {
+		return errors.New("shared cache is already indexed")
+	}
+
+	r.lazyPages = map[uint64][]byte{}
+	r.lazyTotal = 0
+
+	if r.cachePages == nil {
+		r.cachePages = map[uint64]bool{}
+	}
+
+	for _, run := range runs {
+		r.lazyStripped += machimage.StripPAC(run.Data)
+
+		for offset := 0; offset < len(run.Data); offset += 4096 {
+			page := run.Address + uint64(offset)
+
+			data := run.Data[offset:min(offset+4096, len(run.Data))]
+			if len(data) != 4096 || r.engine.IsMapped(page, 4096) {
+				r.lazySkipped++
+
+				continue
+			}
+
+			r.lazyPages[page] = data
+			r.cachePages[page] = true
+			r.lazyTotal++
+		}
+	}
+
+	hook, err := r.engine.AddUnmappedHook(0, ^uint64(0), r.mapLazyPage)
+	if err != nil {
+		r.lazyPages = nil
+
+		return fmt.Errorf("install the shared-cache fault hook: %w", err)
+	}
+
+	r.lazyHook = hook
+
+	return nil
+}
+
+// mapLazyPage answers one unmapped access out of the indexed shared cache.
+//
+// Returning true tells Unicorn the fault is dealt with and the access is
+// retried, so the guest never sees it; the page is deleted from the index first,
+// which is what bounds the damage. If the same address faults again the retry
+// did not fix it, and a second lookup miss takes the old path -- the fault is
+// reported with the "was it in the blob" answer already recorded -- rather than
+// turning into a map-retry loop that ends only when the instruction budget runs
+// out.
+//
+// Mapping and writing from inside the callback follows the same path the shims
+// already take: the engine holds no lock across emu_start, so a shim writing
+// guest memory from a code hook and this writing it from an unmapped hook are
+// the same call.
+func (r *Runtime) mapLazyPage(address uint64, size uint32, fetch bool) bool {
+	page := address & ^uint64(4095)
+
+	data, ok := r.lazyPages[page]
+	if !ok {
+		r.lazyAbsent++
+
+		return false
+	}
+
+	delete(r.lazyPages, page)
+
+	start := time.Now()
+
+	if err := r.MemMap(page, 4096); err != nil {
+		r.lazyFaults++
+
+		return false
+	}
+
+	if err := r.MemWrite(page, data); err != nil {
+		r.lazyFaults++
+
+		return false
+	}
+
+	r.lazyFaults++
+	r.lazyBytes += 4096
+	r.lazyMs += time.Since(start).Milliseconds()
+
+	return true
+}
+
+// lazyCensus reports what the indexed cache cost once it is being used: the
+// page count and seconds the guest asked for, and the fraction of the index it
+// did not need. Printed at the end of a run rather than at Close, which the
+// store runtime reaches only when the app tears it down.
+func (r *Runtime) lazyCensus() {
+	if r.lazyPages == nil || r.lazyFaults+r.lazyAbsent == r.lazyPrinted {
+		return
+	}
+
+	r.lazyPrinted = r.lazyFaults + r.lazyAbsent
+
+	fmt.Fprintf(os.Stderr,
+		"[SAP] lazy cache pages: %d mapped (%d KiB, %d ms), %d faults on addresses not in the blob, %d of %d still waiting\n",
+		r.lazyFaults, r.lazyBytes/1024, r.lazyMs, r.lazyAbsent, len(r.lazyPages), r.lazyTotal)
 }
