@@ -15,15 +15,19 @@ name: Lint
 on:
   push:
     paths:
-      - app
-      - probeapp
+      # A pattern with no slash matches file *names* anywhere in the repo,
+      # not directories: "app" would only match a file called app, and the
+      # push that deleted two Swift files under app/ proved it -- no job
+      # started. The /** is what makes the filter mean "anything under".
+      - app/**
+      - probeapp/**
       - .swiftlint.yml
       - scripts/check-ios15-apis.sh
       - .github/workflows/lint.yml
   pull_request:
     paths:
-      - app
-      - probeapp
+      - app/**
+      - probeapp/**
       - .swiftlint.yml
       - scripts/check-ios15-apis.sh
       - .github/workflows/lint.yml
