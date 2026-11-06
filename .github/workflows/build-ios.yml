@@ -351,6 +351,13 @@ jobs:
         run: |
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
+          # Say what the version pair expanded to. Info.plist names the build
+          # settings instead of literals, so an unsubstituted
+          # "$(CURRENT_PROJECT_VERSION)" in this line is how you learn the
+          # bundle cannot tell itself from the last one -- which is what
+          # AppDelegate's kbsync cache rule keys on.
+          plutil -p "$APP/Info.plist" | grep -E "CFBundleVersion|CFBundleShortVersionString"
+
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
 

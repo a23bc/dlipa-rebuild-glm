@@ -47,6 +47,16 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.a23bc.dliparebuild
         PRODUCT_NAME: DLiPARebuild
+        # The bundle's version strings come from these, not from literals in
+        # Info.plist: AppDelegate treats a change in them as "a new build" and
+        # clears the cached kbsync blobs, whose bytes carry the assumptions of
+        # the binary that wrote them. With literals every CI build answered
+        # 1.4.1/1, so that rule never fired between two builds and an
+        # over-install kept testing against the previous build's blobs.
+        # build-ios.yml overrides CURRENT_PROJECT_VERSION with the run number;
+        # MARKETING_VERSION is the release number and stays a decision.
+        MARKETING_VERSION: "1.4.1"
+        CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: DLiPARebuild/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_VERSION: "5.0"
