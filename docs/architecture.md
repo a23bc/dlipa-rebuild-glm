@@ -105,6 +105,32 @@ them now; screens come and go.
 
 ---
 
+## The kbsync blob
+
+The blob Apple wants attached to each signed request is produced by running the
+guest, and generation costs on the order of a minute — with **nothing written to
+the log between the incoming request and the open that follows it**. This is the
+one place in the codebase where a long silence is normal rather than a hang, and
+it is why the blob is kept rather than regenerated. Three sources are tried in
+this order:
+
+1. **memory** — the signer holds one blob and the DSID it belongs to;
+2. **disk** — `Library/Caches/dlipa/kbsync-<dsid>.bin`, written with mode 0600
+   only after Apple has accepted the blob once, and read back with no measurable
+   cost;
+3. **generate** — `machine.GenerateKBSyncOn`, the expensive path.
+
+A blob Apple rejects is removed from memory and from disk, and the next attempt
+generates a fresh one (`cached kbsync rejected (%s), discarded`). A key that is
+too coarse therefore self-heals: the worst case is one failed download, not an
+account that has to be rebuilt.
+
+Upgrades clear the cache by comparing **`CFBundleShortVersionString` only**.
+`CFBundleVersion` is the CI run number, so keying on it cleared every new build
+and paid for a regeneration before that build's first download.
+
+---
+
 ## Decisions that were forced, not chosen
 
 | Decision | The failure that forced it |
@@ -212,6 +238,4 @@ not something anyone wants to do to report a bug:
   `2042` for a signed-in session and its `buyProduct` fallback answers
   `MZCommerce.SystemError`; it is kept only until the encoder path has run a while
   in the field, then it goes.
-* **No cached kbsync across launches.** It is generated once per signer and lives
-  in memory.
 * **No second store runtime**, and no attempt to make one work: see above.
