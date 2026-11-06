@@ -1,0 +1,75 @@
+name: Download failure
+description: Search worked, but taking an app from the store did not.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A download runs inside the emulated Store, so the interesting part is
+        usually the minute *after* the tap, not the tap itself. Please attach
+        the exported log rather than describing the error text -- the same
+        message can come from three different places.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What you asked for and what came back
+      description: Which app, and what the app said. A screenshot of the alert is fine, but the log below is what gets this fixed.
+      placeholder: Tapped download on com.example.app (id 1234567890). Alert said "...".
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Diagnostics tab -> share. Keep the five `BuildID:` lines at the top; without them nobody can say which build produced this.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: assets
+    attributes:
+      label: Did you agree to download the SAP assets from Apple?
+      description: The app asks once, and the assets are ~212 MB. Signing in and downloading both need them.
+      options:
+        - Yes, they were fetched
+        - No / dismissed it
+        - Never asked
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installed
+    attributes:
+      label: How the app got onto the device
+      options:
+        - TrollStore
+        - Sideloaded with a certificate (AltStore, Xcode, third-party signing)
+        - Updated over an existing install
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: ios
+    attributes:
+      label: iOS version
+      description: Settings -> General -> About. Include the device model.
+      placeholder: 16.7.10, iPhone X
+    validations:
+      required: true
+
+  - type: dropdown
+    id: account
+    attributes:
+      label: Does the account already own this app?
+      description: This build downloads. Purchasing is not implemented, so "not owned" is a known gap rather than a bug.
+      options:
+        - Yes, it is in Purchased
+        - No
+        - Don't know
+    validations:
+      required: true

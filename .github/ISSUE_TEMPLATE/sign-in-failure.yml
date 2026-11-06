@@ -1,0 +1,75 @@
+name: Sign-in failure
+description: The account does not get to "authenticated", or a signed-in account stops working.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sign-in is a handshake run inside the emulated guest, and several of its
+        steps fail in ways that look identical on screen. Please attach the
+        exported log: the step names and timings in it are what separate "Apple
+        refused the credentials" from "the guest took an exception".
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What you did and what happened
+      description: New sign-in, or an account that used to work? Second factor or captcha involved? What did the app show, and how long did it take?
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Diagnostics tab -> share. Keep the five `BuildID:` lines at the top; without them nobody can say which build produced this.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: assets
+    attributes:
+      label: Did the app ask to download the SAP assets from Apple?
+      description: Signing in needs them -- they carry the code that produces the signature. They are ~212 MB and come from Apple directly.
+      options:
+        - Yes, and it finished
+        - Yes, and it failed
+        - No, it never asked
+        - There was already an account signed in
+    validations:
+      required: true
+
+  - type: dropdown
+    id: accounts
+    attributes:
+      label: How many accounts does the app hold?
+      description: The store runtime belongs to one account per launch, and a second account is the case most likely to be shaped differently.
+      options:
+        - One
+        - More than one, and this is the one that is active
+        - More than one, and I switched to this one
+        - Don't know
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installed
+    attributes:
+      label: How the app got onto the device
+      options:
+        - TrollStore
+        - Sideloaded with a certificate (AltStore, Xcode, third-party signing)
+        - Updated over an existing install
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: ios
+    attributes:
+      label: iOS version
+      description: Settings -> General -> About. Include the device model.
+      placeholder: 16.7.10, iPhone X
+    validations:
+      required: true
