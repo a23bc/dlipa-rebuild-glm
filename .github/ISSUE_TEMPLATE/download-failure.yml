@@ -69,7 +69,7 @@ body:
       description: This build downloads. Purchasing is not implemented, so "not owned" is a known gap rather than a bug.
       options:
         - Yes, it is in Purchased
-        - No
+        - No, the account does not own it
         - Don't know
     validations:
       required: true
