@@ -5,10 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        A download runs inside the emulated Store, so the interesting part is
-        usually the minute *after* the tap, not the tap itself. Please attach
-        the exported log rather than describing the error text -- the same
-        message can come from three different places.
+        A download runs inside the emulated Store, so the interesting part is usually the minute *after* the tap, not the tap itself. Please attach the exported log rather than describing the error text -- the same message can come from three different places.
 
   - type: textarea
     id: what-happened

@@ -5,10 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Sign-in is a handshake run inside the emulated guest, and several of its
-        steps fail in ways that look identical on screen. Please attach the
-        exported log: the step names and timings in it are what separate "Apple
-        refused the credentials" from "the guest took an exception".
+        Sign-in is a handshake run inside the emulated guest, and several of its steps fail in ways that look identical on screen. Please attach the exported log: the step names and timings in it are what separate "Apple refused the credentials" from "the guest took an exception".
 
   - type: textarea
     id: what-happened
