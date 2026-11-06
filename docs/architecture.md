@@ -220,15 +220,30 @@ not something anyone wants to do to report a bug:
   the Diagnostics tab can share.
 * **phase stamps** — `open()` reports its own clock at each stage
   (`phase cache pages at …`), so time goes where the code measured it rather than
-  where log timestamps suggest. Log timestamps are *not* evidence here: stderr is
-  drained in batches, and lines seconds apart on the clock arrive tens of seconds
-  apart.
+  where log timestamps suggest. Log timestamps are *not* a stopwatch: stderr is
+  drained in batches, so lines seconds apart on the clock arrive tens of seconds
+  apart, and a batch boundary can fall anywhere inside the interval being
+  measured.
 * **main-queue heartbeat** — a two-second timer during probes. If it stops while
   the spinner still turns, the main thread is blocked; if it continues, the app is
   merely slow.
 * **store smoke** — a diagnostic build path that runs the same encode/execute the
   production download uses and prints the request, headers, response status and
   body head.
+
+The 117 s figure is the worked example, because it is the one number here that came
+off the clock and looked right. A capture put `08:10:00` on the incoming request
+and `08:11:57` on the open, with nothing in between, and 117 s of kbsync
+generation is a plausible reading of that interval. It is still not a measurement:
+silence is exactly what a drain looks like, and nothing in the interval says when
+generation began or ended.
+
+What settles that case is structural, not temporal. A later capture logs
+`ent download: kbsync from disk (212 bytes)` at the point where the first one fell
+silent, and its open follows with no gap at all. Two runs of the same flow, one
+generating and one reading a file — that is the difference the timestamps were
+being asked to show, and the line shows it without the clock. Read the log for
+*what happened*; read a phase stamp for *how long it took*.
 
 ---
 
