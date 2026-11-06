@@ -114,6 +114,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
 
                 UserDefaults.standard.set(current, forKey: versionKey)
+            } else {
+                // Both branches, for the reason the shared-cache switch above
+                // already gives: a one-sided log cannot tell a decision from a
+                // block that never ran. A device run on 2026-11-06 needed exactly
+                // that distinction -- no clear line appeared, and whether that
+                // meant the key matched or the launch never reached here decides
+                // whether the data container survived the install.
+                AppLog.info("kbsync cache kept: version " + current + " unchanged", .sap)
             }
 
             // Read before anything can open the store runtime: open() decides once,
@@ -137,6 +145,21 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 AppLog.info("shared cache: pages will be mapped on demand", .sap)
             } else {
                 AppLog.info("shared cache: mapped in full at open (switch off)", .sap)
+            }
+
+            // On unless the diagnostics row says otherwise, the way the shared
+            // cache row above works: measured on device, three accounts in one
+            // launch served three downloads through the runtime the first of them
+            // opened. Logged in both directions for the reason the switch above
+            // gives -- a refusal and an unread preference look the same when only
+            // one branch prints.
+            let accountReuse = UserDefaults.standard.object(forKey: DiagnosticsScreen.accountReuseKey) as? Bool ?? true
+
+            if accountReuse {
+                SapbridgeEnableAccountReuseProbe()
+                AppLog.info("account switch: a second account reuses the runtime (probe)", .sap)
+            } else {
+                AppLog.info("account switch: a second account is refused until a restart", .sap)
             }
 
         // Off unless asked for. Opening the engine at launch is the step that

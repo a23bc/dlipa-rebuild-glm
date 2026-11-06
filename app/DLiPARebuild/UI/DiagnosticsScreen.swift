@@ -42,6 +42,28 @@ struct DiagnosticsScreen: View {
     /// the shape every earlier build shipped with, and to measure against it.
     static let lazyCacheKey = "com.a23bc.dliparebuild.lazyCachePages"
     @AppStorage(lazyCacheKey) private var lazyCachePages = true
+
+    /// Whether a download for a second account may run through the store runtime
+    /// the first account opened, instead of being refused with "restart the app".
+    ///
+    /// On by default, since device: one launch, A then B then A again, three
+    /// downloads served, each with its own kbsync resolved by dsid. Nothing about
+    /// the account lives in the runtime -- the request carries the blob, the
+    /// account object and the headers -- and off is kept as the way back to the
+    /// refusal for comparison.
+    ///
+    /// Nothing is closed to make this happen. Closing is measured broken: the
+    /// next signature after a close returned -42306 with and without releasing
+    /// the address space, so a design that avoids the close is worth more here.
+    ///
+    /// Applied at launch, like the other two rows: the bridge reads the flag on
+    /// every download, but nothing enables it until the next launch, so flipping
+    /// this row changes the run after it and not the one in hand. The log says
+    /// which shape a launch took -- `account switch: a second account reuses the
+    /// runtime (probe)` or `... is refused until a restart` -- and a download that
+    /// switches prints `reusing DSID <a>'s store runtime for DSID <b>`.
+    static let accountReuseKey = "com.a23bc.dliparebuild.accountReuseProbe"
+    @AppStorage(accountReuseKey) private var accountReuse = true
     @State private var logText = ""
 
     var body: some View {
@@ -60,6 +82,9 @@ struct DiagnosticsScreen: View {
                             .onChange(of: prewarmAtLaunch) { _ in refresh() }
                         Toggle("Map the shared cache on demand (next launch)", isOn: $lazyCachePages)
                             .onChange(of: lazyCachePages) { _ in refresh() }
+                        Toggle("Reuse one runtime across accounts (next launch)",
+                               isOn: $accountReuse)
+                            .onChange(of: accountReuse) { _ in refresh() }
                     }
 
                     Section {

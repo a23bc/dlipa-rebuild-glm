@@ -67,6 +67,32 @@ func SetLazyCachePages(on bool) { lazyCachePages.Store(on) }
 // which of the two shapes its log lines will take.
 func LazyCachePages() bool { return lazyCachePages.Load() }
 
+// accountReuse decides what a download for a second account does while the
+// runtime still belongs to the first.
+//
+// Off -- the shipped behaviour -- it refuses and asks for a restart. On, it
+// uses the live runtime for the other account as well, which needs nothing from
+// the runtime but the account's kbsync blob: the request body carries the device
+// guid and the product ids, the account object is created fresh and empty per
+// request, and the encoder is told not to take cookies or storefront from the
+// guest (client.go). The premise that the guest holds an account has never been
+// reproduced with a log attached to it, so this is a switch and not a policy.
+//
+// It does not close anything. Closing is off the table by measurement: two
+// device runs, one with the address space released and one without, both came
+// back with the next signature into AppleMediaServices failing at -42306, and
+// the reopened session died in our own bridge at the same heap address every
+// time. Defaults off.
+var accountReuse atomic.Bool
+
+// SetAccountReuse turns the account-switch probe on or off. Like the cache
+// switch it has to be set before the runtime is used, because the decision is
+// made inside the download that hits the mismatch.
+func SetAccountReuse(on bool) { accountReuse.Store(on) }
+
+// AccountReuse reports whether a second account may reuse the live runtime.
+func AccountReuse() bool { return accountReuse.Load() }
+
 const heapBase = uint64(0x400000000000)
 const heapSize = uint64(64 << 20)
 const stackBase = uint64(0x500000000000)
@@ -1003,6 +1029,25 @@ func (r *Runtime) Close() error {
 	}
 
 	r.patchedSites = nil
+
+	// Handing the address space back is what made a second open possible, and it
+	// is also the step that took the SAP machine's own pages with it. The device
+	// run on 2026-11-06 recorded `33 profile pages the machine already had` at the
+	// first open and `20` at the one after this close -- and the signer's next call
+	// into AppleMediaServices came back with -42306 and a null output pointer, at
+	// an address inside that image. sharedWithMachine recognises the loaded
+	// images; it does not know what the machine mapped underneath them.
+	//
+	// Left mapped, so a second open should now die the way the note in select()
+	// describes: 0x100000000 occupied, UC_ERR_MAP. That failure is the point. The
+	// signing probe runs before the open, so this close is main's close, and
+	// whether the signer survives it is the question -- the unmap is no longer in
+	// the way to answer it.
+	owned, shared := r.ownedPages()
+
+	fmt.Fprintf(os.Stderr, "[SAP] close(): left %d pages mapped (%d its own, %d recognised as the machine's)\n",
+		len(r.pages), owned, shared)
+
 	clear(r.entries)
 	clear(r.calls)
 	r.codeRanges = nil
@@ -1040,6 +1085,40 @@ func (r *Runtime) Close() error {
 
 	return nil
 }
+
+// ownedPages answers what close would hand back without handing anything back:
+// how many recorded pages it would release, and how many it recognises as the
+// SAP machine's. Both numbers are in the log because the two opens on either
+// side of the close are what show whether the difference between them is real.
+func (r *Runtime) ownedPages() (owned, shared int) {
+	for page := range r.pages {
+		if sharedWithMachine(page) {
+			shared++
+
+			continue
+		}
+
+		owned++
+	}
+
+	return owned, shared
+}
+
+// sharedWithMachine reports whether a page sits in one of the three regions the
+// SAP machine also maps at fixed addresses. Those outlive the runtime, so Close
+// leaves them alone.
+func sharedWithMachine(page uint64) bool {
+	switch {
+	case page >= heapBase && page < heapBase+heapSize:
+		return true
+	case page >= stackBase && page < stackBase+stackSize:
+		return true
+	case page >= returnPC && page < returnPC+4096:
+		return true
+	}
+
+	return false
+}
 func (r *Runtime) MemMap(address, size uint64) error {
 	overlap := false
 	for page := address; page < address+size; page += 4096 {
@@ -1047,8 +1126,8 @@ func (r *Runtime) MemMap(address, size uint64) error {
 	}
 
 	// Watch the range that faults during encoder initWithBag: every map that
-	// touches it is logged, because no MemUnmap exists anywhere in this package
-	// and the page is readable immediately before the call that faults on it.
+	// touches it is logged, because the page is readable immediately before the
+	// call that faults on it.
 	if address < 0x1a2b0000 && address+size > 0x1a2a0000 {
 		fmt.Fprintf(os.Stderr, "[SAP] watch: MemMap %#x+%#x (fault page range)\n", address, size)
 	}
@@ -1069,12 +1148,13 @@ func (r *Runtime) MemMap(address, size uint64) error {
 		// when the rest is free. Fall back to page granularity: keep what is
 		// already there, map the gaps. Upstream never meets this because it always
 		// builds its own engine on an empty address space.
+		//
+		// mapPerPage records the pages it mapped itself. Marking the whole range
+		// here instead -- which is what this did until the store runtime learned
+		// how to release its mappings -- claimed the machine's pages too, and
+		// unmapping them takes the SAP machine's own image out of its engine.
 		if err := r.mapPerPage(address, size); err != nil {
 			return fmt.Errorf("map guest memory: %w", err)
-		}
-
-		for page := address; page < address+size; page += 4096 {
-			r.pages[page] = true
 		}
 
 		return nil
@@ -1096,11 +1176,13 @@ func (r *Runtime) MemMap(address, size uint64) error {
 			if perPage := r.mapPerPage(page, end-page); perPage != nil {
 				return fmt.Errorf("map guest memory: %w", perPage)
 			}
+		} else {
+			for mark := page; mark < end; mark += 4096 {
+				r.pages[mark] = true
+			}
 		}
 
-		for ; page < end; page += 4096 {
-			r.pages[page] = true
-		}
+		page = end
 	}
 
 	if !r.deferFlush {
@@ -1164,6 +1246,12 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 
 		if mapErr != nil {
 			return fmt.Errorf("map %#x+%#x: %w", runStart, page-runStart, mapErr)
+		}
+
+		// Own only the pages this call mapped. A page that was already readable
+		// belongs to the other tenant on this engine and must survive Close.
+		for mark := runStart; mark < page; mark += 4096 {
+			r.pages[mark] = true
 		}
 
 		fresh += int((page - runStart) / 4096)

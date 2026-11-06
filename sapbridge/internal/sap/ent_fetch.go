@@ -120,9 +120,10 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		return EntDownloadResult{}, fmt.Errorf("ent download: no hardware id")
 	}
 
-	// One runtime per process, reopened never. A second open finds the first
-	// session's pages already mapped and patched, skips restoring them, and the
-	// encoder is handed objects from the previous session.
+	// One runtime at a time. Two live sessions cannot share the engine: the
+	// second open finds the first session's pages already mapped and patched,
+	// skips restoring them, and hands the encoder objects belonging to a session
+	// that has ended.
 	runtime := s.storeRuntime
 
 	var blob []byte
@@ -135,6 +136,36 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// file lives under the app's cache directory and is only written after Apple
 	// has accepted the blob once.
 	fromCache := false
+
+	// What the account switch costs is decided here, and the runtime is not the
+	// thing that holds an account. Read what this request actually carries: the
+	// body has the device `guid`, the per-DSID `kbsync` blob and the product ids;
+	// the account object is created fresh and empty for every request by
+	// `ephemeralAccount(nil)`; the encoder is told not to take cookies or
+	// storefront from the guest (`setShouldSetCookieHeader: 0` in client.go); and
+	// DSID, token, storefront and cookies are set per call from the caller's
+	// headers. One runtime can therefore serve a second account, which is what the
+	// switch now tests.
+	//
+	// The other route -- close and open a fresh session -- is closed off by two
+	// device runs on two consecutive builds: the signature into
+	// AppleMediaServices taken right after a `Close` returns -42306 with a null
+	// output pointer, whether or not the close released the address space, and the
+	// second session's encoder died at the same heap address every time on our own
+	// `unknown receiver` panic. A close also puts the machine out of reach for the
+	// signer that shares it, so a design that avoids closing is worth more here
+	// than one that reopens cleanly.
+	if runtime != nil && s.storeRuntimeDSID != 0 && s.storeRuntimeDSID != dsid {
+		if !emulator.AccountReuse() {
+			return EntDownloadResult{}, fmt.Errorf(
+				"ent download: the store runtime was opened for DSID %d, not %d; "+
+					"restart the app after switching accounts",
+				s.storeRuntimeDSID, dsid)
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing DSID %d's store runtime for DSID %d\n",
+			s.storeRuntimeDSID, dsid)
+	}
 
 	if runtime == nil {
 		if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
@@ -163,18 +194,27 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: store runtime opened\n")
 	} else {
-		// The guest is opened once and keeps the account's state: cookies, session
-		// objects, the lot. A download for a second account through it is answered
-		// with "framework rejected response" a minute later, which says nothing about
-		// the cause. Refuse it here, where the cause is still visible.
-		if s.storeRuntimeDSID != 0 && s.storeRuntimeDSID != dsid {
+		// The blob belongs to the account, not to the session, and the slot holds
+		// whichever account used it last: after a cross-account request the slot is
+		// that other account's. Reading it here without asking which dsid it carries
+		// is what sent A's request with B's blob on device and came back as
+		// `ent/download (encoder) HTTP 500, 0 bytes` with an empty body -- and it is
+		// the most likely author of the note that a second account is answered with a
+		// framework error, since the slot has only ever held one blob.
+		//
+		// Resolution is memory or disk only. Generating runs the guest, and a store
+		// session is mapped in it right now.
+		var cached bool
+
+		blob, cached = s.cachedKBSync(dsid)
+		if !cached {
 			return EntDownloadResult{}, fmt.Errorf(
-				"ent download: the store runtime belongs to DSID %d, not %d; "+
-					"restart the app after switching accounts",
-				s.storeRuntimeDSID, dsid)
+				"ent download: no cached kbsync for DSID %d while its store session is open; "+
+					"restart the app and download once with this account to generate one",
+				dsid)
 		}
 
-		blob = s.kbsyncBlob
+		fromCache = true
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing the store runtime\n")
 	}
@@ -369,6 +409,11 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 // because that call is where the consequence lands.
 func SetLazyCachePages(on bool) { emulator.SetLazyCachePages(on) }
 
+// SetAccountReuse decides whether a download for a second account may share the
+// runtime that belongs to the first and open a new one. Off is the shipped
+// behaviour: refuse, and ask for a restart.
+func SetAccountReuse(on bool) { emulator.SetAccountReuse(on) }
+
 // kbsyncCachePath is beside the staged assets: writable, already created by the
 // staging step, and wiped with the app.
 func kbsyncCachePath(dsid uint64) string {
@@ -378,6 +423,27 @@ func kbsyncCachePath(dsid uint64) string {
 	}
 
 	return filepath.Join(root, "dlipa", fmt.Sprintf("kbsync-%d.bin", dsid))
+}
+
+// cachedKBSync answers with the blob this process or this device already holds
+// for dsid, and with nothing otherwise. Generating is deliberately not part of
+// it, because whether generating is *allowed* depends on the state of the
+// machine, and the two callers here are on opposite sides of that question: the
+// first download of a session generates, the reopen after a close must not.
+func (s *Signer) cachedKBSync(dsid uint64) ([]byte, bool) {
+	if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
+		return s.kbsyncBlob, true
+	}
+
+	if stored := loadStoredKBSync(dsid); stored != nil {
+		s.kbsyncBlob, s.kbsyncDSID = stored, dsid
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: kbsync from disk (%d bytes)\n", len(stored))
+
+		return stored, true
+	}
+
+	return nil, false
 }
 
 func loadStoredKBSync(dsid uint64) []byte {

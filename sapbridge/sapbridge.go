@@ -512,3 +512,30 @@ func ClearCachedKBSync() error {
 func EnableLazyCachePages() {
 	sap.SetLazyCachePages(true)
 }
+
+// EnableAccountReuseProbe lets a download for a second account run through the
+// store runtime the first account opened.
+//
+// Off is the shipped behaviour: the request is refused with a message that says
+// to restart the app.
+//
+// On is a probe, not a feature. It rests on what the request actually carries:
+// the per-account kbsync blob, an account object created fresh and empty for
+// every request, and an encoder told not to take cookies or storefront from the
+// guest -- so the runtime holds no account state to be wrong about. The claim
+// that it does is what the refusal was written for, and it has never been
+// reproduced with a log attached.
+//
+// What it does not do is close anything. Two device runs measured that route:
+// the signature taken right after a Close returned -42306 both with and without
+// releasing the address space, and the session opened afterwards died in our own
+// bridge at the same heap address each time.
+//
+// One-way, like the cache switch, and there is no bool parameter for the reason
+// given above: only bool returns are known to map to BOOL. The bridge reads the
+// flag on every download, but the app only calls this at launch, so the row
+// changes the next run rather than the one in hand -- and with no way to unset
+// it, there is nothing to call mid-session anyway.
+func EnableAccountReuseProbe() {
+	sap.SetAccountReuse(true)
+}

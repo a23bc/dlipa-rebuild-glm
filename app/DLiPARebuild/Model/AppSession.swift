@@ -751,12 +751,30 @@ func diagnosticKBSync() async -> String {
     func downloadURL(for app: StoreApp,
                      externalVersionId: String?) async throws -> URL {
         let (account, bag, signer) = try await ensureSession()
-        return try await client.requestDownload(appId: String(app.trackId),
-                                                externalVersionId: externalVersionId,
-                                                guid: hardware.guid,
-                                                account: account.asAccount(),
-                                                bag: bag,
-                                                signer: signer)
+
+        // Brackets the request with the resident size. The close and the open are
+        // timed inside the bridge; this is the other half of the memory question
+        // -- whether a session that has been closed gives its pages back, or
+        // whether each switch costs the process another runtime's worth. Two
+        // lines per download, only while the probe is on, because the device
+        // report is the log itself.
+        let probe = UserDefaults.standard.bool(forKey: DiagnosticsScreen.accountReuseKey)
+        if probe {
+            AppLog.info("probe: rss before the request " + String(ProcessMemory.residentMiB()) + " MB", .sap)
+        }
+
+        let url = try await client.requestDownload(appId: String(app.trackId),
+                                                   externalVersionId: externalVersionId,
+                                                   guid: hardware.guid,
+                                                   account: account.asAccount(),
+                                                   bag: bag,
+                                                   signer: signer)
+
+        if probe {
+            AppLog.info("probe: rss after the request " + String(ProcessMemory.residentMiB()) + " MB", .sap)
+        }
+
+        return url
     }
 
     /// Searches the catalogue of the active account's store.
