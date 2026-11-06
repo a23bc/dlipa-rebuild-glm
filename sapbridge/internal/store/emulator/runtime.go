@@ -37,6 +37,13 @@ func chunkLabel(length int) string {
 	return fmt.Sprintf("%d MiB", span>>20)
 }
 
+// progressStep is the width of the census' second axis, and it is named here
+// because the print divides the bucket index by it. The index comes from
+// mappedInPhase rather than from a MiB count, and hard-coding the shift is how
+// the first version of that line labelled 16 MiB steps as MiB -- a table whose
+// numbers were right and whose axis was 16 times too small.
+const progressStep = 16 << 20
+
 const heapBase = uint64(0x400000000000)
 const heapSize = uint64(64 << 20)
 const stackBase = uint64(0x500000000000)
@@ -559,7 +566,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			// -- and it starts with the phase, not with the process, so it
 			// under-states the pressure the images and the cache pages already
 			// put on it. Reading a fixed size down that row is still the test.
-			key := [2]int{bits.Len64(size), int(mappedInPhase >> 24)}
+			key := [2]int{bits.Len64(size), int(mappedInPhase / progressStep)}
 
 			cell := cells[key]
 			if cell == nil {
@@ -607,7 +614,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 		fmt.Fprintf(os.Stderr,
 			"[SAP]   map census: %s at +%d MiB: n=%d total=%s median=%s worst=%s\n",
-			chunkLabel(key[0]), key[1], cell.count,
+			chunkLabel(key[0]), key[1]*progressStep, cell.count,
 			cell.total.Round(time.Millisecond),
 			cell.samples[len(cell.samples)/2].Round(time.Millisecond),
 			cell.worst.Round(time.Millisecond))
