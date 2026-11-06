@@ -14,8 +14,9 @@ and what this project spent most of its effort arriving at. See
 piece is shaped the way it is.
 
 Downloads run in the background: starting one returns immediately, progress is on
-the Downloads tab, and the app stays usable while the emulated Store runtime does
-its minutes of work.
+the Downloads tab, and the app stays usable while the emulated Store runtime
+works — seconds, now that the shared cache is indexed and mapped on demand
+rather than mapped in full at every open.
 
 **No Apple Developer account is required.** The IPA is sealed but not signed with a certificate, and you
 sign it with your own Apple ID using AltStore or Sideloadly — the same flow the
@@ -87,9 +88,9 @@ The controlled experiment behind the first two rows is in
 ## Documentation
 
 * **[docs/architecture.md](docs/architecture.md)** — how the pieces fit: the two
-  tenants on one guest, why the Store runtime can only be opened once, the
+  tenants on one guest, why the Store runtime is opened once and kept open, the
   download flow end to end, the decisions that were forced by specific failures,
-  and where the minutes go on device.
+  and what an open costs on device.
 * `DELIVERY_STATUS.md` — what works today, what does not, and the evidence.
 * `sapbridge/VERIFICATION.md` — build and test matrix for the Go side.
 
@@ -162,8 +163,10 @@ Known gaps, in the order they are likely to matter:
   contributes nothing; it goes once the encoder path has run in the field.
 * purchases, and therefore apps the account does not already own, are not
   supported. This downloads, not buys.
-* the store runtime is opened once per process, so the first download of a
-  session pays about two minutes of emulated startup (see the architecture note). The original app's 100 Objective-C classes, 12 localisations,
+* the store runtime is opened once and kept open, because the guest carries the
+  account's session state — so switching accounts needs an app restart. An open
+  now costs about 1.2 s, against about 99 s while the shared cache was still
+  mapped in full (see the architecture note). The original app's 100 Objective-C classes, 12 localisations,
 CocoaHTTPServer install flow and SSZipArchive packaging are not reproduced;
 the source was never published, only the compiled IPA.
 
