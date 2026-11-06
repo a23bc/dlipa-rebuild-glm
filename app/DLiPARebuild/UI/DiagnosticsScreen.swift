@@ -117,12 +117,13 @@ struct DiagnosticsScreen: View {
 
         Task.detached(priority: .utility) {
             var failure: NSError?
-            _ = SapbridgeFetchSapAssets(&failure)
+            let report = SapbridgeFetchSapAssets(&failure)
 
             if let failure {
+                // The cost rides inside the error too, so this line is the whole answer.
                 AppLog.error("fetch assets failed: " + failure.localizedDescription, .sap)
             } else {
-                AppLog.info("fetch assets finished", .sap)
+                AppLog.info("fetch assets finished: " + (report ?? "no report"), .sap)
             }
 
             await MainActor.run { running = false }

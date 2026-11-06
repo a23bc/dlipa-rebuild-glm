@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/measure"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
 	"os"
 	"path/filepath"
@@ -470,27 +471,31 @@ func BlankAudioPath(dataDir string) (path string, err error) {
 	return install.BlankAudioPath(dataDir)
 }
 
-// FetchSapAssets runs the macOS restore-image extraction on this device and reports
-// how long it took.
+// FetchSapAssets runs the macOS restore-image extraction on this device and
+// reports what it cost: transferred bytes, peak and cumulative heap, and time.
 //
-// It exists to answer one question with a measurement rather than an estimate: the
-// same extraction takes 41 seconds on a CI runner, and the only way to know what it
-// costs on a phone is to run it there.
+// It exists to answer one question with a measurement rather than an estimate:
+// the same extraction takes about half a minute on a CI runner, and the only way
+// to know what it costs on a phone is to run it there. Reporting only the elapsed
+// time left the last device run answering "did it crash", which is not the
+// question a memory ceiling asks.
 func FetchSapAssets() (string, error) {
-	started := time.Now()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	cost := measure.Start()
 	bundle, err := assetsremote.Load(ctx)
 	if err != nil {
-		return "", fmt.Errorf("fetch sap assets: %w", err)
+		// Report the spend even on failure: how far a phone got before it stopped
+		// is the part that decides whether the approach fits at all.
+		return "", fmt.Errorf("fetch sap assets: %w (%s)", err, cost.Finish())
 	}
 
 	total := len(bundle.AppleMediaServices) + len(bundle.Commerce) +
 		len(bundle.CoreFP) + len(bundle.CoreFPICXS)
 
-	return fmt.Sprintf("%d bytes in %s", total, time.Since(started).Round(time.Second)), nil
+	return fmt.Sprintf("%s produced in %s",
+		cost.Finish(), measure.Bytes(uint64(total))), nil
 }
 
 // ClearCachedKBSync drops the per-account kbsync blobs left by a previous build.
