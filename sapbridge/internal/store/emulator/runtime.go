@@ -153,6 +153,7 @@ type Runtime struct {
 	lazyBytes    uint64
 	lazyMs       int64
 	lazyAbsent   uint64
+	lazyFailed   uint64
 	lazyPrinted  uint64
 	profilePages map[uint64]bool
 	cursor       uint64
@@ -1563,7 +1564,11 @@ func (r *Runtime) call(entry uint64, arguments ...uint64) (uint64, error) {
 	// machine is supposed to do.
 	r.running = true
 	defer func() { r.running = false }()
-	// Printed here rather than at Close: the store runtime is kept open for the	// life of the process, and the question -- how much of the cache did the	// guest actually touch -- is answered by the first download, not by quitting.	defer r.lazyCensus()
+
+	// Printed here rather than at Close: the store runtime is kept open for the
+	// life of the process, and the question -- how much of the cache did the
+	// guest actually touch -- is answered by the first download, not by quitting.
+	defer r.lazyCensus()
 
 	// No wall-clock timeout: the instruction budget bounds the run, and the
 	// timeout's QEMU timer thread is a resource this process ran out of.
@@ -2194,14 +2199,17 @@ func (r *Runtime) mapLazyPage(address uint64, size uint32, fetch bool) bool {
 
 	start := time.Now()
 
+	// A page whose map or write failed is not a page that was handed over, and
+	// counting it as one would put the number the whole decision rests on on the
+	// wrong side of the line.
 	if err := r.MemMap(page, 4096); err != nil {
-		r.lazyFaults++
+		r.lazyFailed++
 
 		return false
 	}
 
 	if err := r.MemWrite(page, data); err != nil {
-		r.lazyFaults++
+		r.lazyFailed++
 
 		return false
 	}
