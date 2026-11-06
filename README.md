@@ -1,5 +1,7 @@
 # DLiPA — SAP-adapted rebuild
 
+[English](README.md) · [简体中文](README.zh-CN.md)
+
 DLiPA stopped working because Apple now requires App Store private-API requests
 to carry an `X-Apple-ActionSignature` header, and because the download endpoint
 advertised in `bag.xml` moved to `ent/download`. This repository rebuilds the
