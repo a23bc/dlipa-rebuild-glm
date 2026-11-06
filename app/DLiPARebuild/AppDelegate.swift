@@ -112,9 +112,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // from this, whether the shared cache is mapped up front or handed out a
         // page at a time, and a decision made after the open would be a decision
         // about the next launch while reporting this one.
+        // Both directions log, the way the pre-warm switch right below does.
+        // A switch that is silent when off cannot be told apart from a switch
+        // that was never read -- the first lazy measurement came back on the
+        // eager path and the log could not say whether anyone had flipped it.
         if UserDefaults.standard.bool(forKey: DiagnosticsScreen.lazyCacheKey) {
             SapbridgeEnableLazyCachePages()
             AppLog.info("shared cache: pages will be mapped on demand", .sap)
+        } else {
+            AppLog.info("shared cache: mapped in full at open (switch off)", .sap)
         }
 
         // Off unless asked for. Opening the engine at launch is the step that
