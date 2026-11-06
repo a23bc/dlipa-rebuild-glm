@@ -73,4 +73,7 @@ jobs:
         # let the job gate the branch.
         continue-on-error: true
         run: |
-          swiftlint lint --quiet --reporter xcode --path app --path probeapp
+          # Positional, not --path: swiftlint 0.65.1 answers "Error: Unknown
+          # option '--path'" and exits 1. It takes the directories to walk
+          # after the subcommand.
+          swiftlint lint --quiet --reporter xcode app probeapp
