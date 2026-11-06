@@ -532,9 +532,10 @@ func EnableLazyCachePages() {
 // bridge at the same heap address each time.
 //
 // One-way, like the cache switch, and there is no bool parameter for the reason
-// given above: only bool returns are known to map to BOOL. It is read on every
-// download rather than once at open, so turning the row on takes effect at the
-// next switch.
+// given above: only bool returns are known to map to BOOL. The bridge reads the
+// flag on every download, but the app only calls this at launch, so the row
+// changes the next run rather than the one in hand -- and with no way to unset
+// it, there is nothing to call mid-session anyway.
 func EnableAccountReuseProbe() {
 	sap.SetAccountReuse(true)
 }

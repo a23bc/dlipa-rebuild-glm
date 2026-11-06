@@ -58,10 +58,12 @@ struct DiagnosticsScreen: View {
     /// next signature after a close returned -42306 with and without releasing
     /// the address space, so a design that avoids the close is worth more here.
     ///
-    /// Read on every download rather than once at open, so flipping the row
-    /// takes effect at the next switch. The log carries
-    /// `reusing DSID <a>'s store runtime for DSID <b>`, or the refusal naming
-    /// the missing blob, plus the resident size before and after each request.
+    /// Applied at launch, like the other two rows: the bridge reads the flag on
+    /// every download, but nothing enables it until the next launch, so flipping
+    /// this row changes the run after it and not the one in hand. The log says
+    /// which shape a launch took -- `account switch: a second account reuses the
+    /// runtime (probe)` or `... is refused until a restart` -- and a download that
+    /// switches prints `reusing DSID <a>'s store runtime for DSID <b>`.
     static let accountReuseKey = "com.a23bc.dliparebuild.accountReuseProbe"
     @AppStorage(accountReuseKey) private var accountReuse = false
     @State private var logText = ""
@@ -82,7 +84,7 @@ struct DiagnosticsScreen: View {
                             .onChange(of: prewarmAtLaunch) { _ in refresh() }
                         Toggle("Map the shared cache on demand (next launch)", isOn: $lazyCachePages)
                             .onChange(of: lazyCachePages) { _ in refresh() }
-                        Toggle("Reuse one runtime across accounts (probe)",
+                        Toggle("Reuse one runtime across accounts (next launch)",
                                isOn: $accountReuse)
                             .onChange(of: accountReuse) { _ in refresh() }
                     }
