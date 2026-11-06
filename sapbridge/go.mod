@@ -3,7 +3,7 @@ module github.com/a23bc/dlipa-rebuild/sapbridge
 go 1.27.1
 
 require (
-	github.com/blacktop/go-macho v1.1.282
+	github.com/blacktop/go-macho v1.1.296
 	github.com/deploymenttheory/go-macos-pkg v0.7.3
 	github.com/ebitengine/purego v0.10.2
 	github.com/go-compressions/lzfse v0.6.0
