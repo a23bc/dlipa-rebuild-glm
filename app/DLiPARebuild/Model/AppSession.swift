@@ -810,11 +810,11 @@ func diagnosticKBSync() async -> String {
         // Anything that is not a package is a transfer still in flight (".part")
         // or a leftover; neither belongs in the list.
         return names.filter { $0.pathExtension.lowercased() == "ipa" }.sorted {
-            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast
-            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast
-            return a > b
+            return left > right
         }
     }
 }

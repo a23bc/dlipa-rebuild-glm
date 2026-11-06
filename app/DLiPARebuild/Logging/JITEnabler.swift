@@ -31,9 +31,9 @@ enum JITEnabler {
         if result == 0 {
             AppLog.info("ptrace(PT_TRACE_ME) succeeded — CS_DEBUGGED set, JIT should work", .app)
         } else {
-            let errno_str = String(cString: strerror(errno))
-            AppLog.error("ptrace(PT_TRACE_ME) failed: errno=\(errno) (\(errno_str))", .app)
-            fputs("[DLiPA] ptrace(PT_TRACE_ME) failed: errno=\(errno) (\(errno_str))\n", stderr)
+            let reason = String(cString: strerror(errno))
+            AppLog.error("ptrace(PT_TRACE_ME) failed: errno=\(errno) (\(reason))", .app)
+            fputs("[DLiPA] ptrace(PT_TRACE_ME) failed: errno=\(errno) (\(reason))\n", stderr)
         }
     }
 }
