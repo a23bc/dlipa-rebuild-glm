@@ -136,10 +136,10 @@ struct SearchScreen: View {
                                        + "a phone. It happens once, and the download is queued "
                                        + "after it."),
                          primaryButton: .default(Text("Fetch and download")) {
-                             Task { await model.grantAssetsFetch() }
+                             Task { await model.grantAssets() }
                          },
                          secondaryButton: .cancel(Text("Cancel")) {
-                             model.declineAssetsFetch()
+                             model.declineAssets()
                          })
         case .fetchFailed(let message):
             return Alert(title: Text("Signing components"),
@@ -532,6 +532,17 @@ final class SearchModel: ObservableObject {
     /// itself is only taken when the person says yes, and the download is queued
     /// after that -- never before.
     func download(_ app: StoreApp, versionID: String?) async {
+        // The question about the binaries comes before the licence check, not
+        // after: that check answers by signing a request, and signing is what
+        // needs them. Asking afterwards would either mean the data was already
+        // spent, or mean a refusal the person cannot explain.
+        if assetsAreMissing() {
+            pendingAssets = (app, versionID)
+            alert = .fetchAssets(app)
+
+            return
+        }
+
         // The card here is an indicator and nothing else: no tick, no hold, no
         // haptic. The check either lets the download start or turns into the
         // question, and either way the card has done its job the moment it ends.
@@ -552,15 +563,26 @@ final class SearchModel: ObservableObject {
         queueDownload(app, versionID: versionID)
     }
 
+    /// Whether signing anything right now would mean taking 212 MB that is
+    /// neither on the device nor agreed to.
+    ///
+    /// Three conditions, because there are three ways this is not a question:
+    /// the build ships the binaries, they are already cached -- `SapbridgeAssetsCached`
+    /// stats them and reads no byte, so asking again on a device that paid once
+    /// would be a false alarm -- or a person has already said yes this session,
+    /// which the bridge remembers and the download path is allowed to assume.
+    private func assetsAreMissing() -> Bool {
+        AssetStaging.resolvesOnDemand && !SapbridgeAssetsCached() && !SapbridgeAssetFetchAllowed()
+    }
+
     /// Queues a download -- or asks first, if signing it would mean fetching
     /// 212 MB that is not on this device yet.
     ///
-    /// The question is only for the builds that ship without the binaries, and
-    /// only while they are genuinely absent: `SapbridgeAssetsCached` stats the
-    /// cache rather than reading it, so a device that already fetched once is
-    /// not asked to pay again.
+    /// `download` asks before the licence check and this is the second line at
+    /// the point of handover, because the two are reached from different places:
+    /// a licence taken from the alert comes back here without the first gate.
     private func queueDownload(_ app: StoreApp, versionID: String?) {
-        if !AssetStaging.isReady, AssetStaging.resolvesOnDemand, !SapbridgeAssetsCached() {
+        if assetsAreMissing() {
             pendingAssets = (app, versionID)
             alert = .fetchAssets(app)
 
@@ -571,8 +593,8 @@ final class SearchModel: ObservableObject {
         status = "Queued " + app.trackName
     }
 
-    /// Permission granted: fetch, then queue the download that waited for it.
-    func grantAssetsFetch() async {
+    /// Permission granted: fetch, then run the download that waited for it.
+    func grantAssets() async {
         alert = nil
 
         guard let pending = pendingAssets else { return }
@@ -595,12 +617,15 @@ final class SearchModel: ObservableObject {
             return
         }
 
-        DownloadManager.shared.start(pending.app, versionID: pending.versionID)
-        status = "Queued " + pending.app.trackName
+        // Back in through the front door rather than straight at the manager:
+        // the licence check is still owed, and it is the request that first
+        // needed these bytes. The gate above cannot fire again -- the fetch is
+        // either in the cache now, or allowed, and both answer "not missing".
+        await download(pending.app, versionID: pending.versionID)
     }
 
     /// Permission refused. Nothing was fetched and nothing was queued.
-    func declineAssetsFetch() {
+    func declineAssets() {
         alert = nil
         pendingAssets = nil
         status = ""

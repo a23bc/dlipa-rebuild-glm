@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
@@ -16,6 +17,29 @@ import (
 // copies them out of its own bundle into Library/Caches on first launch,
 // because the upstream loader uses os.UserCacheDir().
 var BundleDir string
+
+// allowedAssetFetch is the app's permission to spend about 212 MB of someone's
+// data plan on the four Apple binaries. It starts closed: the bridge never
+// decides that on its own, and the app opens it the moment a person answers
+// yes -- which is the only moment anything here can claim they did.
+//
+// There is no way to close it again on purpose. Revoking consent mid-session
+// has no meaning for a download that is already paid for, and an interface
+// without a bool parameter is also an interface whose ObjC mapping nobody has
+// to guess at: gomobile's own header renders a bool *return* as BOOL, and no
+// caller here needs to test what it does with a bool argument.
+var allowedAssetFetch atomic.Bool
+
+// AllowAssetFetch opens the network fallback in loadBundle.
+func AllowAssetFetch() {
+	allowedAssetFetch.Store(true)
+}
+
+// AssetFetchAllowed reports the current answer, for the screen deciding whether
+// to ask again after a fetch that was allowed and still failed.
+func AssetFetchAllowed() bool {
+	return allowedAssetFetch.Load()
+}
 
 // The bundle is ~125 MB and never changes once written, but every load reads it
 // into fresh memory. Signing and kbsync are two separate entry points that each
@@ -84,6 +108,18 @@ func loadBundle() (assets.Bundle, error) {
 	// nothing. A phone measured this at 211.7 MiB over 457 range requests in
 	// 52 seconds, which is why it gets its own generous context -- the 30 second
 	// budget above is for reading a local copy, not for a download.
+	//
+	// That much data is someone's mobile plan, so it happens only after the app
+	// has asked and been told yes. Nothing here can promise the person was
+	// asked: newSigner loads the bundle, so creating a signer reaches this line,
+	// and a gate that only the download path honoured could be walked past by a
+	// sign-in.
+	if !allowedAssetFetch.Load() {
+		return assets.Bundle{}, fmt.Errorf(
+			"apple SAP assets are not on this device (%v), and the fetch is not "+
+				"allowed yet: the app has to ask first", err)
+	}
+
 	fmt.Fprintf(os.Stderr,
 		"sap assets: not cached (%v); resolving from Apple, about 212 MB\n", err)
 

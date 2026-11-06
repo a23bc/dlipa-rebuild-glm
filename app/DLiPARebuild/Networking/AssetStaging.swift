@@ -226,6 +226,12 @@ enum AssetStaging {
     /// and it costs about 212 MB of someone else's data, so callers ask first
     /// rather than running it from the launch path.
     ///
+    /// Calling this *is* that answer: it opens the bridge's permission on the
+    /// way in, because every caller of it sits behind a button that says fetch.
+    /// The bridge refuses to download while the permission is closed, so a
+    /// sign-in or a pre-warm cannot spend the data before anyone has been
+    /// asked -- which is the reason the question is asked at launch.
+    ///
     /// @param completion called on the main queue once with the bridge's cost
     ///   line, or with an error. A call that arrives while a fetch is running
     ///   is answered with that run's result instead of starting a second one.
@@ -240,6 +246,8 @@ enum AssetStaging {
         stagingLock.unlock()
 
         DispatchQueue.global(qos: .utility).async {
+            SapbridgeAllowAssetFetch()
+
             var failure: NSError?
             let report = SapbridgeFetchSapAssets(&failure)
 

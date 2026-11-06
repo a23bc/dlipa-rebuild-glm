@@ -239,6 +239,11 @@ func TestAssetImageResolvesWhenTheAppStagedNothing(t *testing.T) {
         defer func() { BundleDir = previous }()
         BundleDir = ""
 
+        // Reaching the resolver is what this test is about, and the resolver is
+        // behind the data-spend permission now.
+        AllowAssetFetch()
+        defer allowedAssetFetch.Store(false)
+
         // Nothing in a test may use the resolver's network fallback.
         t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
         t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
@@ -252,5 +257,43 @@ func TestAssetImageResolvesWhenTheAppStagedNothing(t *testing.T) {
         }
         if !filepath.IsAbs(path) {
                 t.Fatalf("resolved to a relative path: %q", path)
+        }
+}
+
+// TestAssetFetchNeedsPermission is the other half of the gate. loadBundle is
+// reached from newSigner, so a bridge that resolves on its own can spend the
+// data before any screen has asked -- a sign-in is enough, and it comes long
+// before the first download.
+func TestAssetFetchNeedsPermission(t *testing.T) {
+        previous := BundleDir
+        defer func() { BundleDir = previous }()
+        BundleDir = ""
+
+        allowedAssetFetch.Store(false)
+        defer allowedAssetFetch.Store(false)
+
+        t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+
+        _, err := appleMediaServicesPath()
+        if err == nil {
+                t.Skip("this host already has the four binaries in its cache")
+        }
+        if !strings.Contains(err.Error(), "not allowed") {
+                t.Fatalf("the refusal does not name the missing permission: %v", err)
+        }
+        if strings.Contains(err.Error(), "open AppleMediaServices:") {
+                t.Fatalf("read relative to the working directory anyway: %v", err)
+        }
+
+        // With permission the fetch is attempted; the dead proxy is what keeps
+        // this from becoming a 212 MB test.
+        AllowAssetFetch()
+        _, err = appleMediaServicesPath()
+        if err == nil {
+                t.Skip("this host already has the four binaries in its cache")
+        }
+        if !strings.Contains(err.Error(), "fetch Apple SAP assets") {
+                t.Fatalf("permission granted but no fetch attempted: %v", err)
         }
 }
