@@ -1104,66 +1104,6 @@ func (r *Runtime) ownedPages() (owned, shared int) {
 	return owned, shared
 }
 
-// unmapOwned releases the pages this runtime mapped, one call per contiguous
-// run. Unmapping page by page would be ~200 calls per open on demand and one
-// per page on the eager path; the run count is what the census calls regions.
-//
-// Three regions are deliberately kept: the 64 MB heap, the stack and the return
-// stub live at fixed addresses that the SAP machine shares, and it allocates
-// from the heap for the life of the process. Handing those pages back would
-// leave the signer's allocator pointing at memory the engine no longer has, and
-// the failure would surface later as a signature that faults. Everything else
-// this runtime mapped is its own: profile pages, cache pages and the images the
-// machine had not loaded.
-func (r *Runtime) unmapOwned() (int, error) {
-	if r.engine == nil || len(r.pages) == 0 {
-		return 0, nil
-	}
-
-	pages := make([]uint64, 0, len(r.pages))
-
-	for page := range r.pages {
-		if sharedWithMachine(page) {
-			continue
-		}
-
-		pages = append(pages, page)
-	}
-
-	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
-
-	var (
-		first error
-		count int
-	)
-
-	for index := 0; index < len(pages); {
-		start := pages[index]
-		end := start + 4096
-		index++
-
-		for index < len(pages) && pages[index] == end {
-			end += 4096
-
-			index++
-		}
-
-		if err := r.engine.MemUnmap(start, end-start); err != nil {
-			if first == nil {
-				first = fmt.Errorf("unmap %#x+%#x: %w", start, end-start, err)
-			}
-
-			continue
-		}
-
-		count += int((end - start) / 4096)
-	}
-
-	r.pages = nil
-
-	return count, first
-}
-
 // sharedWithMachine reports whether a page sits in one of the three regions the
 // SAP machine also maps at fixed addresses. Those outlive the runtime, so Close
 // leaves them alone.
