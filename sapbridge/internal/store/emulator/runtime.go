@@ -1024,17 +1024,23 @@ func (r *Runtime) Close() error {
 
 	r.patchedSites = nil
 
-	// Hand the address space back. The engine outlives this runtime, by design,
-	// and a second session on it has to map the same bases the first one took:
-	// without this, open() finds 0x100000000 already occupied and dies with
-	// UC_ERR_MAP. Only pages MemMap recorded as its own are released -- the SAP
-	// machine's images sit in the same address space and stay where they are.
-	unmapStart := time.Now()
-	unmapped, unmapErr := r.unmapOwned()
-	unmapTime := time.Since(unmapStart)
+	// Handing the address space back is what made a second open possible, and it
+	// is also the step that took the SAP machine's own pages with it. The device
+	// run on 2026-11-06 recorded `33 profile pages the machine already had` at the
+	// first open and `20` at the one after this close -- and the signer's next call
+	// into AppleMediaServices came back with -42306 and a null output pointer, at
+	// an address inside that image. sharedWithMachine recognises the loaded
+	// images; it does not know what the machine mapped underneath them.
+	//
+	// Left mapped, so a second open should now die the way the note in select()
+	// describes: 0x100000000 occupied, UC_ERR_MAP. That failure is the point. The
+	// signing probe runs before the open, so this close is main's close, and
+	// whether the signer survives it is the question -- the unmap is no longer in
+	// the way to answer it.
+	owned, shared := r.ownedPages()
 
-	fmt.Fprintf(os.Stderr, "[SAP] close(): unmapped %d pages in %s\n",
-		unmapped, unmapTime.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "[SAP] close(): left %d pages mapped (%d its own, %d recognised as the machine's)\n",
+		len(r.pages), owned, shared)
 
 	clear(r.entries)
 	clear(r.calls)
@@ -1071,11 +1077,25 @@ func (r *Runtime) Close() error {
 		return fmt.Errorf("close store runtime: %w", restoreErr)
 	}
 
-	if unmapErr != nil {
-		return fmt.Errorf("close store runtime: %w", unmapErr)
+	return nil
+}
+
+// ownedPages answers what close would hand back without handing anything back:
+// how many recorded pages it would release, and how many it recognises as the
+// SAP machine's. Both numbers are in the log because the two opens on either
+// side of the close are what show whether the difference between them is real.
+func (r *Runtime) ownedPages() (owned, shared int) {
+	for page := range r.pages {
+		if sharedWithMachine(page) {
+			shared++
+
+			continue
+		}
+
+		owned++
 	}
 
-	return nil
+	return owned, shared
 }
 
 // unmapOwned releases the pages this runtime mapped, one call per contiguous
