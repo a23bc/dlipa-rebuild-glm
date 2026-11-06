@@ -98,7 +98,7 @@ SearchScreen ──tap──▶ DownloadManager.start()  (returns immediately)
                             └─ job.state / job.received  ──▶ DownloadsScreen
 ```
 
-The URL request and the transfer have very different lifetimes — minutes of
+The URL request and the transfer have very different lifetimes — seconds of
 emulated work, then ordinary networking — and were originally both inside the
 screen that started them. That is why the app looked hung. `DownloadManager` owns
 them now; screens come and go.
@@ -122,25 +122,66 @@ them now; screens come and go.
 
 ## Memory and time on device
 
-Opening the store runtime maps about 70 MB into the guest, and `uc_mem_map` costs
-**0.7–2 s per MiB** on this device. The first open therefore takes ~2 minutes; the
-breakdown was measured, not estimated:
+Opening the store runtime is a few thousand `uc_mem_map` calls, and what one of
+them costs depends on **what is already mapped around it**, not only on how many
+bytes it covers.
+
+Eager mapping states the price plainly: 9,927 shared-cache pages, 38.8 MiB,
+`open(): mapped 9927 shared-cache pages in 3833 runs, 31056 ms` — about 0.8 s per
+MiB, and unchanged when the same pages are sent in smaller runs. The more
+expensive consequence is that those 38.8 MiB then sit in the address space for
+every phase that follows:
+
+| | eager | on demand |
+|---|---|---|
+| shared cache | `mapped 9927 … in 31056 ms` | `indexed 9903 … 336 ms, mapped none` |
+| region maps | `170 regions mapped in 1m2.149s` | `193 regions mapped in 127ms` |
+| `phase hooks` | `1m33.985s` – `1m39.383s` | `1.006s` – `1.215s` |
+
+The on-demand open maps *more* regions (193 against 170) and finishes that phase
+in 127 ms instead of 62.1 s, so the regions were never what it was paying for —
+the shared cache already mapped when the phase ran was. That is the mechanism
+behind "map less", and the reason the default now indexes the cache and hands out
+a page per fault:
 
 ```
-phase cache pages  at 31.0s     39 MB of dyld shared cache
-phase page table   at 31.0s     negligible
-phase region maps  at 1m28s     170 regions, dominated by a 19 MB span
-phase call sites   at 1m28s     13,370 patches, 21 ms
+open(): indexed 9903 shared-cache pages in 3833 runs, 336 ms, mapped none (1631 dropped: inside a loaded image, 186130 instructions rewritten)
+open(): phase cache pages  at 885ms
+open(): phase page table   at 892ms
+open(): 193 regions mapped in 127ms
+open(): phase region maps  at 1.172s
+open(): phase call sites   at 1.172s
+open(): phase pac strip    at 1.214s
+open(): phase metadata     at 1.215s
+open(): phase hooks        at 1.215s
 ```
+
+The index is not free — 163–336 ms plus a resident table — and the flow that pays
+it back is the ordinary one: the signed download on record asks for **none** of
+the indexed pages,
+
+```
+ent download: shared cache served 0 pages (0 KiB in 0 ms), 0 faults outside the blob, 0 failed, 9903 untouched
+```
+
+so demand paging costs the download path nothing up front and charges only per
+page a flow actually touches.
 
 Two optimisations landed and one did not:
 
 * pages are mapped in runs and patches applied a page at a time — the per-page
   `uc_mem_map` / `uc_mem_write` calls were the original cost;
 * translation-cache flushes are batched to once per map set;
-* chunking the 19 MB region into 4 MiB pieces changed nothing (37.5 s vs 38.3 s).
-  The cost is linear in bytes, so the only remaining lever is mapping less, which
-  is why the runtime is kept open rather than optimised further.
+* chunking the 19 MB region into 4 MiB pieces changed nothing (37.5 s vs 38.3 s),
+  and a 1 MiB split was worse and was reverted. Bytes are the unit of the price,
+  but the rate comes from the map state around them: the lever that works is not
+  mapping them at all.
+
+The runtime is still kept open for the life of the signer, and the reason is no
+longer the clock — at 1.2 s an open would be affordable. What makes it a
+constraint is the account state the guest carries: cookies and session objects
+belong to the DSID it was opened with, so a download for another account is
+refused rather than attempted.
 
 ---
 
