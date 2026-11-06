@@ -515,14 +515,16 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	// covering this much address space cost, taken once this much had already
 	// been mapped.
 	//
-	// Both axes are needed because the tree disagrees with itself about which
-	// one matters. The comment inside the loop says one 19 MiB region cost 38.3
-	// s while the 2-4 MiB ones around it cost 0.2-3.6 s; the cache-pages line
-	// above says 8.4 ms per call whatever the call covered; and the page loop
-	// writes 40 MB in 13 ms, roughly 300 times cheaper per byte than the
-	// mapping around it. The eight "took" lines a 200 ms filter let through -- of
-	// a phase that cost a minute -- cannot separate those three, so every call is
-	// now recorded and summarised by bucket.
+	// It was written because the tree disagreed with itself about which axis
+	// mattered: the comment in the loop below blamed big spans, the cache-pages
+	// line read like a flat price per call, and the page loop right after this
+	// one writes 40 MB in 13 ms. Running the same phase at 4 MiB and at 1 MiB
+	// chunks settled it -- same rate per MiB, only the call count moved -- and
+	// the conclusion now lives on that constant.
+	//
+	// Kept because it is the measurement any future change here has to be
+	// judged against, and because the filter it replaced -- printing calls over
+	// 200 ms -- hid 60 s of a 62 s phase from the log.
 	type mapCell struct {
 		count   int
 		total   time.Duration
@@ -539,18 +541,21 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 
-		// One map per 1 MiB. The census says the cost of a map is not per byte
-		// and not a flat per-call price either: it is a ~40 ms floor up to about
-		// 1 MiB and then climbs close to cubically -- 182 ms at 1 MiB, 1.14 s at
-		// 2 MiB, 6.6 s at 4 MiB, on the device, across 176 calls covering 73.6
-		// MiB in 62.2 s. Six of those calls were 4 MiB and they alone were 39.7
-		// s of the minute. The 4 MiB unit was itself a fix (one 19 MiB region
-		// measured 38.3 s) that stopped one step too early; the same table
-		// extrapolates 1 MiB at ~13 s, 512 KiB at ~17 s and 256 KiB at ~24 s, so
-		// the floor decides it. If the next census shows 1 MiB calls blowing
-		// past ~200 ms, the variable is not span but how the span lands on what
-		// is already mapped, and the ordering of this loop is what changes.
-		const regionChunk = 1 << 20
+		// One map per 4 MiB, which is what the phase costs either way.
+		//
+		// The census ran twice, once at this unit and once at 1 MiB, and the
+		// two agree: 176 calls over 73.6 MiB in 62.2 s, and 230 calls over
+		// 85.9 MiB in 65.8 s -- 844 ms per MiB against 766. Chopping the same
+		// ground finer moved nothing but the call count, so neither "cost per
+		// call" nor "cost superlinear in span" is true; the mapping price is
+		// about 0.8 s per MiB of *newly mapped bytes*, and the cache-pages
+		// phase above pays the same rate (38.8 MiB in 32.8 s). The whole of
+		// open() is ~125 MiB at that rate, which is its measured 99 s.
+		//
+		// That makes this a constant with no lever in it, and it is why it is
+		// left alone: the only thing that can shorten this phase is mapping
+		// fewer bytes, not differently.
+		const regionChunk = 4 << 20
 
 		for offset := uint64(0); offset < region.size; offset += regionChunk {
 			size := uint64(regionChunk)
