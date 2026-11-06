@@ -512,3 +512,27 @@ func ClearCachedKBSync() error {
 func EnableLazyCachePages() {
 	sap.SetLazyCachePages(true)
 }
+
+// EnableAccountReopenProbe lets a download for a second account close the
+// runtime that belongs to the first and open a new one on the same engine.
+//
+// Off is the shipped behaviour: the request is refused with a message that says
+// to restart the app, because the guest carries the first account's session
+// objects and a request for another account comes back from Apple as a framework
+// error that names nothing.
+//
+// On is a probe, not a feature. It exists because the price of an open changed
+// from about a minute and a half to about a second, which is what makes
+// switching accounts by reopening worth reconsidering. It answers three things
+// that have never been measured on device: whether a session closed and reopened
+// on the same engine works at all, what it costs, and whether the process keeps
+// the memory of every session it closes. If the reopen fails, downloads for the
+// account in hand stop working until the app restarts.
+//
+// One-way, like the cache switch, and there is no bool parameter for the reason
+// given above: only bool returns are known to map to BOOL. It is read on every
+// download rather than once at open, so turning the row on takes effect at the
+// next switch.
+func EnableAccountReopenProbe() {
+	sap.SetAccountReopen(true)
+}

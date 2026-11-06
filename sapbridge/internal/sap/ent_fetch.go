@@ -120,9 +120,10 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		return EntDownloadResult{}, fmt.Errorf("ent download: no hardware id")
 	}
 
-	// One runtime per process, reopened never. A second open finds the first
-	// session's pages already mapped and patched, skips restoring them, and the
-	// encoder is handed objects from the previous session.
+	// One runtime at a time. Two live sessions cannot share the engine: the
+	// second open finds the first session's pages already mapped and patched,
+	// skips restoring them, and hands the encoder objects belonging to a session
+	// that has ended.
 	runtime := s.storeRuntime
 
 	var blob []byte
@@ -135,6 +136,50 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// file lives under the app's cache directory and is only written after Apple
 	// has accepted the blob once.
 	fromCache := false
+
+	// The runtime belongs to whichever account opened it. A download for a
+	// second account is refused by default -- the guest carries the first
+	// account's session objects and the request comes back from Apple as a
+	// framework error that names nothing, so the refusal says something the
+	// failure does not.
+	//
+	// The probe is the other branch. It exists because the price of an open
+	// changed: about a minute and a half when the shared cache was mapped in
+	// full, about a second now. Whether a session that has been closed and
+	// reopened on the same engine actually works has never been measured.
+	probeReopen := false
+
+	var (
+		reopenStart time.Time
+		closeTook   time.Duration
+	)
+
+	if runtime != nil && s.storeRuntimeDSID != 0 && s.storeRuntimeDSID != dsid {
+		if !emulator.AccountReopen() {
+			return EntDownloadResult{}, fmt.Errorf(
+				"ent download: the store runtime belongs to DSID %d, not %d; "+
+					"restart the app after switching accounts",
+				s.storeRuntimeDSID, dsid)
+		}
+
+		previous := s.storeRuntimeDSID
+
+		reopenStart = time.Now()
+		closeErr := runtime.Close()
+		closeTook = time.Since(reopenStart)
+
+		fmt.Fprintf(os.Stderr,
+			"[SAP] probe reopen: closed the runtime for DSID %d in %s (err=%v)\n",
+			previous, closeTook.Round(time.Millisecond), closeErr)
+
+		s.storeRuntime, s.storeRuntimeDSID = nil, 0
+		runtime = nil
+		probeReopen = true
+
+		if closeErr != nil {
+			return EntDownloadResult{}, fmt.Errorf("ent download: close the previous runtime: %w", closeErr)
+		}
+	}
 
 	if runtime == nil {
 		if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
@@ -153,8 +198,17 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 			s.kbsyncBlob, s.kbsyncDSID = blob, dsid
 		}
 
+		openStart := time.Now()
 		runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
+		openTook := time.Since(openStart)
+
 		if err != nil {
+			if probeReopen {
+				fmt.Fprintf(os.Stderr,
+					"[SAP] probe reopen: open for DSID %d failed after %s: %v\n",
+					dsid, time.Since(reopenStart).Round(time.Millisecond), err)
+			}
+
 			return EntDownloadResult{}, fmt.Errorf("ent download: open runtime: %w", err)
 		}
 
@@ -162,18 +216,14 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		s.storeRuntimeDSID = dsid
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: store runtime opened\n")
-	} else {
-		// The guest is opened once and keeps the account's state: cookies, session
-		// objects, the lot. A download for a second account through it is answered
-		// with "framework rejected response" a minute later, which says nothing about
-		// the cause. Refuse it here, where the cause is still visible.
-		if s.storeRuntimeDSID != 0 && s.storeRuntimeDSID != dsid {
-			return EntDownloadResult{}, fmt.Errorf(
-				"ent download: the store runtime belongs to DSID %d, not %d; "+
-					"restart the app after switching accounts",
-				s.storeRuntimeDSID, dsid)
-		}
 
+		if probeReopen {
+			fmt.Fprintf(os.Stderr,
+				"[SAP] probe reopen: DSID %d ready in %s (close %s, open %s)\n",
+				dsid, time.Since(reopenStart).Round(time.Millisecond),
+				closeTook.Round(time.Millisecond), openTook.Round(time.Millisecond))
+		}
+	} else {
 		blob = s.kbsyncBlob
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing the store runtime\n")
@@ -368,6 +418,11 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 // front or hands it out a page at a time. It sits beside the open that reads it,
 // because that call is where the consequence lands.
 func SetLazyCachePages(on bool) { emulator.SetLazyCachePages(on) }
+
+// SetAccountReopen decides whether a download for a second account may close the
+// runtime that belongs to the first and open a new one. Off is the shipped
+// behaviour: refuse, and ask for a restart.
+func SetAccountReopen(on bool) { emulator.SetAccountReopen(on) }
 
 // kbsyncCachePath is beside the staged assets: writable, already created by the
 // staging step, and wiped with the app.

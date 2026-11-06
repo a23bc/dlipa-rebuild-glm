@@ -42,6 +42,24 @@ struct DiagnosticsScreen: View {
     /// the shape every earlier build shipped with, and to measure against it.
     static let lazyCacheKey = "com.a23bc.dliparebuild.lazyCachePages"
     @AppStorage(lazyCacheKey) private var lazyCachePages = true
+
+    /// Whether a download for a second account may close the runtime that
+    /// belongs to the first and open a new one, instead of being refused with
+    /// "restart the app".
+    ///
+    /// Off, and a probe rather than a feature. A session reopened on the same
+    /// engine has never been run on device, the memory each close leaves behind
+    /// has never been measured, and the price of the open is what changed: about
+    /// a second now, against a minute and a half when the shared cache was
+    /// mapped in full. If the reopen fails, the account in hand stops
+    /// downloading until the app restarts.
+    ///
+    /// Read on every download rather than once at open, so flipping the row
+    /// takes effect at the next switch. The log carries `[SAP] close():`, a
+    /// `probe reopen:` line per attempt, and the resident size before and after
+    /// each request.
+    static let accountReopenKey = "com.a23bc.dliparebuild.accountReopenProbe"
+    @AppStorage(accountReopenKey) private var accountReopen = false
     @State private var logText = ""
 
     var body: some View {
@@ -60,6 +78,9 @@ struct DiagnosticsScreen: View {
                             .onChange(of: prewarmAtLaunch) { _ in refresh() }
                         Toggle("Map the shared cache on demand (next launch)", isOn: $lazyCachePages)
                             .onChange(of: lazyCachePages) { _ in refresh() }
+                        Toggle("Reopen the runtime when the account changes (probe)",
+                               isOn: $accountReopen)
+                            .onChange(of: accountReopen) { _ in refresh() }
                     }
 
                     Section {

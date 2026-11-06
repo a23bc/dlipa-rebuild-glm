@@ -67,6 +67,26 @@ func SetLazyCachePages(on bool) { lazyCachePages.Store(on) }
 // which of the two shapes its log lines will take.
 func LazyCachePages() bool { return lazyCachePages.Load() }
 
+// accountReopen decides what a download for a second account does when the
+// runtime still belongs to the first.
+//
+// Off -- the shipped behaviour -- it refuses and asks for a restart, because
+// the guest carries the first account's session state and a request for
+// another one comes back from Apple as a framework error that names nothing.
+// On, it closes that session and opens a new one on the same engine, which has
+// never been run on device: the probe exists to find out whether a reopened
+// session works, what it costs, and whether the process holds on to memory each
+// time. It is a switch, not a policy, and it defaults off.
+var accountReopen atomic.Bool
+
+// SetAccountReopen turns the account-switch probe on or off. Like the cache
+// switch it has to be set before the runtime is used, because the decision is
+// made inside the download that hits the mismatch.
+func SetAccountReopen(on bool) { accountReopen.Store(on) }
+
+// AccountReopen reports whether a second account may reopen the runtime.
+func AccountReopen() bool { return accountReopen.Load() }
+
 const heapBase = uint64(0x400000000000)
 const heapSize = uint64(64 << 20)
 const stackBase = uint64(0x500000000000)
@@ -1003,6 +1023,19 @@ func (r *Runtime) Close() error {
 	}
 
 	r.patchedSites = nil
+
+	// Hand the address space back. The engine outlives this runtime, by design,
+	// and a second session on it has to map the same bases the first one took:
+	// without this, open() finds 0x100000000 already occupied and dies with
+	// UC_ERR_MAP. Only pages MemMap recorded as its own are released -- the SAP
+	// machine's images sit in the same address space and stay where they are.
+	unmapStart := time.Now()
+	unmapped, unmapErr := r.unmapOwned()
+	unmapTime := time.Since(unmapStart)
+
+	fmt.Fprintf(os.Stderr, "[SAP] close(): unmapped %d pages in %s\n",
+		unmapped, unmapTime.Round(time.Millisecond))
+
 	clear(r.entries)
 	clear(r.calls)
 	r.codeRanges = nil
@@ -1038,7 +1071,87 @@ func (r *Runtime) Close() error {
 		return fmt.Errorf("close store runtime: %w", restoreErr)
 	}
 
+	if unmapErr != nil {
+		return fmt.Errorf("close store runtime: %w", unmapErr)
+	}
+
 	return nil
+}
+
+// unmapOwned releases the pages this runtime mapped, one call per contiguous
+// run. Unmapping page by page would be ~200 calls per open on demand and one
+// per page on the eager path; the run count is what the census calls regions.
+//
+// Three regions are deliberately kept: the 64 MB heap, the stack and the return
+// stub live at fixed addresses that the SAP machine shares, and it allocates
+// from the heap for the life of the process. Handing those pages back would
+// leave the signer's allocator pointing at memory the engine no longer has, and
+// the failure would surface later as a signature that faults. Everything else
+// this runtime mapped is its own: profile pages, cache pages and the images the
+// machine had not loaded.
+func (r *Runtime) unmapOwned() (int, error) {
+	if r.engine == nil || len(r.pages) == 0 {
+		return 0, nil
+	}
+
+	pages := make([]uint64, 0, len(r.pages))
+
+	for page := range r.pages {
+		if sharedWithMachine(page) {
+			continue
+		}
+
+		pages = append(pages, page)
+	}
+
+	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
+
+	var (
+		first error
+		count int
+	)
+
+	for index := 0; index < len(pages); {
+		start := pages[index]
+		end := start + 4096
+		index++
+
+		for index < len(pages) && pages[index] == end {
+			end += 4096
+
+			index++
+		}
+
+		if err := r.engine.MemUnmap(start, end-start); err != nil {
+			if first == nil {
+				first = fmt.Errorf("unmap %#x+%#x: %w", start, end-start, err)
+			}
+
+			continue
+		}
+
+		count += int((end - start) / 4096)
+	}
+
+	r.pages = nil
+
+	return count, first
+}
+
+// sharedWithMachine reports whether a page sits in one of the three regions the
+// SAP machine also maps at fixed addresses. Those outlive the runtime, so Close
+// leaves them alone.
+func sharedWithMachine(page uint64) bool {
+	switch {
+	case page >= heapBase && page < heapBase+heapSize:
+		return true
+	case page >= stackBase && page < stackBase+stackSize:
+		return true
+	case page >= returnPC && page < returnPC+4096:
+		return true
+	}
+
+	return false
 }
 func (r *Runtime) MemMap(address, size uint64) error {
 	overlap := false
@@ -1047,8 +1160,8 @@ func (r *Runtime) MemMap(address, size uint64) error {
 	}
 
 	// Watch the range that faults during encoder initWithBag: every map that
-	// touches it is logged, because no MemUnmap exists anywhere in this package
-	// and the page is readable immediately before the call that faults on it.
+	// touches it is logged, because the page is readable immediately before the
+	// call that faults on it.
 	if address < 0x1a2b0000 && address+size > 0x1a2a0000 {
 		fmt.Fprintf(os.Stderr, "[SAP] watch: MemMap %#x+%#x (fault page range)\n", address, size)
 	}
@@ -1069,12 +1182,13 @@ func (r *Runtime) MemMap(address, size uint64) error {
 		// when the rest is free. Fall back to page granularity: keep what is
 		// already there, map the gaps. Upstream never meets this because it always
 		// builds its own engine on an empty address space.
+		//
+		// mapPerPage records the pages it mapped itself. Marking the whole range
+		// here instead -- which is what this did until the store runtime learned
+		// how to release its mappings -- claimed the machine's pages too, and
+		// unmapping them takes the SAP machine's own image out of its engine.
 		if err := r.mapPerPage(address, size); err != nil {
 			return fmt.Errorf("map guest memory: %w", err)
-		}
-
-		for page := address; page < address+size; page += 4096 {
-			r.pages[page] = true
 		}
 
 		return nil
@@ -1096,11 +1210,13 @@ func (r *Runtime) MemMap(address, size uint64) error {
 			if perPage := r.mapPerPage(page, end-page); perPage != nil {
 				return fmt.Errorf("map guest memory: %w", perPage)
 			}
+		} else {
+			for mark := page; mark < end; mark += 4096 {
+				r.pages[mark] = true
+			}
 		}
 
-		for ; page < end; page += 4096 {
-			r.pages[page] = true
-		}
+		page = end
 	}
 
 	if !r.deferFlush {
@@ -1164,6 +1280,12 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 
 		if mapErr != nil {
 			return fmt.Errorf("map %#x+%#x: %w", runStart, page-runStart, mapErr)
+		}
+
+		// Own only the pages this call mapped. A page that was already readable
+		// belongs to the other tenant on this engine and must survive Close.
+		for mark := runStart; mark < page; mark += 4096 {
+			r.pages[mark] = true
 		}
 
 		fresh += int((page - runStart) / 4096)

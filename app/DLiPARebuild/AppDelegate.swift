@@ -139,6 +139,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 AppLog.info("shared cache: mapped in full at open (switch off)", .sap)
             }
 
+            // The account-switch probe, off unless asked for. Logged in both
+            // directions for the same reason as the switch above: a run that
+            // refused the second account is indistinguishable from a run where
+            // nobody turned the probe on.
+            if UserDefaults.standard.bool(forKey: DiagnosticsScreen.accountReopenKey) {
+                SapbridgeEnableAccountReopenProbe()
+                AppLog.info("account switch: a second account may reopen the runtime (probe)", .sap)
+            } else {
+                AppLog.info("account switch: a second account is refused until a restart", .sap)
+            }
+
         // Off unless asked for. Opening the engine at launch is the step that
             // can end the process before a screen is drawn, and it is now a
             // diagnostic switch rather than a default.
