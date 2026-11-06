@@ -6,11 +6,11 @@ xcuserdata/
 DerivedData/
 .DS_Store
 *.ipa
-# The four Apple SAP binaries in VendorAssets/ are ~119 MB and were tracked
-# with git-lfs in the upstream repository. This fork does not have the LFS
-# objects, so the directory is ignored. Users must obtain the binaries from
-# https://github.com/a23bc/dlipa-rebuild (run `git lfs pull` there) and copy
-# them into VendorAssets/ before building.
+# The four Apple SAP binaries. They are not in this repository and must not be
+# added: the app asks the user once and downloads them from Apple on the device,
+# which is the only shape of this project that does not put Apple's binaries on
+# a third-party server. Nothing here tells anyone where to get them by hand --
+# if a build needs them at rest, that is a bug in the build, not a step.
 VendorAssets/
 
 # Working notes written during the SAP investigation. Kept locally,
@@ -19,3 +19,11 @@ VendorAssets/
 
 # Windows build artifacts from the local Go tooling.
 *.exe
+
+# Local scratch from the editors and agents used while developing.
+.codebuddy/
+.workbuddy/
+
+# Node tooling for the commit-message rules. The rule text itself is in
+# CONTRIBUTING.md, which is what a contributor on a machine without node reads.
+node_modules/
