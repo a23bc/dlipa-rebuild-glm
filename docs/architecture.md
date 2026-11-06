@@ -48,8 +48,9 @@ engine fails with `Could not allocate dynamic translator buffer`, so the Store
 runtime does not get its own address space — it borrows the SAP machine's engine
 and maps its own pages into the same guest.
 
-The store runtime, in turn, can only be opened **once per process**. Opening it a
-second time does not fail loudly; it silently produces a broken session:
+The store runtime, in turn, can only be opened **once without a close in
+between**. Opening it a second time does not fail loudly; it silently produces a
+broken session:
 
 ```
 open(): kept 9927 cache pages and 5087 profile pages the machine already had
@@ -64,6 +65,15 @@ session that has ended. The guest then takes an exception.
 So `sap.Signer` keeps one `storeRuntime` and one kbsync blob for the life of the
 signer, and `Close` takes the runtime down **before** the machine — the runtime
 puts back the bytes it patched, and that work needs the engine to still exist.
+
+That scopes the rule to the lifetime of a session, not of the process. `Close`
+restores every patched call site, drops the hooks and releases the Go-side tables
+the guest's objects were held in, but it does **not** unmap the guest: the pages
+the session mapped stay in the engine, which is the signer's engine and outlives
+it. Whether an open after a close then produces a working session is a different
+question from the one above, and it has **never been run on device** — the
+`already there` message quoted here is a second open *without* a close in
+between. Anything that reopens has to measure that first.
 
 **Known consequence:** while the runtime is up, those patched call sites stay
 patched on the engine that also signs. A later SAP signature may fail. Nothing in
