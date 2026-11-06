@@ -89,6 +89,24 @@ enum AssetStaging {
             var firstError: Error?
             var copied = 0
 
+            // A build that ships no binaries at all is not a broken build: the
+            // bridge resolves them on first use. Answer every caller with nil,
+            // because staging genuinely has nothing left to do.
+            //
+            // Ahead of the mkdir, which is the point of the ordering: creating
+            // the directory first and only then noticing there was nothing to
+            // copy left Library/Caches/SapAssets behind as an empty folder, so a
+            // device whose directory had been deleted grew one back on the next
+            // launch and looked, in a file browser, like a staging run that had
+            // lost its files.
+            guard bundledSource(for: files[0]) != nil else {
+                AppLog.info(
+                    "SAP assets are not bundled; the bridge resolves them on first use",
+                    .assets)
+                finishWithoutAssets(completion: completion)
+                return
+            }
+
             do {
                 try FileManager.default.createDirectory(
                     at: destination, withIntermediateDirectories: true)
@@ -97,17 +115,6 @@ enum AssetStaging {
                 // staging had succeeded: it set isReady, pointed the bridge at a
                 // directory that does not exist, and answered nil.
                 finish(error, destination: destination, completion: completion)
-                return
-            }
-
-            // A build that ships no binaries at all is not a broken build: the
-            // bridge resolves them on first use. Answer every caller with nil,
-            // because staging genuinely has nothing left to do.
-            guard bundledSource(for: files[0]) != nil else {
-                AppLog.info(
-                    "SAP assets are not bundled; the bridge resolves them on first use",
-                    .assets)
-                finishWithoutAssets(completion: completion)
                 return
             }
 
