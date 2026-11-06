@@ -185,8 +185,11 @@ enum AssetStaging {
         }
     }
 
-    /// The bundle lookup, in one place: the binaries sit in a SapAssets/
-    /// subdirectory (added as a folder reference by project.yml), and
+    /// The bundle lookup, in one place. A normal build ships none of these:
+    /// project.yml excludes Resources/SapAssets and no workflow stages it
+    /// any more, so this answers nil and the bridge resolves the binaries
+    /// from Apple. It stays for a local checkout that still has the
+    /// directory, where the files sit in a SapAssets/ subdirectory and
     /// `url(forResource:withExtension:)` does not search subdirectories
     /// unless told, so pass it and keep a bundle-wide search as a fallback.
     private static func bundledSource(for name: String) -> URL? {

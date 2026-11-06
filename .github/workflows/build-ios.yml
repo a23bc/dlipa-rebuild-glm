@@ -330,34 +330,6 @@ jobs:
           mv bridge/commerce.x64i app/DLiPARebuild/Resources/commerce.x64i
           ls -la app/DLiPARebuild/Resources/commerce.x64i
 
-      - name: Download the macOS 27 SAP binaries
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # VendorAssets/ is gitignored, so CI has to get the four binaries from
-          # the Fetch SAP assets workflow rather than from the checkout.
-          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow="Fetch SAP assets" \
-            --status success --limit 1 --json databaseId --jq ".[0].databaseId")
-          if [ -z "$RUN_ID" ]; then
-            echo "::error::no successful Fetch SAP assets run; run that workflow first"
-            exit 1
-          fi
-          echo "==> taking assets from Fetch SAP assets run $RUN_ID"
-          gh run download "$RUN_ID" --repo "${{ github.repository }}" --name sap-assets-macos27 \
-            --dir "${{ github.workspace }}/vendor-download"
-          mkdir -p "${{ github.workspace }}/VendorAssets"
-          cp "${{ github.workspace }}/vendor-download/VendorAssets/"* "${{ github.workspace }}/VendorAssets/"
-          ls -la "${{ github.workspace }}/VendorAssets"
-
-      - name: Stage the macOS 27 binaries into the app bundle
-        run: |
-          # Route B needs these four next to the app. They are the macOS 27 set,
-          # not the 10.9 set the go-bridge job uses for the guest image, so
-          # their digests differ from anything already in the build.
-          sh scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" \
-            "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/SapAssets"
-          ls -la app/DLiPARebuild/Resources/SapAssets
-
       - name: Install build tools
         run: |
           # xcodegen turns project.yml into a real .xcodeproj, so there is no
@@ -435,23 +407,17 @@ jobs:
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
 
-          # Pin the expected SapAssets digests in the BuildID file too, so
-          # the device log shows what the bytes *should* be alongside what
-          # they *are*. This makes a stale-bundle diagnosis a one-liner.
+          # No asset digests pinned here any more. The four binaries are not in
+          # the bundle, so there are no bundle bytes to compare against; the
+          # values the device will pull live in
+          # sapbridge/internal/sap/assets/assets.go, and the Fetch SAP assets
+          # workflow verifies an extraction against them before publishing.
           cat > "$APP/BuildID.txt" <<EOF
           build_commit=${{ github.sha }}
           build_run=${{ github.run_id }}
           build_run_attempt=${{ github.run_attempt }}
           build_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           build_ref=${{ github.ref_name }}
-          ipa_expected_applemediaservices_sha256=95f4558aa2c0ccd9f96ed479e336b630b46bf4b4e0baabc1c1ac8c7d55e21ab4
-          ipa_expected_applemediaservices_size=14813888
-          ipa_expected_commerce_sha256=76de40a4a32f691947cb926ce3b128d2fc446f7cac9755f831c406cf5a316ac9
-          ipa_expected_commerce_size=8092640
-          ipa_expected_corefp_sha256=2c30fa2b5f695fd66c0360dce72f54757d03ddb7107549715c12cb359a003b46
-          ipa_expected_corefp_size=94842464
-          ipa_expected_corefp_icxs_sha256=cb8f55330ec567da3e692dab5f5388bed0312dd9093340477c5759078cc2aa7b
-          ipa_expected_corefp_icxs_size=7365344
           EOF
           echo "==> BuildID.txt"
           cat "$APP/BuildID.txt"
@@ -549,13 +515,14 @@ jobs:
 
       - name: Check the bundle for stray files
         run: |
-          # CoreFP.icxs was ending up at the bundle root as well as inside
-          # Resources/SapAssets. The root copy is a leftover from an early
-          # attempt to satisfy a guest-internal relative path, and it is
-          # unnecessary: the Go loader reads the assets from the directory
-          # BundleDir names, which the app sets to Resources/SapAssets. A
-          # 7 MB unrecognised file at the bundle root is exactly the kind of
-          # thing MobileInstallation rejects.
+          # A guard, not a fix. CoreFP.icxs used to end up at the bundle root
+          # as well as inside Resources/SapAssets, the root copy being a
+          # leftover from an early attempt to satisfy a guest-internal
+          # relative path, and a 7 MB unrecognised file at the bundle root is
+          # exactly the kind of thing MobileInstallation rejects. Nothing
+          # stages SapAssets into the bundle any more, so anything outside
+          # this allowlist is now unambiguously a mistake -- which is what
+          # makes deleting it safe.
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           echo "==> bundle root before cleanup"
           ls -la "$APP"

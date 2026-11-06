@@ -22,11 +22,12 @@ targets:
           - "LaunchScreen.storyboard"
           # actool wants a simulator runtime the runner does not have.
           - "Assets.xcassets"
-          # SapAssets/ is staged by scripts/stage-assets.sh and added as a
-          # separate folder source below so the Apple binaries land in a
-          # SapAssets/ subdirectory of the bundle root. Adding them as a
-          # folder preserves the SapAssets/ path that AssetStaging.swift
-          # relies on (Bundle.main.url(forResource:) searches recursively).
+          # The four Apple binaries are no longer a bundle resource: the app
+          # resolves them from Apple on first use (see AssetStaging.swift and
+          # sapbridge/assets.go), so nothing in CI stages them any more. The
+          # exclude stays, so that a checkout which still holds an old,
+          # hand-staged Resources/SapAssets cannot quietly put 119 MB back
+          # into the IPA.
           - "Resources/SapAssets"
           # The C SAP engine is retired. It ran an OS X 10.9 x86-64 guest and
           # opened uc_open(UC_ARCH_X86), and it includes <unicorn/x86.h>. The
@@ -35,23 +36,6 @@ targets:
           # bridge's arm64 machine.
           - "Sap/sap_guest.c"
           - "Sap/sap_objc.c"
-      # The four Apple binaries are staged here by scripts/stage-assets.sh
-      # and copied into the app bundle. type: folder preserves the SapAssets/
-      # subdirectory in the bundle root.
-      # Note: the previous version used `path: DLiPARebuild/Resources` with
-      # type: folder, which created a non-standard Resources/ subdirectory in
-      # the iOS bundle. iOS app bundles are flat; a Resources/ subdirectory
-      # makes MobileInstallation type the bundle as System and reject
-      # registration with error 181.
-      # The SAP signing path no longer reads these: sap_guest.c runs OS X 10.9
-      # CommerceKit from the X64I container, and that container carries every
-      # byte the guest executes. The 119 MB of extracted macOS binaries were
-      # only ever needed by the Go bridge. The folder is still listed when it
-      # exists so a checkout that has it does not silently lose the assets the
-      # KBSync path may still want.
-      - path: DLiPARebuild/Resources/SapAssets
-        type: folder
-        optional: true
     # No dependencies. The gomobile archive is force-loaded into the app
     # binary by OTHER_LDFLAGS below, so the symbols resolve at link time and
     # the bundle stays a single executable. Embedding an xcframework gave
