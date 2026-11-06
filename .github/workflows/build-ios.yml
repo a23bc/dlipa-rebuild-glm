@@ -59,43 +59,15 @@ jobs:
           go test -timeout 180s ./ ./internal/install
         working-directory: sapbridge
 
-      # The X64I container the app interprets. It needs Go and the pinned OS X
-      # 10.9 CommerceKit, nothing from the Unicorn build, so it runs here and
-      # overlaps with that build instead of blocking the app job later.
-      #
-      # CommerceKit is the SAP driver: it exports _cp2g1b9ro, _Mib5yocT,
-      # _Fc3vhtJDvr and the other two entries, and it imports no CoreFP symbol
-      # at all. CoreFP belongs to the macOS 27 stack; the 10.9 driver has no
-      # use for it.
-      # The 10.9 binaries are a pinned, checksum-verified download from Apple
-      # (~31 MB of a 1.27 GB package). Nothing about them changes between
-      # builds, so the cache key is the fetch script itself: edit it and the
-      # cache misses.
-      - name: Cache the OS X 10.9 SAP binaries
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/osx109
-          key: osx109-${{ hashFiles('scripts/fetch-osx109-assets.py') }}
-
-      - name: Build the SAP guest image
-        run: |
-          # Only fetches on a cache miss; the script re-verifies every file
-          # against its pinned SHA-256 either way.
-          # Absolute path: this step runs with working-directory sapbridge, so
-          # a relative scripts/ would resolve inside the Go module.
-          if [ ! -s "$GITHUB_WORKSPACE/osx109/CommerceKit" ]; then
-            python3 "$GITHUB_WORKSPACE/scripts/fetch-osx109-assets.py" \
-              --out "$GITHUB_WORKSPACE/osx109"
-          else
-            echo "==> osx109 restored from cache"
-          fi
-          ls -la "$GITHUB_WORKSPACE/osx109"
-          go run ./cmd/x86image \
-            -in "$GITHUB_WORKSPACE/osx109/CommerceKit" \
-            -out "$GITHUB_WORKSPACE/commerce.x64i"
-          ls -la "$GITHUB_WORKSPACE/commerce.x64i"
-        working-directory: sapbridge
-
+      # The OS X 10.9 SAP binaries used to be fetched here to build an X64I
+      # container of 10.9 CommerceKit that then travelled into the app bundle as
+      # commerce.x64i. Nothing reads it: the signing machine is arm64 and runs
+      # the macOS 27 stack, and the two callers were the retired C engine and
+      # the exec probe. It was worth confirming rather than assuming --
+      # probeapp/ProbeApp.swift:426 still reads X64I containers, but names them
+      # corefp.x64i and commercekit.x64i and builds them itself, in build-probe,
+      # so this job could drop the download and the container without touching
+      # the probe.
       - name: Install build tools
         run: |
           # unicorn is for the host, not the target: the live SAP tests run the
@@ -264,10 +236,7 @@ jobs:
           # Swift learns this API, and a declaration missing from it costs a whole
           # build-and-install cycle to discover.
           cp app/DLiPARebuild/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/Headers/Sapbridge.objc.h stage/Sapbridge.objc.h
-          cp "$GITHUB_WORKSPACE/commerce.x64i" stage/commerce.x64i
-          # commerce.x64i has to be in the archive list, not just copied into
-          # the staging directory.
-          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a Sapbridge.objc.h commerce.x64i
+          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a Sapbridge.objc.h
           echo "artifact=sapbridge-ios.tar.gz" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
@@ -324,12 +293,6 @@ jobs:
           ls -la app/build/ios/
           ls app/build/ios/include
 
-          # The X64I container travels with the archives: it is built in the
-          # go-bridge job, which already has Go and the pinned OS X 10.9
-          # assets, so the app job does not spend a minute downloading them.
-          mv bridge/commerce.x64i app/DLiPARebuild/Resources/commerce.x64i
-          ls -la app/DLiPARebuild/Resources/commerce.x64i
-
       - name: Install build tools
         run: |
           # xcodegen turns project.yml into a real .xcodeproj, so there is no
@@ -380,17 +343,6 @@ jobs:
           if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
-
-      - name: Copy the SAP guest image into bundle
-        run: |
-          APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
-          # A data container, not a Mach-O, so MobileInstallation has nothing
-          # to type as a nested executable.
-          cp app/DLiPARebuild/Resources/commerce.x64i "$APP/commerce.x64i"
-          ls -la "$APP/commerce.x64i"
-          # The app looks for commerce_native.bin first, then commerce.x64i;
-          # keep only the container so a stale binary cannot be picked up.
-          rm -f "$APP/commerce_native.bin"
 
       - name: Write BuildID
         run: |
@@ -534,7 +486,7 @@ jobs:
           echo "==> executable: $EXE"
           find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" \
             ! -name "$EXE" ! -name "Assets.car" ! -name "*.png" \
-            ! -name "BuildID.txt" ! -name "commerce_native.bin" ! -name "commerce.x64i" \
+            ! -name "BuildID.txt" \
             -print -delete
           if [ ! -f "$APP/$EXE" ]; then
             echo "::error::cleanup removed the executable $EXE"
