@@ -92,6 +92,15 @@ func cacheDirectory() (string, error) {
 	return filepath.Join(root, "ipatool", "sap", assetCacheDirectory), nil
 }
 
+// CacheDirectory reports where Load keeps the four pinned binaries.
+//
+// Callers that must read bytes from disk rather than from a bundle held in
+// memory resolve them with Load first and then read this directory: after a
+// remote resolution it is the only place the verified bytes exist.
+func CacheDirectory() (string, error) {
+	return cacheDirectory()
+}
+
 func readCache(directory string) (Bundle, error) {
 	files := make(map[string][]byte, len(requiredFiles))
 

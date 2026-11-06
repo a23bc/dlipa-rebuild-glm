@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -109,6 +110,58 @@ func loadBundle() (assets.Bundle, error) {
 	bundleCache = &bundle
 	bundleCached = dir
 	return bundle, nil
+}
+
+// appleMediaServicesImage returns the AppleMediaServices bytes the store
+// runtime signs with.
+//
+// It reads a file rather than the memoised bundle on purpose: on device the
+// bundle handed to a call was empty even though the same loader, called during
+// pre-warm, had the real bytes, so the file is the only source observed correct
+// at both moments.
+func appleMediaServicesImage() ([]byte, error) {
+	path, err := appleMediaServicesPath()
+	if err != nil {
+		return nil, err
+	}
+
+	image, err := readFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("sapbridge: read %s: %w", path, err)
+	}
+
+	return image, nil
+}
+
+// appleMediaServicesPath names the file appleMediaServicesImage reads.
+//
+// An app that ships the binaries stages them and sets BundleDir, so that
+// directory is the answer. A build that ships none -- which is now the normal
+// case -- never sets it, and the old filepath.Join(BundleDirValue(), name) then
+// produced a path relative to the process's working directory, which on iOS is
+// "/". The download failed with "open AppleMediaServices: no such file or
+// directory" and the resolver below was never consulted, because the download
+// path read the file directly instead of going through loadBundle.
+//
+// So resolve first: loadBundle falls back to Apple on a cache miss, and its
+// extractor size- and SHA-256-checks before it writes, which makes the cache
+// directory a source as trustworthy as the staged one.
+func appleMediaServicesPath() (string, error) {
+	dir := BundleDirValue()
+	if dir != "" {
+		return filepath.Join(dir, "AppleMediaServices"), nil
+	}
+
+	if _, err := loadBundle(); err != nil {
+		return "", err
+	}
+
+	cache, err := assets.CacheDirectory()
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: %w", err)
+	}
+
+	return filepath.Join(cache, "AppleMediaServices"), nil
 }
 
 // readBundleDir loads the four pinned binaries from an explicit directory.

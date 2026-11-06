@@ -4,6 +4,7 @@ import (
         "context"
         "encoding/base64"
         "os"
+        "path/filepath"
         "strings"
         "testing"
 )
@@ -205,5 +206,51 @@ func TestBundleDirValidationRejectsTruncatedFiles(t *testing.T) {
         }
         if !strings.Contains(err.Error(), "size") && !strings.Contains(err.Error(), "integrity") {
                 t.Fatalf("error does not mention size or integrity: %v", err)
+        }
+}
+
+// TestAssetImagePathUsesTheStagedDirectory keeps the bundled behaviour intact:
+// when the app has staged a copy, that directory is the answer, without the
+// cache or the network being consulted.
+func TestAssetImagePathUsesTheStagedDirectory(t *testing.T) {
+        dir := t.TempDir()
+        previous := BundleDir
+        defer func() { BundleDir = previous }()
+        BundleDir = dir
+
+        got, err := appleMediaServicesPath()
+        if err != nil {
+                t.Fatal(err)
+        }
+        want := filepath.Join(dir, "AppleMediaServices")
+        if got != want {
+                t.Fatalf("appleMediaServicesPath = %q, want %q", got, want)
+        }
+}
+
+// TestAssetImageResolvesWhenTheAppStagedNothing is the regression test for the
+// download that failed with "sapbridge: read AppleMediaServices: open
+// AppleMediaServices: no such file or directory". A build that ships no
+// binaries never sets BundleDir, and the download path then joined "" with the
+// file name -- a path relative to the working directory, which on iOS is "/" --
+// so it never reached the resolver that can fetch them from Apple.
+func TestAssetImageResolvesWhenTheAppStagedNothing(t *testing.T) {
+        previous := BundleDir
+        defer func() { BundleDir = previous }()
+        BundleDir = ""
+
+        // Nothing in a test may use the resolver's network fallback.
+        t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+
+        path, err := appleMediaServicesPath()
+        if err != nil {
+                if strings.Contains(err.Error(), "open AppleMediaServices:") {
+                        t.Fatalf("read relative to the working directory instead of resolving: %v", err)
+                }
+                return
+        }
+        if !filepath.IsAbs(path) {
+                t.Fatalf("resolved to a relative path: %q", path)
         }
 }

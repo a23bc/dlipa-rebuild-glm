@@ -15,7 +15,6 @@ import (
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/measure"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -238,14 +237,11 @@ func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEnd
 
 	// inner is the ActionSigner interface; the smoke test lives on the concrete
 	// signer, so ask for it rather than widening the interface for one caller.
-	// Read the file the app staged rather than a cached Bundle. On device the
-	// bundle handed to this call was empty even though the same loader, called
-	// during pre-warm, had the real bytes -- so the file is the only source that
-	// has been observed to be correct at both moments.
-	imagePath := filepath.Join(BundleDirValue(), "AppleMediaServices")
-	image, err := os.ReadFile(imagePath)
+	// Read from disk, and resolve first if the app staged nothing: see
+	// appleMediaServicesImage.
+	image, err := appleMediaServicesImage()
 	if err != nil {
-		return "", fmt.Errorf("sapbridge: read %s: %w", imagePath, err)
+		return "", err
 	}
 
 	smoker, ok := s.inner.(interface {
@@ -273,14 +269,12 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
 
-	// Read the file the app staged rather than a cached Bundle: on device the
-	// bundle handed to a call was empty even though the loader had the real
-	// bytes during pre-warm, so the file is the only source observed correct.
-	imagePath := filepath.Join(BundleDirValue(), "AppleMediaServices")
-
-	image, err := os.ReadFile(imagePath)
+	// Read from disk, and resolve first if the app staged nothing: see
+	// appleMediaServicesImage. This is the call that used to fail on a build
+	// without bundled assets.
+	image, err := appleMediaServicesImage()
 	if err != nil {
-		return "", fmt.Errorf("sapbridge: read %s: %w", imagePath, err)
+		return "", err
 	}
 
 	return s.inner.(interface {
