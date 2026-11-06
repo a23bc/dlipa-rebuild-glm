@@ -87,26 +87,34 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // A switch, not a policy. Opening the engine at launch is the one
             // step that can end the process before a screen is drawn; not opening
             // it costs two minutes on the first thing that needs the store.
-            // A new build starts from no cached session material. The kbsync blobs carry
-        // the assumptions of the binary that wrote them, and after an upgrade the old
-        // one makes the guest reject the request in setup -- which looked like a
-        // broken account until a clean install worked.
-        let buildKey = "com.a23bc.dliparebuild.lastBuild"
-        let current = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0")
-            + "/" + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0")
+            // A new version starts from no cached session material. The kbsync
+            // blobs carry the assumptions of the binary that wrote them, and
+            // after an upgrade the old one makes the guest reject the request in
+            // setup -- which looked like a broken account until a clean install
+            // worked.
+            //
+            // The version, not the CI build number. The build number changes on
+            // every push, and clearing on it cost the first download of each new
+            // build a kbsync regeneration: 117 s with nothing in the log between
+            // the request and the open, then 0 s on the next launch, which read
+            // the blob back off disk. A key that is too coarse still self-heals
+            // -- Apple's rejection drops the stored blob, so the worst case is
+            // one failed download rather than a dead account.
+            let versionKey = "com.a23bc.dliparebuild.lastVersion"
+            let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 
-        if UserDefaults.standard.string(forKey: buildKey) != current {
-            var failure: NSError?
-            _ = SapbridgeClearCachedKBSync(&failure)
+            if UserDefaults.standard.string(forKey: versionKey) != current {
+                var failure: NSError?
+                _ = SapbridgeClearCachedKBSync(&failure)
 
-            if let failure {
-                AppLog.warn("kbsync cache clear failed: " + failure.localizedDescription, .sap)
-            } else {
-                AppLog.info("new build " + current + ": kbsync cache cleared", .sap)
+                if let failure {
+                    AppLog.warn("kbsync cache clear failed: " + failure.localizedDescription, .sap)
+                } else {
+                    AppLog.info("new version " + current + ": kbsync cache cleared", .sap)
+                }
+
+                UserDefaults.standard.set(current, forKey: versionKey)
             }
-
-            UserDefaults.standard.set(current, forKey: buildKey)
-        }
 
         // Read before anything can open the store runtime: open() decides once,
         // from this, whether the shared cache is mapped up front or handed out a
