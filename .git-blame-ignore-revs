@@ -1,0 +1,8 @@
+# Reformatting commits: line breaks and nothing else. `git blame` skips them, so
+# the prose keeps pointing at the commit that wrote it rather than at the one
+# that reflowed it.
+#
+# GitHub honours this file on its own. Locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+3a5f4177b234e49bde88014533fe68787a2398d0
