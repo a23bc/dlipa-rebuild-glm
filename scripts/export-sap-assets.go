@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -44,12 +45,72 @@ func main() {
 	// Report before any os.Exit: the byte count matters most on the runs that
 	// fail, and a deferred call would be skipped.
 	egress := measureEgress()
-	if err := run(ctx, *out); err != nil {
-		egress.report()
+	heap := startHeapSampler()
+	err := run(ctx, *out)
+	memory := heap.finish()
+	egress.report()
+	fmt.Printf("  heap: peak %s, cumulative allocated %s\n",
+		formatBytes(int64(memory.peak)), formatBytes(int64(memory.totalAlloc)))
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	egress.report()
+}
+
+// heapSampler watches the heap while the extraction runs, and reports two
+// numbers: the highest live heap it saw, and the cumulative bytes the runtime
+// ever allocated. go-macho pre-allocates the whole address span of the cached
+// image before writing any of it, and that reservation is what a phone cannot
+// satisfy -- but a large allocation that lives only while a 14.8 MB file is
+// being written can fall between two samples. TotalAlloc cannot miss it, so the
+// pair answers the question instead of guessing from whichever one you happened
+// to look at.
+type heapSampler struct {
+	halt chan struct{}
+	done chan heapSample
+	peak atomic.Uint64
+}
+
+type heapSample struct {
+	peak       uint64
+	totalAlloc uint64
+}
+
+func startHeapSampler() *heapSampler {
+	sampler := &heapSampler{halt: make(chan struct{}), done: make(chan heapSample, 1)}
+	go func() {
+		var stats runtime.MemStats
+		// ReadMemStats stops the world, so this stays coarse on purpose.
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				runtime.ReadMemStats(&stats)
+				sampler.record(stats.HeapAlloc)
+			case <-sampler.halt:
+				runtime.ReadMemStats(&stats)
+				sampler.record(stats.HeapAlloc)
+				sampler.done <- heapSample{peak: sampler.peak.Load(), totalAlloc: stats.TotalAlloc}
+				return
+			}
+		}
+	}()
+	return sampler
+}
+
+func (s *heapSampler) record(alloc uint64) {
+	for {
+		seen := s.peak.Load()
+		if alloc <= seen || s.peak.CompareAndSwap(seen, alloc) {
+			return
+		}
+	}
+}
+
+func (s *heapSampler) finish() heapSample {
+	close(s.halt)
+	return <-s.done
 }
 
 func run(ctx context.Context, out string) error {
