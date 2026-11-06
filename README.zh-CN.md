@@ -12,7 +12,7 @@ DLiPA 失效，是因为 Apple 现在要求 App Store 私有 API 请求携带
 它怎么工作、每一块为什么长成这样，见 [`docs/architecture.md`](docs/architecture.md)。
 
 下载在后台运行：点一下立刻返回，进度在 Downloads 页，模拟的 Store runtime 干活期间应用照常
-可用——现在是秒级，因为共享缓存改成先建索引、按需映射，不再每次 open 全量映射。
+可用。这个 runtime 现在打开大约一秒；以前要一分半，当初那句「应用照常可用」就是冲着它说的。
 
 **不需要 Apple 开发者账号。** IPA 已封装但没有证书签名，用你自己的 Apple ID 通过 AltStore
 或 Sideloadly 签一次即可——与原版 DLiPA 的 README 推荐的是同一套流程。
@@ -75,8 +75,9 @@ DLiPA 失效，是因为 Apple 现在要求 App Store 私有 API 请求携带
       build-unicorn-ios.sh      cross-compiles Unicorn TCI
       package-ipa.sh            sealed .app -> .ipa
     docs/architecture.md        how the pieces fit and why
-    VendorAssets/               extraction output of the Fetch SAP assets
-                                workflow; gitignored, and no build needs it
+    VendorAssets/               where the extracted Apple binaries would sit;
+                                gitignored, and no build reads it — the device
+                                fetches them from Apple itself
     .github/workflows/
       build-ios.yml             macOS runner: bridge -> app -> IPA -> artifact
 
@@ -85,12 +86,14 @@ DLiPA 失效，是因为 Apple 现在要求 App Store 私有 API 请求携带
 ## 文档
 
 * **[docs/architecture.md](docs/architecture.md)** — 各部分怎么拼起来：两个租户（tenant）
-  共用一个 guest、为什么 Store runtime 只打开一次并一直留着、下载流程的端到端、被具体
-  失败逼出来的那些决定，以及在真机上打开一次要付多少代价。
+  共用一个 guest、为什么 Store runtime 打开一次就留着、下载流程的端到端、被具体失败逼出来
+  的那些决定，以及在真机上时间都花在哪。
+* **[CONTRIBUTING.md](CONTRIBUTING.md)** — 没有 Mac 怎么干活：两层 CI 各自能证明什么、
+  真正会让 push 失败的提交信息规则，以及什么才算验证过。
 * `DELIVERY_STATUS.md` — 现在什么能用、什么不能用，以及证据。
 * `sapbridge/VERIFICATION.md` — Go 侧的构建与测试矩阵。
 * **[docs/RELEASING.md](docs/RELEASING.md)** — 哪个版本字段是人为决定、哪个是运行计数，
-  产物名字里带的是什么，以及 bundle 用什么封装的。
+  产物名字里带的是什么，以及 bundle 是用什么封装的。
 
 ---
 
@@ -155,10 +158,12 @@ DLiPA 失效，是因为 Apple 现在要求 App Store 私有 API 请求携带
   `buyProduct` 兜底返回 `SystemError`，所以实际不贡献任何东西；等编码器链路在真实使用中
   跑一段时间就删掉。
 * 不支持购买，因此账号本来就不拥有的应用下载不了。这里只负责下载，不负责买。
-* store runtime 打开一次就一直留着，因为 guest 里带着账号的会话状态——所以切换账号需要
-  重启应用。现在一次 open 约 1.2 s，而共享缓存还是全量映射时要约 99 s（见架构文档）。
-  原版应用的 100 个 Objective-C 类、12 种本地化、CocoaHTTPServer 安装流程和
-  SSZipArchive 打包没有复刻；源码从未公开，只有编译好的 IPA。
+* store runtime 每个进程只打开一次，而且属于一个账号，所以同一次启动里换第二个账号会被
+  直接拒绝而不是服务——今天的变通办法是重启应用。打开本身现在约一秒（架构文档记着它过去
+  要多少，以及为什么）。
+
+原版应用的 100 个 Objective-C 类、12 种本地化、CocoaHTTPServer 安装流程和 SSZipArchive
+打包没有复刻；源码从未公开，只有编译好的 IPA。
 
 ## 许可
 

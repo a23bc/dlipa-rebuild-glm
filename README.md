@@ -17,8 +17,9 @@ piece is shaped the way it is.
 
 Downloads run in the background: starting one returns immediately, progress is on
 the Downloads tab, and the app stays usable while the emulated Store runtime
-works — seconds, now that the shared cache is indexed and mapped on demand
-rather than mapped in full at every open.
+works. Opening that runtime takes about a second on device now; it used to take
+a minute and a half, which is what "the app stays usable" was originally a
+promise about.
 
 **No Apple Developer account is required.** The IPA is sealed but not signed with a certificate, and you
 sign it with your own Apple ID using AltStore or Sideloadly — the same flow the
@@ -81,8 +82,9 @@ The controlled experiment behind the first two rows is in
       build-unicorn-ios.sh      cross-compiles Unicorn TCI
       package-ipa.sh            sealed .app -> .ipa
     docs/architecture.md        how the pieces fit and why
-    VendorAssets/               extraction output of the Fetch SAP assets
-                                workflow; gitignored, and no build needs it
+    VendorAssets/               where the extracted Apple binaries would sit;
+                                gitignored, and no build reads it — the device
+                                fetches them from Apple itself
     .github/workflows/
       build-ios.yml             macOS runner: bridge -> app -> IPA -> artifact
 
@@ -93,7 +95,10 @@ The controlled experiment behind the first two rows is in
 * **[docs/architecture.md](docs/architecture.md)** — how the pieces fit: the two
   tenants on one guest, why the Store runtime is opened once and kept open, the
   download flow end to end, the decisions that were forced by specific failures,
-  and what an open costs on device.
+  and where the time goes on device.
+* **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to work on this without a Mac:
+  the two CI layers and what each can prove, the commit-message rules that
+  actually fail pushes, and what counts as verified.
 * `DELIVERY_STATUS.md` — what works today, what does not, and the evidence.
 * `sapbridge/VERIFICATION.md` — build and test matrix for the Go side.
 * **[docs/RELEASING.md](docs/RELEASING.md)** — which version field is a decision and
@@ -170,12 +175,14 @@ Known gaps, in the order they are likely to matter:
   contributes nothing; it goes once the encoder path has run in the field.
 * purchases, and therefore apps the account does not already own, are not
   supported. This downloads, not buys.
-* the store runtime is opened once and kept open, because the guest carries the
-  account's session state — so switching accounts needs an app restart. An open
-  now costs about 1.2 s, against about 99 s while the shared cache was still
-  mapped in full (see the architecture note). The original app's 100 Objective-C classes, 12 localisations,
-CocoaHTTPServer install flow and SSZipArchive packaging are not reproduced;
-the source was never published, only the compiled IPA.
+* the store runtime is opened once per process and belongs to one account, so a
+  second account in the same launch is refused rather than served — restarting
+  the app is the workaround today. The open itself takes about a second (the
+  architecture note records what it used to cost, and why).
+
+The original app's 100 Objective-C classes, 12 localisations, CocoaHTTPServer
+install flow and SSZipArchive packaging are not reproduced; the source was never
+published, only the compiled IPA.
 
 ## Licence
 
