@@ -96,6 +96,9 @@ The controlled experiment behind the first two rows is in
   and what an open costs on device.
 * `DELIVERY_STATUS.md` — what works today, what does not, and the evidence.
 * `sapbridge/VERIFICATION.md` — build and test matrix for the Go side.
+* **[docs/RELEASING.md](docs/RELEASING.md)** — which version field is a decision and
+  which is a run counter, what the artifact name carries, and how the bundle is
+  sealed.
 
 ---
 

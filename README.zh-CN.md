@@ -89,6 +89,8 @@ DLiPA 失效，是因为 Apple 现在要求 App Store 私有 API 请求携带
   失败逼出来的那些决定，以及在真机上打开一次要付多少代价。
 * `DELIVERY_STATUS.md` — 现在什么能用、什么不能用，以及证据。
 * `sapbridge/VERIFICATION.md` — Go 侧的构建与测试矩阵。
+* **[docs/RELEASING.md](docs/RELEASING.md)** — 哪个版本字段是人为决定、哪个是运行计数，
+  产物名字里带的是什么，以及 bundle 用什么封装的。
 
 ---
 
