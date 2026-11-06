@@ -59,43 +59,15 @@ jobs:
           go test -timeout 180s ./ ./internal/install
         working-directory: sapbridge
 
-      # The X64I container the app interprets. It needs Go and the pinned OS X
-      # 10.9 CommerceKit, nothing from the Unicorn build, so it runs here and
-      # overlaps with that build instead of blocking the app job later.
-      #
-      # CommerceKit is the SAP driver: it exports _cp2g1b9ro, _Mib5yocT,
-      # _Fc3vhtJDvr and the other two entries, and it imports no CoreFP symbol
-      # at all. CoreFP belongs to the macOS 27 stack; the 10.9 driver has no
-      # use for it.
-      # The 10.9 binaries are a pinned, checksum-verified download from Apple
-      # (~31 MB of a 1.27 GB package). Nothing about them changes between
-      # builds, so the cache key is the fetch script itself: edit it and the
-      # cache misses.
-      - name: Cache the OS X 10.9 SAP binaries
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/osx109
-          key: osx109-${{ hashFiles('scripts/fetch-osx109-assets.py') }}
-
-      - name: Build the SAP guest image
-        run: |
-          # Only fetches on a cache miss; the script re-verifies every file
-          # against its pinned SHA-256 either way.
-          # Absolute path: this step runs with working-directory sapbridge, so
-          # a relative scripts/ would resolve inside the Go module.
-          if [ ! -s "$GITHUB_WORKSPACE/osx109/CommerceKit" ]; then
-            python3 "$GITHUB_WORKSPACE/scripts/fetch-osx109-assets.py" \
-              --out "$GITHUB_WORKSPACE/osx109"
-          else
-            echo "==> osx109 restored from cache"
-          fi
-          ls -la "$GITHUB_WORKSPACE/osx109"
-          go run ./cmd/x86image \
-            -in "$GITHUB_WORKSPACE/osx109/CommerceKit" \
-            -out "$GITHUB_WORKSPACE/commerce.x64i"
-          ls -la "$GITHUB_WORKSPACE/commerce.x64i"
-        working-directory: sapbridge
-
+      # The OS X 10.9 SAP binaries used to be fetched here to build an X64I
+      # container of 10.9 CommerceKit that then travelled into the app bundle as
+      # commerce.x64i. Nothing reads it: the signing machine is arm64 and runs
+      # the macOS 27 stack, and the two callers were the retired C engine and
+      # the exec probe. It was worth confirming rather than assuming --
+      # probeapp/ProbeApp.swift:426 still reads X64I containers, but names them
+      # corefp.x64i and commercekit.x64i and builds them itself, in build-probe,
+      # so this job could drop the download and the container without touching
+      # the probe.
       - name: Install build tools
         run: |
           # unicorn is for the host, not the target: the live SAP tests run the
@@ -264,10 +236,7 @@ jobs:
           # Swift learns this API, and a declaration missing from it costs a whole
           # build-and-install cycle to discover.
           cp app/DLiPARebuild/Frameworks/SapBridge.xcframework/ios-arm64/SapBridge.framework/Headers/Sapbridge.objc.h stage/Sapbridge.objc.h
-          cp "$GITHUB_WORKSPACE/commerce.x64i" stage/commerce.x64i
-          # commerce.x64i has to be in the archive list, not just copied into
-          # the staging directory.
-          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a Sapbridge.objc.h commerce.x64i
+          tar -czf sapbridge-ios.tar.gz -C stage ios SapBridge.a Sapbridge.objc.h
           echo "artifact=sapbridge-ios.tar.gz" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
@@ -324,40 +293,6 @@ jobs:
           ls -la app/build/ios/
           ls app/build/ios/include
 
-          # The X64I container travels with the archives: it is built in the
-          # go-bridge job, which already has Go and the pinned OS X 10.9
-          # assets, so the app job does not spend a minute downloading them.
-          mv bridge/commerce.x64i app/DLiPARebuild/Resources/commerce.x64i
-          ls -la app/DLiPARebuild/Resources/commerce.x64i
-
-      - name: Download the macOS 27 SAP binaries
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # VendorAssets/ is gitignored, so CI has to get the four binaries from
-          # the Fetch SAP assets workflow rather than from the checkout.
-          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow="Fetch SAP assets" \
-            --status success --limit 1 --json databaseId --jq ".[0].databaseId")
-          if [ -z "$RUN_ID" ]; then
-            echo "::error::no successful Fetch SAP assets run; run that workflow first"
-            exit 1
-          fi
-          echo "==> taking assets from Fetch SAP assets run $RUN_ID"
-          gh run download "$RUN_ID" --repo "${{ github.repository }}" --name sap-assets-macos27 \
-            --dir "${{ github.workspace }}/vendor-download"
-          mkdir -p "${{ github.workspace }}/VendorAssets"
-          cp "${{ github.workspace }}/vendor-download/VendorAssets/"* "${{ github.workspace }}/VendorAssets/"
-          ls -la "${{ github.workspace }}/VendorAssets"
-
-      - name: Stage the macOS 27 binaries into the app bundle
-        run: |
-          # Route B needs these four next to the app. They are the macOS 27 set,
-          # not the 10.9 set the go-bridge job uses for the guest image, so
-          # their digests differ from anything already in the build.
-          sh scripts/stage-assets.sh "$GITHUB_WORKSPACE/VendorAssets" \
-            "$GITHUB_WORKSPACE/app/DLiPARebuild/Resources/SapAssets"
-          ls -la app/DLiPARebuild/Resources/SapAssets
-
       - name: Install build tools
         run: |
           # xcodegen turns project.yml into a real .xcodeproj, so there is no
@@ -390,6 +325,15 @@ jobs:
           # registration with error 181. The "-" identity produces an adhoc
           # signature, which is what TrollStore and AltStore expect, and needs
           # no developer account.
+          #
+          # CFBundleVersion comes from the run number instead of the default 1.
+          # AppDelegate clears the cached kbsync blobs when the build number
+          # changes, because a blob carries the assumptions of the binary that
+          # wrote it -- and every CI build answered 1/1.4.1, so the rule never
+          # fired between two builds and an over-install kept testing against
+          # bytes the previous binary produced. The marketing version is left
+          # alone: that number is a release decision, this one is a fact about
+          # a build.
           set -o pipefail
           xcodebuild \
             -project DLiPARebuild.xcodeproj \
@@ -400,25 +344,22 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             clean build
       - name: Locate the built app
         id: app
         run: |
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
+          # Say what the version pair expanded to. Info.plist names the build
+          # settings instead of literals, so an unsubstituted
+          # "$(CURRENT_PROJECT_VERSION)" in this line is how you learn the
+          # bundle cannot tell itself from the last one -- which is what
+          # AppDelegate's kbsync cache rule keys on.
+          plutil -p "$APP/Info.plist" | grep -E "CFBundleVersion|CFBundleShortVersionString"
+
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           du -sh "$APP"
-
-      - name: Copy the SAP guest image into bundle
-        run: |
-          APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
-          # A data container, not a Mach-O, so MobileInstallation has nothing
-          # to type as a nested executable.
-          cp app/DLiPARebuild/Resources/commerce.x64i "$APP/commerce.x64i"
-          ls -la "$APP/commerce.x64i"
-          # The app looks for commerce_native.bin first, then commerce.x64i;
-          # keep only the container so a stale binary cannot be picked up.
-          rm -f "$APP/commerce_native.bin"
 
       - name: Write BuildID
         run: |
@@ -435,23 +376,17 @@ jobs:
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           if [ -z "$APP" ]; then echo "::error::DLiPARebuild.app not found"; exit 1; fi
 
-          # Pin the expected SapAssets digests in the BuildID file too, so
-          # the device log shows what the bytes *should* be alongside what
-          # they *are*. This makes a stale-bundle diagnosis a one-liner.
+          # No asset digests pinned here any more. The four binaries are not in
+          # the bundle, so there are no bundle bytes to compare against; the
+          # values the device will pull live in
+          # sapbridge/internal/sap/assets/assets.go, and the Fetch SAP assets
+          # workflow verifies an extraction against them before publishing.
           cat > "$APP/BuildID.txt" <<EOF
           build_commit=${{ github.sha }}
           build_run=${{ github.run_id }}
           build_run_attempt=${{ github.run_attempt }}
           build_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           build_ref=${{ github.ref_name }}
-          ipa_expected_applemediaservices_sha256=95f4558aa2c0ccd9f96ed479e336b630b46bf4b4e0baabc1c1ac8c7d55e21ab4
-          ipa_expected_applemediaservices_size=14813888
-          ipa_expected_commerce_sha256=76de40a4a32f691947cb926ce3b128d2fc446f7cac9755f831c406cf5a316ac9
-          ipa_expected_commerce_size=8092640
-          ipa_expected_corefp_sha256=2c30fa2b5f695fd66c0360dce72f54757d03ddb7107549715c12cb359a003b46
-          ipa_expected_corefp_size=94842464
-          ipa_expected_corefp_icxs_sha256=cb8f55330ec567da3e692dab5f5388bed0312dd9093340477c5759078cc2aa7b
-          ipa_expected_corefp_icxs_size=7365344
           EOF
           echo "==> BuildID.txt"
           cat "$APP/BuildID.txt"
@@ -549,13 +484,14 @@ jobs:
 
       - name: Check the bundle for stray files
         run: |
-          # CoreFP.icxs was ending up at the bundle root as well as inside
-          # Resources/SapAssets. The root copy is a leftover from an early
-          # attempt to satisfy a guest-internal relative path, and it is
-          # unnecessary: the Go loader reads the assets from the directory
-          # BundleDir names, which the app sets to Resources/SapAssets. A
-          # 7 MB unrecognised file at the bundle root is exactly the kind of
-          # thing MobileInstallation rejects.
+          # A guard, not a fix. CoreFP.icxs used to end up at the bundle root
+          # as well as inside Resources/SapAssets, the root copy being a
+          # leftover from an early attempt to satisfy a guest-internal
+          # relative path, and a 7 MB unrecognised file at the bundle root is
+          # exactly the kind of thing MobileInstallation rejects. Nothing
+          # stages SapAssets into the bundle any more, so anything outside
+          # this allowlist is now unambiguously a mistake -- which is what
+          # makes deleting it safe.
           APP=$(find app/build -name "DLiPARebuild.app" -maxdepth 4 -type d | head -n 1)
           echo "==> bundle root before cleanup"
           ls -la "$APP"
@@ -567,7 +503,7 @@ jobs:
           echo "==> executable: $EXE"
           find "$APP" -maxdepth 1 -type f ! -name "Info.plist" ! -name "PkgInfo" \
             ! -name "$EXE" ! -name "Assets.car" ! -name "*.png" \
-            ! -name "BuildID.txt" ! -name "commerce_native.bin" ! -name "commerce.x64i" \
+            ! -name "BuildID.txt" \
             -print -delete
           if [ ! -f "$APP/$EXE" ]; then
             echo "::error::cleanup removed the executable $EXE"

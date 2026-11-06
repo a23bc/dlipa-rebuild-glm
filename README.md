@@ -75,10 +75,10 @@ The controlled experiment behind the first two rows is in
     scripts/
       check-bridging-header.py  generated header vs the hand-written one
       build-unicorn-ios.sh      cross-compiles Unicorn TCI
-      stage-assets.sh           copies + SHA-256 verifies the Apple binaries
       package-ipa.sh            sealed .app -> .ipa
     docs/architecture.md        how the pieces fit and why
-    VendorAssets/               the four Apple binaries, git-lfs
+    VendorAssets/               extraction output of the Fetch SAP assets
+                                workflow; gitignored, and no build needs it
     .github/workflows/
       build-ios.yml             macOS runner: bridge -> app -> IPA -> artifact
 
@@ -103,8 +103,10 @@ Push to `main` or open a pull request. The workflow runs two jobs:
 
 1. **go-bridge** — unit tests, cross-compiles Unicorn for iOS arm64, binds the
    Go module into `SapBridge.framework` with gomobile.
-2. **app** — downloads the framework, stages and verifies the Apple assets,
-   builds the app, seals it with a generated CodeResources, packages it as `DLiPA-<digest>.ipa`, uploads it
+2. **app** — downloads the framework and builds the app. Nothing here touches
+   the four Apple binaries: they are not in the bundle, and the app fetches
+   them from Apple on the device the first time it needs to sign. The job then
+   seals it with a generated CodeResources, packages it as `DLiPA-<digest>.ipa`, uploads it
    as an artifact. Tagged pushes also attach it to a release.
 
 Run it manually from the Actions tab with **Run workflow**.
@@ -122,10 +124,7 @@ Run it manually from the Actions tab with **Run workflow**.
       -target=ios/arm64 -o ../app/DLiPARebuild/Frameworks/SapBridge.xcframework .
     cd ..
 
-    # 3. stage the assets
-    ./scripts/stage-assets.sh
-
-    # 4. generate the project and build
+    # 3. generate the project and build
     cd app
     xcodegen generate
     xcodebuild -project DLiPARebuild.xcodeproj -scheme DLiPARebuild \
@@ -133,7 +132,7 @@ Run it manually from the Actions tab with **Run workflow**.
       -destination "generic/platform=iOS" \
       CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
-    # 5. package
+    # 4. package
     ./scripts/package-ipa.sh build/Build/Products/Release-iphoneos/DLiPARebuild.app DLiPARebuild.ipa
 
 ## Installing

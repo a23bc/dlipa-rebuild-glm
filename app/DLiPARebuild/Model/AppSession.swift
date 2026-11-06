@@ -428,6 +428,14 @@ final class AppSession: ObservableObject {
         guard let setup = bag.signSapSetup, let cert = bag.signSapSetupCert else {
             throw StoreError.noBagEndpoint
         }
+        // Opening the signer is the first thing that loads the four Apple
+        // binaries, so it is where an unbundled build would silently take
+        // 212 MB of someone's data. The bridge refuses while nobody has
+        // agreed; saying so here, before the Task exists, keeps a refused
+        // handshake from being cached as a build that can never finish.
+        if AssetStaging.needsConsent() {
+            throw StoreError.assetsNotFetched
+        }
         let version = bag.signSapVersion
         let identity = hardware
         let build = Task {
@@ -635,7 +643,11 @@ func diagnosticKBSync() async -> String {
                     }
                 }
             }
-            report.append("assets staged: " + String(AssetStaging.isReady))
+            // "staged: false" would read like a fault in a build that ships no
+            // binaries on purpose, so name the case that is working as designed.
+            report.append(AssetStaging.resolvesOnDemand
+                ? "assets: not bundled, resolving on demand"
+                : "assets staged: " + String(AssetStaging.isReady))
 
             AppLog.info("kbsync gate: generating, this may take a while", .sap)
             let started = Date()
@@ -806,11 +818,11 @@ func diagnosticKBSync() async -> String {
         // Anything that is not a package is a transfer still in flight (".part")
         // or a leftover; neither belongs in the list.
         return names.filter { $0.pathExtension.lowercased() == "ipa" }.sorted {
-            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast
-            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast
-            return a > b
+            return left > right
         }
     }
 }

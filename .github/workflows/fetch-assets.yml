@@ -84,6 +84,26 @@ jobs:
           fi
           grep -n "macOSRestoreURL" /tmp/ipatool/internal/sap/assets/assets.go
 
+      - name: Match the go-macho the device builds with
+        run: |
+          # ipatool pins its own go-macho, but the app extracts through sapbridge,
+          # which pins a different one. Measuring or producing assets on a version
+          # the device never runs is how a CI-green artifact turns into a device
+          # failure, so take the version from sapbridge's own go.mod rather than
+          # writing it down twice here.
+          version=$(awk '/github\.com\/blacktop\/go-macho /{print $2; exit}' sapbridge/go.mod)
+          if [ -z "$version" ]; then
+            echo "::error::no go-macho requirement found in sapbridge/go.mod"
+            exit 1
+          fi
+          echo "==> sapbridge pins go-macho $version; aligning the extractor"
+          cd /tmp/ipatool
+          GOFLAGS=-mod=mod go get "github.com/blacktop/go-macho@$version"
+          # Compile before spending the download: a version that does not build
+          # should fail here, not 300 MB into the extraction.
+          GOFLAGS=-mod=mod go build -o /tmp/export-sap-assets ./cmd/export-sap-assets
+          grep "go-macho" go.mod
+
       - name: Fetch and extract the macOS 27 assets
         run: |
           cd /tmp/ipatool

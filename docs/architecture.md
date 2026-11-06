@@ -15,7 +15,10 @@ Swift UI            SearchScreen · VersionListView · DownloadsScreen · Accoun
 Swift networking    AppStoreClient  signed transport, bag, login, download
                     StoreBag        bag.xml (loc- prefixed keys)
                     SAPSigner       thin wrapper over the Go bridge
-                    AssetStaging    copies ~126 MB of Apple binaries out of the bundle
+                    AssetStaging    asks the bridge for the Apple binaries; on
+                                    a normal build none are bundled, so the
+                                    first sign fetches them from Apple (~212 MB
+                                    of range reads, measured on device)
       │  (gomobile c-archive, declarations copied by hand into
       │   DLiPA-Bridging-Header.h and checked by scripts/check-bridging-header.py)
 Go bridge           sapbridge.go   Sign · SignatureHeaderValue · KBSync ·

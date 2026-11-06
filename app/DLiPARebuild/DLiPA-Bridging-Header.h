@@ -45,6 +45,13 @@ FOUNDATION_EXPORT SapbridgeSigner * _Nullable SapbridgeNew(NSString * _Nullable 
 FOUNDATION_EXPORT BOOL SapbridgeParseDSID(NSString * _Nullable value, int64_t * _Nullable ret0_, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT NSString * _Nonnull SapbridgeSerialNumber(NSData * _Nullable hardwareID, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT void SapbridgeSetBundleDir(NSString * _Nullable path);
+// These take and return no pointers, so the nullability region they sit in
+// makes no difference; they are here because the app needs them and the header
+// check in build-ios.yml fails the build when a declaration present in
+// gomobile's generated header is missing from this copy.
+FOUNDATION_EXPORT BOOL SapbridgeAssetsCached(void);
+FOUNDATION_EXPORT BOOL SapbridgeAssetFetchAllowed(void);
+FOUNDATION_EXPORT void SapbridgeAllowAssetFetch(void);
 
 NS_ASSUME_NONNULL_END
 FOUNDATION_EXPORT NSString * _Nullable SapbridgePatchIPA(NSString * _Nullable path, NSString * _Nullable email, NSError * _Nullable * _Nullable error);

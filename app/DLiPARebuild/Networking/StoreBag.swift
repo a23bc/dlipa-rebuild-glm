@@ -243,6 +243,11 @@ enum StoreError: LocalizedError {
     case twoFactorRequired
     /// The bag, or a redirect, pointed at somewhere credentials may not go.
     case untrustedEndpoint(String)
+    /// Signing needs the four Apple binaries, this build carries none, and
+    /// nobody has agreed to fetch them yet. Not Apple's fault and not generic:
+    /// the screen that asked shows the fetch notice, so the text here only has
+    /// to survive being seen in a log line.
+    case assetsNotFetched
 
     /// User-facing message. Specific detail goes to the log so the alert stays
     /// short and localised the way the original app does it.
@@ -250,6 +255,8 @@ enum StoreError: LocalizedError {
         switch self {
         case .noBagEndpoint, .malformedBag, .signingFailed, .untrustedEndpoint:
             return NSLocalizedString("toast_something_wrong", comment: "Generic failure")
+        case .assetsNotFetched:
+            return "DLiPA needs the signing components before it can sign anything."
         case .httpError(let code, let body):
             let fmt = NSLocalizedString("Apple returned HTTP %d: %@", comment: "HTTP failure")
             return String(format: fmt, code, body)
@@ -300,6 +307,9 @@ enum StoreError: LocalizedError {
             return "Apple requires 2FA verification code"
         case .untrustedEndpoint(let url):
             return "refusing a request to " + url
+        case .assetsNotFetched:
+            return "the signing components are not on the device and the "
+                + "fetch has not been agreed to"
         }
     }
 }

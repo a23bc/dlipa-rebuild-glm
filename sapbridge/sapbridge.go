@@ -12,9 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/measure"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -237,14 +237,11 @@ func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEnd
 
 	// inner is the ActionSigner interface; the smoke test lives on the concrete
 	// signer, so ask for it rather than widening the interface for one caller.
-	// Read the file the app staged rather than a cached Bundle. On device the
-	// bundle handed to this call was empty even though the same loader, called
-	// during pre-warm, had the real bytes -- so the file is the only source that
-	// has been observed to be correct at both moments.
-	imagePath := filepath.Join(BundleDirValue(), "AppleMediaServices")
-	image, err := os.ReadFile(imagePath)
+	// Read from disk, and resolve first if the app staged nothing: see
+	// appleMediaServicesImage.
+	image, err := appleMediaServicesImage()
 	if err != nil {
-		return "", fmt.Errorf("sapbridge: read %s: %w", imagePath, err)
+		return "", err
 	}
 
 	smoker, ok := s.inner.(interface {
@@ -272,14 +269,12 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
 
-	// Read the file the app staged rather than a cached Bundle: on device the
-	// bundle handed to a call was empty even though the loader had the real
-	// bytes during pre-warm, so the file is the only source observed correct.
-	imagePath := filepath.Join(BundleDirValue(), "AppleMediaServices")
-
-	image, err := os.ReadFile(imagePath)
+	// Read from disk, and resolve first if the app staged nothing: see
+	// appleMediaServicesImage. This is the call that used to fail on a build
+	// without bundled assets.
+	image, err := appleMediaServicesImage()
 	if err != nil {
-		return "", fmt.Errorf("sapbridge: read %s: %w", imagePath, err)
+		return "", err
 	}
 
 	return s.inner.(interface {
@@ -470,27 +465,31 @@ func BlankAudioPath(dataDir string) (path string, err error) {
 	return install.BlankAudioPath(dataDir)
 }
 
-// FetchSapAssets runs the macOS restore-image extraction on this device and reports
-// how long it took.
+// FetchSapAssets runs the macOS restore-image extraction on this device and
+// reports what it cost: transferred bytes, peak and cumulative heap, and time.
 //
-// It exists to answer one question with a measurement rather than an estimate: the
-// same extraction takes 41 seconds on a CI runner, and the only way to know what it
-// costs on a phone is to run it there.
+// It exists to answer one question with a measurement rather than an estimate:
+// the same extraction takes about half a minute on a CI runner, and the only way
+// to know what it costs on a phone is to run it there. Reporting only the elapsed
+// time left the last device run answering "did it crash", which is not the
+// question a memory ceiling asks.
 func FetchSapAssets() (string, error) {
-	started := time.Now()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	cost := measure.Start()
 	bundle, err := assetsremote.Load(ctx)
 	if err != nil {
-		return "", fmt.Errorf("fetch sap assets: %w", err)
+		// Report the spend even on failure: how far a phone got before it stopped
+		// is the part that decides whether the approach fits at all.
+		return "", fmt.Errorf("fetch sap assets: %w (%s)", err, cost.Finish())
 	}
 
 	total := len(bundle.AppleMediaServices) + len(bundle.Commerce) +
 		len(bundle.CoreFP) + len(bundle.CoreFPICXS)
 
-	return fmt.Sprintf("%d bytes in %s", total, time.Since(started).Round(time.Second)), nil
+	return fmt.Sprintf("%s produced in %s",
+		cost.Finish(), measure.Bytes(uint64(total))), nil
 }
 
 // ClearCachedKBSync drops the per-account kbsync blobs left by a previous build.

@@ -1,0 +1,82 @@
+name: Lint
+
+# The fast answer to "did I break Swift?". There is no Mac here, so the
+# only compiler for app/ runs on a macos-15 runner and reports back six to
+# eight minutes after a push. This job answers in about a minute on Linux
+# and covers the two mistakes that cost those round trips: style and API
+# availability.
+#
+# Scope, so nobody reads more into it than it holds:
+#   SwiftLint       -- style and a few bug-prone patterns. No type checking.
+#   check-ios15-apis -- names of APIs newer than the iOS 15 target in
+#                       app/project.yml. A list, not a type checker.
+# Neither one proves the app builds. Build iOS IPA still does that.
+
+on:
+  push:
+    paths:
+      # A pattern with no slash matches file *names* anywhere in the repo,
+      # not directories: "app" would only match a file called app, and the
+      # push that deleted two Swift files under app/ proved it -- no job
+      # started. The /** is what makes the filter mean "anything under".
+      - app/**
+      - probeapp/**
+      - .swiftlint.yml
+      - scripts/check-ios15-apis.sh
+      - .github/workflows/lint.yml
+  pull_request:
+    paths:
+      - app/**
+      - probeapp/**
+      - .swiftlint.yml
+      - scripts/check-ios15-apis.sh
+      - .github/workflows/lint.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift:
+    name: Lint Swift
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned, not "latest": this version decides which violations appear,
+      # and a silent upgrade would change the results of a job nobody
+      # re-read. Bump it on purpose, in its own commit.
+      SWIFTLINT_VERSION: 0.65.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: |
+          set -euo pipefail
+          url="https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/swiftlint_linux_amd64.zip"
+          curl -fsSL --retry 3 -o /tmp/swiftlint.zip "$url"
+          mkdir -p /tmp/swiftlint
+          unzip -q /tmp/swiftlint.zip -d /tmp/swiftlint
+          # The archive layout has changed between releases, so search for
+          # the binary instead of assuming it sits at the top level.
+          binary=$(find /tmp/swiftlint -type f -name swiftlint | head -n 1)
+          test -n "$binary"
+          chmod +x "$binary"
+          sudo mv "$binary" /usr/local/bin/swiftlint
+          swiftlint version
+
+      - name: iOS 15 API tripwire
+        run: bash scripts/check-ios15-apis.sh
+
+      - name: SwiftLint
+        run: |
+          # Positional, not --path: swiftlint 0.65.1 answers "Error: Unknown
+          # option '--path'" and exits 1. It takes the directories to walk
+          # after the subcommand.
+          #
+          # Warnings do not fail this step; error-level violations do. The
+          # baseline in .swiftlint.yml was taken from the first run of this
+          # job, so a new error here is new code, not an old habit.
+          swiftlint lint --quiet --config .swiftlint.yml --reporter xcode app probeapp

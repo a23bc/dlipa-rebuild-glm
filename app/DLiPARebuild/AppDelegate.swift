@@ -25,15 +25,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // Its answer is still captured there if a later step kills the process,
         // because StderrCapture is already running by the time it is pressed.
 
-        // Attempt to enable JIT by setting CS_DEBUGGED via ptrace.
-        // This must happen before any Unicorn code runs.
-        JITEnabler.enable()
-
-        // Test whether iOS allows mmap(PROT_EXEC) on a signed bundle file.
-        // This determines if the native execution approach (replacing Unicorn)
-        // is viable on this device.
-        ExecTest.testBundleFileExec()
-
         // Log the BuildID.txt that CI bakes into the bundle. This is the
         // single most useful line in the device log when chasing a
         // stale-IPA install: it identifies which CI build is *actually*
@@ -72,7 +63,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 return
             }
 
-            AppLog.info("SAP assets staged for the arm64 bridge", .assets)
+            // Two different successes share this callback: the binaries were
+            // copied out of the bundle, or this build ships none and the bridge
+            // will fetch them. Saying "staged" for the second one is a lie that
+            // costs an hour when someone reads the log to find out why sign-in
+            // is slow.
+            AppLog.info(AssetStaging.resolvesOnDemand
+                ? "SAP assets are not bundled; the first sign-in resolves them from Apple"
+                : "SAP assets staged for the arm64 bridge", .assets)
 
             // Pre-warming at launch is off.
             //

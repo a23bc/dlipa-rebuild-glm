@@ -23,11 +23,26 @@ enum AssetStaging {
     /// they live. Signing and downloading need this.
     static var isReady = false
 
+    /// True when this build ships without the four binaries. That is now a
+    /// normal build, not a broken one: the bridge resolves them from Apple's
+    /// restore image the first time something needs them, so staging has
+    /// nothing to copy and must not point the bridge at an empty directory --
+    /// an explicit BundleDir is checked before the fallback and would fail
+    /// there, hiding the download behind a "file not found".
+    private(set) static var resolvesOnDemand = false
+
     /// True while staging is in progress. Guards against concurrent
     /// stageIfNeeded invocations (AppDelegate and MainViewController both
     /// call it on launch).
     private static var isStaging = false
     private static let stagingLock = NSLock()
+
+    /// True while a resolveFromApple run is in flight, so a second caller joins
+    /// it instead of starting a second download of the same restore image.
+    private static var isResolving = false
+
+    /// Callers that arrived during a resolve; answered with that run's result.
+    private static var resolveWaiters: [(String?, Error?) -> Void] = []
 
     /// Callers that arrived while a staging run was already in flight. They are
     /// answered when that run finishes, with the same error the first caller
@@ -37,6 +52,21 @@ enum AssetStaging {
     static var stagedDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SapAssets", isDirectory: true)
+    }
+
+    /// Whether signing anything right now would mean taking about 212 MB that
+    /// is neither on the device nor agreed to.
+    ///
+    /// One answer for three screens -- the shell at launch, the account sheet
+    /// before a handshake, the search screen before a download -- because they
+    /// have to agree. It is false for a build that stages from its own bundle,
+    /// false once the four files are in the cache (SapbridgeAssetsCached stats
+    /// them and reads no byte, so a device that already paid is not asked
+    /// again), and false for the rest of a session after someone has said yes,
+    /// which is what keeps a fetch that was allowed and then failed from
+    /// re-asking on every action.
+    static func needsConsent() -> Bool {
+        resolvesOnDemand && !SapbridgeAssetsCached() && !SapbridgeAssetFetchAllowed()
     }
 
     /// Stages the assets in the background.
@@ -53,7 +83,7 @@ enum AssetStaging {
         // only one staging task runs; subsequent callers wait and then
         // see isReady=true.
         stagingLock.lock()
-        if isReady {
+        if isReady || resolvesOnDemand {
             stagingLock.unlock()
             DispatchQueue.main.async { completion(nil) }
             return
@@ -74,6 +104,24 @@ enum AssetStaging {
             var firstError: Error?
             var copied = 0
 
+            // A build that ships no binaries at all is not a broken build: the
+            // bridge resolves them on first use. Answer every caller with nil,
+            // because staging genuinely has nothing left to do.
+            //
+            // Ahead of the mkdir, which is the point of the ordering: creating
+            // the directory first and only then noticing there was nothing to
+            // copy left Library/Caches/SapAssets behind as an empty folder, so a
+            // device whose directory had been deleted grew one back on the next
+            // launch and looked, in a file browser, like a staging run that had
+            // lost its files.
+            guard bundledSource(for: files[0]) != nil else {
+                AppLog.info(
+                    "SAP assets are not bundled; the bridge resolves them on first use",
+                    .assets)
+                finishWithoutAssets(completion: completion)
+                return
+            }
+
             do {
                 try FileManager.default.createDirectory(
                     at: destination, withIntermediateDirectories: true)
@@ -93,14 +141,7 @@ enum AssetStaging {
                 // different macOS version's binaries) would fail that check.
                 // Copying every time is ~125 MB but only on cold start.
 
-                // The Apple binaries live in the SapAssets/ subdirectory of the
-                // bundle (staged there by scripts/stage-assets.sh and copied
-                // as a folder reference in project.yml). Bundle.main.url(
-                // forResource:withExtension:) does not search arbitrary
-                // subdirectories by default, so pass subdirectory: "SapAssets".
-                // Fall back to a bundle-wide search for safety.
-                let source = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "SapAssets")
-                    ?? Bundle.main.url(forResource: name, withExtension: nil)
+                let source = bundledSource(for: name)
                 guard let source else {
                     AppLog.error(name + " is missing from the app bundle", .assets)
                     firstError = AssetError.missingFromBundle(name)
@@ -170,6 +211,91 @@ enum AssetStaging {
         DispatchQueue.main.async {
             completion(error)
             for waiter in pending { waiter(error) }
+        }
+    }
+
+    /// The bundle lookup, in one place. A normal build ships none of these:
+    /// project.yml excludes Resources/SapAssets and no workflow stages it
+    /// any more, so this answers nil and the bridge resolves the binaries
+    /// from Apple. It stays for a local checkout that still has the
+    /// directory, where the files sit in a SapAssets/ subdirectory and
+    /// `url(forResource:withExtension:)` does not search subdirectories
+    /// unless told, so pass it and keep a bundle-wide search as a fallback.
+    private static func bundledSource(for name: String) -> URL? {
+        Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "SapAssets")
+            ?? Bundle.main.url(forResource: name, withExtension: nil)
+    }
+
+    /// Answers like finish() but without claiming a staged directory: neither
+    /// BundleDir nor isReady may be touched here, because there is nothing for
+    /// the bridge to read from this bundle.
+    private static func finishWithoutAssets(completion: @escaping (Error?) -> Void) {
+        stagingLock.lock()
+        resolvesOnDemand = true
+        isStaging = false
+        let pending = waiters
+        waiters.removeAll()
+        stagingLock.unlock()
+        DispatchQueue.main.async {
+            completion(nil)
+            for waiter in pending { waiter(nil) }
+        }
+    }
+
+    /// Fetches the four binaries from Apple through the bridge.
+    ///
+    /// A build that ships no binaries needs this before it can sign anything,
+    /// and it costs about 212 MB of someone else's data, so callers ask first
+    /// rather than running it from the launch path.
+    ///
+    /// Calling this *is* that answer: it opens the bridge's permission on the
+    /// way in, because every caller of it sits behind a button that says fetch.
+    /// The bridge refuses to download while the permission is closed, so a
+    /// sign-in or a pre-warm cannot spend the data before anyone has been
+    /// asked -- which is the reason the question is asked at launch.
+    ///
+    /// @param completion called on the main queue once with the bridge's cost
+    ///   line, or with an error. A call that arrives while a fetch is running
+    ///   is answered with that run's result instead of starting a second one.
+    static func resolveFromApple(completion: @escaping (String?, Error?) -> Void) {
+        stagingLock.lock()
+        if isResolving {
+            resolveWaiters.append(completion)
+            stagingLock.unlock()
+            return
+        }
+        isResolving = true
+        stagingLock.unlock()
+
+        DispatchQueue.global(qos: .utility).async {
+            SapbridgeAllowAssetFetch()
+
+            var failure: NSError?
+            let report = SapbridgeFetchSapAssets(&failure)
+
+            stagingLock.lock()
+            isResolving = false
+            let pending = resolveWaiters
+            resolveWaiters.removeAll()
+            stagingLock.unlock()
+
+            DispatchQueue.main.async {
+                completion(report, failure)
+                for waiter in pending { waiter(report, failure) }
+            }
+        }
+    }
+
+    /// The same fetch, for the callers that queue a download behind it.
+    static func resolveFromApple() async throws -> String {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+            resolveFromApple { report, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume(returning: report ?? "no report")
+                }
+            }
         }
     }
 }

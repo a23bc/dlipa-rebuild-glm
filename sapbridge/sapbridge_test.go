@@ -4,6 +4,7 @@ import (
         "context"
         "encoding/base64"
         "os"
+        "path/filepath"
         "strings"
         "testing"
 )
@@ -205,5 +206,94 @@ func TestBundleDirValidationRejectsTruncatedFiles(t *testing.T) {
         }
         if !strings.Contains(err.Error(), "size") && !strings.Contains(err.Error(), "integrity") {
                 t.Fatalf("error does not mention size or integrity: %v", err)
+        }
+}
+
+// TestAssetImagePathUsesTheStagedDirectory keeps the bundled behaviour intact:
+// when the app has staged a copy, that directory is the answer, without the
+// cache or the network being consulted.
+func TestAssetImagePathUsesTheStagedDirectory(t *testing.T) {
+        dir := t.TempDir()
+        previous := BundleDir
+        defer func() { BundleDir = previous }()
+        BundleDir = dir
+
+        got, err := appleMediaServicesPath()
+        if err != nil {
+                t.Fatal(err)
+        }
+        want := filepath.Join(dir, "AppleMediaServices")
+        if got != want {
+                t.Fatalf("appleMediaServicesPath = %q, want %q", got, want)
+        }
+}
+
+// TestAssetImageResolvesWhenTheAppStagedNothing is the regression test for the
+// download that failed with "sapbridge: read AppleMediaServices: open
+// AppleMediaServices: no such file or directory". A build that ships no
+// binaries never sets BundleDir, and the download path then joined "" with the
+// file name -- a path relative to the working directory, which on iOS is "/" --
+// so it never reached the resolver that can fetch them from Apple.
+func TestAssetImageResolvesWhenTheAppStagedNothing(t *testing.T) {
+        previous := BundleDir
+        defer func() { BundleDir = previous }()
+        BundleDir = ""
+
+        // Reaching the resolver is what this test is about, and the resolver is
+        // behind the data-spend permission now.
+        AllowAssetFetch()
+        defer allowedAssetFetch.Store(false)
+
+        // Nothing in a test may use the resolver's network fallback.
+        t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+
+        path, err := appleMediaServicesPath()
+        if err != nil {
+                if strings.Contains(err.Error(), "open AppleMediaServices:") {
+                        t.Fatalf("read relative to the working directory instead of resolving: %v", err)
+                }
+                return
+        }
+        if !filepath.IsAbs(path) {
+                t.Fatalf("resolved to a relative path: %q", path)
+        }
+}
+
+// TestAssetFetchNeedsPermission is the other half of the gate. loadBundle is
+// reached from newSigner, so a bridge that resolves on its own can spend the
+// data before any screen has asked -- a sign-in is enough, and it comes long
+// before the first download.
+func TestAssetFetchNeedsPermission(t *testing.T) {
+        previous := BundleDir
+        defer func() { BundleDir = previous }()
+        BundleDir = ""
+
+        allowedAssetFetch.Store(false)
+        defer allowedAssetFetch.Store(false)
+
+        t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+
+        _, err := appleMediaServicesPath()
+        if err == nil {
+                t.Skip("this host already has the four binaries in its cache")
+        }
+        if !strings.Contains(err.Error(), "not allowed") {
+                t.Fatalf("the refusal does not name the missing permission: %v", err)
+        }
+        if strings.Contains(err.Error(), "open AppleMediaServices:") {
+                t.Fatalf("read relative to the working directory anyway: %v", err)
+        }
+
+        // With permission the fetch is attempted; the dead proxy is what keeps
+        // this from becoming a 212 MB test.
+        AllowAssetFetch()
+        _, err = appleMediaServicesPath()
+        if err == nil {
+                t.Skip("this host already has the four binaries in its cache")
+        }
+        if !strings.Contains(err.Error(), "fetch Apple SAP assets") {
+                t.Fatalf("permission granted but no fetch attempted: %v", err)
         }
 }

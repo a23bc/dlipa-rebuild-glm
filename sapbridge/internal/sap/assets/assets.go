@@ -92,6 +92,46 @@ func cacheDirectory() (string, error) {
 	return filepath.Join(root, "ipatool", "sap", assetCacheDirectory), nil
 }
 
+// CacheDirectory reports where Load keeps the four pinned binaries.
+//
+// Callers that must read bytes from disk rather than from a bundle held in
+// memory resolve them with Load first and then read this directory: after a
+// remote resolution it is the only place the verified bytes exist.
+func CacheDirectory() (string, error) {
+	return cacheDirectory()
+}
+
+// Cached reports whether the four pinned binaries are already in the cache
+// directory.
+//
+// It stats them and holds them to the size they were pinned at; it never reads
+// a byte and never touches the network. Callers use it to decide whether
+// something is about to be downloaded, and reading 125 MB to find out would be
+// the most expensive way to ask the question -- and the one that spikes the
+// heap hard enough for jetsam to notice.
+func Cached() bool {
+	directory, err := cacheDirectory()
+	if err != nil {
+		return false
+	}
+
+	for _, spec := range requiredFiles {
+		info, err := os.Stat(filepath.Join(directory, spec.name))
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+
+		// The same floor validate() uses: re-signing only appends, so a file
+		// at or above the pinned size is expected and a smaller one is a
+		// truncation.
+		if spec.size > 0 && info.Size() < int64(spec.size) {
+			return false
+		}
+	}
+
+	return true
+}
+
 func readCache(directory string) (Bundle, error) {
 	files := make(map[string][]byte, len(requiredFiles))
 
