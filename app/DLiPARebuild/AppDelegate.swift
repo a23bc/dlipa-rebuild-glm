@@ -147,11 +147,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 AppLog.info("shared cache: mapped in full at open (switch off)", .sap)
             }
 
-            // The account-switch probe, off unless asked for. Logged in both
-            // directions for the same reason as the switch above: a run that
-            // refused the second account is indistinguishable from a run where
-            // nobody turned the probe on.
-            if UserDefaults.standard.bool(forKey: DiagnosticsScreen.accountReuseKey) {
+            // On unless the diagnostics row says otherwise, the way the shared
+            // cache row above works: measured on device, three accounts in one
+            // launch served three downloads through the runtime the first of them
+            // opened. Logged in both directions for the reason the switch above
+            // gives -- a refusal and an unread preference look the same when only
+            // one branch prints.
+            let accountReuse = UserDefaults.standard.object(forKey: DiagnosticsScreen.accountReuseKey) as? Bool ?? true
+
+            if accountReuse {
                 SapbridgeEnableAccountReuseProbe()
                 AppLog.info("account switch: a second account reuses the runtime (probe)", .sap)
             } else {

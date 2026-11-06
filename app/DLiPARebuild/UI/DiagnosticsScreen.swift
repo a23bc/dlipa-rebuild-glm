@@ -43,16 +43,14 @@ struct DiagnosticsScreen: View {
     static let lazyCacheKey = "com.a23bc.dliparebuild.lazyCachePages"
     @AppStorage(lazyCacheKey) private var lazyCachePages = true
 
-    /// Whether a download for a second account may close the runtime that
-    /// belongs to the first and open a new one, instead of being refused with
-    /// "restart the app".
+    /// Whether a download for a second account may run through the store runtime
+    /// the first account opened, instead of being refused with "restart the app".
     ///
-    /// Off, and a probe rather than a feature. On, a download for the second
-    /// account runs through the runtime the first one opened instead of being
-    /// refused: the request carries its own kbsync blob, its own account object
-    /// and its own headers, so nothing about the account lives in the runtime.
-    /// Whether Apple agrees is what this measures -- if it comes back refused,
-    /// the account in hand stops downloading until the app restarts.
+    /// On by default, since device: one launch, A then B then A again, three
+    /// downloads served, each with its own kbsync resolved by dsid. Nothing about
+    /// the account lives in the runtime -- the request carries the blob, the
+    /// account object and the headers -- and off is kept as the way back to the
+    /// refusal for comparison.
     ///
     /// Nothing is closed to make this happen. Closing is measured broken: the
     /// next signature after a close returned -42306 with and without releasing
@@ -65,7 +63,7 @@ struct DiagnosticsScreen: View {
     /// runtime (probe)` or `... is refused until a restart` -- and a download that
     /// switches prints `reusing DSID <a>'s store runtime for DSID <b>`.
     static let accountReuseKey = "com.a23bc.dliparebuild.accountReuseProbe"
-    @AppStorage(accountReuseKey) private var accountReuse = false
+    @AppStorage(accountReuseKey) private var accountReuse = true
     @State private var logText = ""
 
     var body: some View {
