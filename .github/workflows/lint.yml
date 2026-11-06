@@ -67,13 +67,12 @@ jobs:
         run: bash scripts/check-ios15-apis.sh
 
       - name: SwiftLint
-        # Survey only, on purpose. The rule set has never been run against
-        # these 28 files, so its first job is to tell us what is there.
-        # Tighten .swiftlint.yml to match reality, then drop this line and
-        # let the job gate the branch.
-        continue-on-error: true
         run: |
           # Positional, not --path: swiftlint 0.65.1 answers "Error: Unknown
           # option '--path'" and exits 1. It takes the directories to walk
           # after the subcommand.
-          swiftlint lint --quiet --reporter xcode app probeapp
+          #
+          # Warnings do not fail this step; error-level violations do. The
+          # baseline in .swiftlint.yml was taken from the first run of this
+          # job, so a new error here is new code, not an old habit.
+          swiftlint lint --quiet --config .swiftlint.yml --reporter xcode app probeapp
