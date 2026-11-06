@@ -2233,6 +2233,6 @@ func (r *Runtime) lazyCensus() {
 	r.lazyPrinted = r.lazyFaults + r.lazyAbsent
 
 	fmt.Fprintf(os.Stderr,
-		"[SAP] lazy cache pages: %d mapped (%d KiB, %d ms), %d faults on addresses not in the blob, %d of %d still waiting\n",
-		r.lazyFaults, r.lazyBytes/1024, r.lazyMs, r.lazyAbsent, len(r.lazyPages), r.lazyTotal)
+		"[SAP] lazy cache pages: %d mapped (%d KiB, %d ms), %d faults on addresses not in the blob, %d map failures, %d of %d still waiting\n",
+		r.lazyFaults, r.lazyBytes/1024, r.lazyMs, r.lazyAbsent, r.lazyFailed, len(r.lazyPages), r.lazyTotal)
 }
