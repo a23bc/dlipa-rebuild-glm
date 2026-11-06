@@ -539,11 +539,18 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			return nil, fmt.Errorf("prepare store runtime: %w", err)
 		}
 
-		// One map per 4 MiB. The device spends about 100 ms per MiB on these
-		// and the cost is not linear: a single 19 MiB region measured 38.3 s
-		// while the 2-4 MiB ones around it took 0.2-3.6 s, so a smaller unit is
-		// worth trying before assuming the engine's map is simply slow.
-		const regionChunk = 4 << 20
+		// One map per 1 MiB. The census says the cost of a map is not per byte
+		// and not a flat per-call price either: it is a ~40 ms floor up to about
+		// 1 MiB and then climbs close to cubically -- 182 ms at 1 MiB, 1.14 s at
+		// 2 MiB, 6.6 s at 4 MiB, on the device, across 176 calls covering 73.6
+		// MiB in 62.2 s. Six of those calls were 4 MiB and they alone were 39.7
+		// s of the minute. The 4 MiB unit was itself a fix (one 19 MiB region
+		// measured 38.3 s) that stopped one step too early; the same table
+		// extrapolates 1 MiB at ~13 s, 512 KiB at ~17 s and 256 KiB at ~24 s, so
+		// the floor decides it. If the next census shows 1 MiB calls blowing
+		// past ~200 ms, the variable is not span but how the span lands on what
+		// is already mapped, and the ordering of this loop is what changes.
+		const regionChunk = 1 << 20
 
 		for offset := uint64(0); offset < region.size; offset += regionChunk {
 			size := uint64(regionChunk)
