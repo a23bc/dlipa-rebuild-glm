@@ -114,6 +114,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
 
                 UserDefaults.standard.set(current, forKey: versionKey)
+            } else {
+                // Both branches, for the reason the shared-cache switch above
+                // already gives: a one-sided log cannot tell a decision from a
+                // block that never ran. A device run on 2026-11-06 needed exactly
+                // that distinction -- no clear line appeared, and whether that
+                // meant the key matched or the launch never reached here decides
+                // whether the data container survived the install.
+                AppLog.info("kbsync cache kept: version " + current + " unchanged", .sap)
             }
 
             // Read before anything can open the store runtime: open() decides once,
