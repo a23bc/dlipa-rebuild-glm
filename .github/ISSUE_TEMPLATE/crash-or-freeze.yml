@@ -5,10 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Two of the failure modes here do not produce a crash report: the guest
-        engine can end the process while it initialises, and iOS can kill the app
-        for memory while the emulated runtime works. That is why the questions
-        below ask *when* rather than *what*.
+        Two of the failure modes here do not produce a crash report: the guest engine can end the process while it initialises, and iOS can kill the app for memory while the emulated runtime works. That is why the questions below ask *when* rather than *what*.
 
   - type: dropdown
     id: moment
