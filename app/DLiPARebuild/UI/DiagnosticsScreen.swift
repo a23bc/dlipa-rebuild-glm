@@ -30,14 +30,18 @@ struct DiagnosticsScreen: View {
     @AppStorage(prewarmKey) private var prewarmAtLaunch = false
 
     /// Which shape the next store-runtime open takes: map all 38.8 MiB of the
-    /// shared cache up front -- the census prices that at about 0.8 s per MiB, which
-    /// is the 32.8 s the launch pays -- or index the pages and hand one over when the
-    /// guest touches it, about 4 ms per page and nothing at all for the rest.
-
+    /// shared cache up front, or index the pages and hand one over only when the
+    /// guest touches it.
+    ///
+    /// Device, both shapes: 99.3 s to open mapped in full, 1.2 s indexed, and of
+    /// that 1.2 s the indexing itself is 336 ms. The two flows watched afterwards
+    /// asked the cache for no page at all, which is what the second shape bets on.
+    ///
     /// It takes effect at the next launch rather than at the tap, because open()
-    /// reads the choice once. Off is the shape every build has shipped with.
+    /// reads the choice once. On is the default; off is kept as the way back to
+    /// the shape every earlier build shipped with, and to measure against it.
     static let lazyCacheKey = "com.a23bc.dliparebuild.lazyCachePages"
-    @AppStorage(lazyCacheKey) private var lazyCachePages = false
+    @AppStorage(lazyCacheKey) private var lazyCachePages = true
     @State private var logText = ""
 
     var body: some View {

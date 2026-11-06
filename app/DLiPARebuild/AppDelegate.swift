@@ -116,20 +116,28 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 UserDefaults.standard.set(current, forKey: versionKey)
             }
 
-        // Read before anything can open the store runtime: open() decides once,
-        // from this, whether the shared cache is mapped up front or handed out a
-        // page at a time, and a decision made after the open would be a decision
-        // about the next launch while reporting this one.
-        // Both directions log, the way the pre-warm switch right below does.
-        // A switch that is silent when off cannot be told apart from a switch
-        // that was never read -- the first lazy measurement came back on the
-        // eager path and the log could not say whether anyone had flipped it.
-        if UserDefaults.standard.bool(forKey: DiagnosticsScreen.lazyCacheKey) {
-            SapbridgeEnableLazyCachePages()
-            AppLog.info("shared cache: pages will be mapped on demand", .sap)
-        } else {
-            AppLog.info("shared cache: mapped in full at open (switch off)", .sap)
-        }
+            // Read before anything can open the store runtime: open() decides once,
+            // from this, whether the shared cache is mapped up front or handed out a
+            // page at a time, and a decision made after the open would be a decision
+            // about the next launch while reporting this one.
+            // Both directions log, the way the pre-warm switch right below does.
+            // A switch that is silent when off cannot be told apart from a switch
+            // that was never read -- the first lazy measurement came back on the
+            // eager path and the log could not say whether anyone had flipped it.
+            //
+            // On unless the diagnostics switch says otherwise. The switch used to
+            // be the way to get the fast path; measured device-side, the demand
+            // shape opens in 1.2 s against 99.3 s mapped in full, and the two
+            // flows that were watched asked the cache for no pages at all, so
+            // now it is the way back out.
+            let lazyCachePages = UserDefaults.standard.object(forKey: DiagnosticsScreen.lazyCacheKey) as? Bool ?? true
+
+            if lazyCachePages {
+                SapbridgeEnableLazyCachePages()
+                AppLog.info("shared cache: pages will be mapped on demand", .sap)
+            } else {
+                AppLog.info("shared cache: mapped in full at open (switch off)", .sap)
+            }
 
         // Off unless asked for. Opening the engine at launch is the step that
             // can end the process before a screen is drawn, and it is now a
