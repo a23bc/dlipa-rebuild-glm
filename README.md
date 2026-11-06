@@ -51,7 +51,8 @@ The controlled experiment behind the first two rows is in
           AppStoreClient.swift   signed transport, bag, login, download
           StoreBag.swift         bag.xml parsing (handles loc- prefix)
           SAPSigner.swift        wraps the Go bridge
-          AssetStaging.swift     copies the 126 MB assets out of the bundle
+          AssetStaging.swift     stages the SAP binaries: copied from the bundle
+                                 when one ships them, fetched from Apple otherwise
         Model/
           AppSession.swift       session, account, the download primitive
           DownloadManager.swift  jobs that outlive the screen that started them
@@ -107,8 +108,9 @@ Push to `main` or open a pull request. The workflow runs two jobs:
 2. **app** — downloads the framework and builds the app. Nothing here touches
    the four Apple binaries: they are not in the bundle, and the app fetches
    them from Apple on the device the first time it needs to sign. The job then
-   seals it with a generated CodeResources, packages it as `DLiPA-<digest>.ipa`, uploads it
-   as an artifact. Tagged pushes also attach it to a release.
+   seals it with a generated CodeResources, packages it as
+   `DLiPARebuild-<digest>.ipa`, uploads it as an artifact. Tagged pushes also
+   attach it to a release.
 
 Run it manually from the Actions tab with **Run workflow**.
 
