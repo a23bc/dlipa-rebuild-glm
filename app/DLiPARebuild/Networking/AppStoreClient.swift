@@ -889,18 +889,29 @@ final class AppStoreClient {
         return parts.sorted().joined(separator: ", ")
     }
 
-    /// The fields a 403 body is worth reading for, and nothing else.
+    /// The fields that answer "which failure, and where does Apple want the next
+    /// request", without the body they live in.
     ///
-    /// The body is a plist that can name the account, the request and the
-    /// device, and the whole of it used to be printed into a log the Diagnostics
-    /// screen offers to share. The reason is in these keys; everything else is
-    /// reduced to a length.
-    private static func failureDetail(from data: Data) -> String {
+    /// Three call sites used to print whole responses. Their reason was a real
+    /// bug: a 500-byte cut dropped `actionUrl`, which sits below that much text
+    /// and is the only field naming the continuation. Reading the fields keeps
+    /// that lesson and stops a version list -- which asks once per visible row,
+    /// and whose classic fallback runs six attempts each time -- from writing tens
+    /// of thousands of lines of near-identical plist into a log that is then copied
+    /// and re-rendered on every line. The 403 case is the same question, and that
+    /// body can name the account, the request and the device, so it too is reduced
+    /// to these keys.
+    ///
+    /// Scanned as text, not parsed: these answers are shaped for a browser and a
+    /// 403 page is not a plist. Values are capped where they are long, and
+    /// `songList` is reported as present rather than printed -- it is the 18 kB
+    /// half of a download response.
+    private static func responseDetail(from data: Data) -> String {
         guard let text = String(data: data, encoding: .utf8) else {
             return "<" + String(data.count) + " binary bytes>"
         }
 
-        let keys = ["failureType", "customerMessage", "message"]
+        let keys = ["failureType", "customerMessage", "message", "dialogId", "messageCode", "actionUrl"]
         var parts: [String] = []
 
         for key in keys {
@@ -915,8 +926,12 @@ final class AppStoreClient {
             parts.append(key + "=" + String(rest[open.upperBound..<close.lowerBound].prefix(120)))
         }
 
+        if text.contains("<key>songList</key>") {
+            parts.append("songList")
+        }
+
         return parts.isEmpty
-            ? "<" + String(data.count) + " bytes, no failure keys>"
+            ? "<" + String(data.count) + " bytes, no answer fields>"
             : parts.joined(separator: " ")
     }
 
@@ -1072,9 +1087,9 @@ final class AppStoreClient {
                         data = d
                         status = (r as? HTTPURLResponse)?.statusCode ?? -1
                     }
-                    let preview = String(data: data.prefix(400), encoding: .utf8) ?? "<binary>"
                     AppLog.info(tag + " HTTP " + String(status) + ", "
-                                + String(data.count) + " bytes", .auth)
+                                + String(data.count) + " bytes, "
+                                + Self.responseDetail(from: data), .auth)
                     let parsed = (try? PropertyListSerialization.propertyList(
                         from: data, options: [], format: nil)) as? [String: Any] ?? [:]
                     let code = (parsed["metrics"] as? [String: Any])?["messageCode"] as? String
@@ -1082,9 +1097,6 @@ final class AppStoreClient {
                         && (parsed["failureType"] as? String ?? "").isEmpty {
                         AppLog.info(tag + " accepted; the machine is authorised", .auth)
                         return true
-                    }
-                    if !preview.isEmpty {
-                        AppLog.info("  body: " + preview, .auth)
                     }
                 } catch {
                     AppLog.warn(tag + " failed: " + error.localizedDescription, .auth)
@@ -1360,13 +1372,12 @@ final class AppStoreClient {
 
         let (data, response) = try await sendUnsigned(request)
         let status = response.statusCode
-        let body = String(data: data, encoding: .utf8) ?? ""
         AppLog.info("buyProduct " + shape.label + " " + pricing + " -> HTTP "
                     + String(status) + ", " + String(data.count) + " bytes, token "
                     + String(shape.token.count) + " chars", .download)
-        if !body.isEmpty {
-            AppLog.info("buyProduct " + shape.label + " " + pricing + " body: "
-                        + String(body.prefix(800)), .download)
+        if !data.isEmpty {
+            AppLog.info("buyProduct " + shape.label + " " + pricing + " -> "
+                        + Self.responseDetail(from: data), .download)
         }
 
         let plist = (try? PropertyListSerialization.propertyList(
@@ -1914,18 +1925,14 @@ final class AppStoreClient {
                 status = (r as? HTTPURLResponse)?.statusCode ?? -1
             }
 
-            // The whole body, not the first 500 bytes. A 1633-byte error dialog
-            // is small, and truncating it cut exactly the field that matters:
-            // Apple puts the continuation URL in actionUrl, which sits below the
-            // cut, so the answer shipped truncated every time.
-            let preview = String(data: responseData.prefix(4096), encoding: .utf8) ?? "<binary>"
+            // The fields, not the bytes -- responseDetail says why the bytes were
+            // ever printed and why 4096 of them cost a session.
             AppLog.info("download attempt [" + attempt.label + "] HTTP " + String(status)
-                        + ", " + String(responseData.count) + " bytes", .download)
+                        + ", " + String(responseData.count) + " bytes, "
+                        + Self.responseDetail(from: responseData), .download)
             mirror("download attempt [" + attempt.label + "] HTTP " + String(status)
-                   + ", " + String(responseData.count) + " bytes")
-            if !preview.isEmpty {
-                AppLog.info("  body: " + preview, .download)
-            }
+                   + ", " + String(responseData.count) + " bytes, "
+                   + Self.responseDetail(from: responseData))
 
             guard status == 200 else {
                 lastError = StoreError.failureType("http", "HTTP " + String(status))
@@ -2025,7 +2032,7 @@ final class AppStoreClient {
                 // worth reading; the headers are not -- a 403 is routine and
                 // URLSession is configured not to swallow Set-Cookie, so this
                 // wrote live session cookies into a log the user can share.
-                AppLog.error("403 body: " + Self.failureDetail(from: data), .network)
+                AppLog.error("403 body: " + Self.responseDetail(from: data), .network)
                 AppLog.error("403 headers: " + Self.redactedHeaders(http.allHeaderFields),
                              .network)
             }
