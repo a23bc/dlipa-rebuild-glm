@@ -162,6 +162,34 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 				s.storeRuntimeDSID, dsid)
 		}
 
+		// The blob is resolved before anything is closed, and a missing one is
+		// refused before anything is closed.
+		//
+		// Two measured facts set this order. The generator cannot run while a
+		// store session is mapped -- the note above, and E3 died on it. Nor after
+		// one has been closed: on device, with the probe on, a second account's
+		// blob was generated 180 ms after `close(): unmapped 36447 pages` and the
+		// machine answered `-42306` out of StoreAgent global initialization,
+		// without ever reaching the open. So there is no point on this path where
+		// generating is allowed, and a reopen can only be attempted on an account
+		// whose blob is already cached.
+		//
+		// That also keeps the two variables apart. Refusing first meant the open
+		// after a close was never once exercised; generating in place meant a
+		// broken reopen and a broken generator looked like the same line.
+		var cached bool
+
+		blob, cached = s.cachedKBSync(dsid)
+		if !cached {
+			return EntDownloadResult{}, fmt.Errorf(
+				"ent download: the store runtime is DSID %d's, and DSID %d has no cached kbsync to "+
+					"reopen with: restart the app and download once with this account to generate one "+
+					"(generating it after a session has been opened fails, -42306)",
+				s.storeRuntimeDSID, dsid)
+		}
+
+		fromCache = true
+
 		previous := s.storeRuntimeDSID
 
 		reopenStart = time.Now()
@@ -179,23 +207,38 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		if closeErr != nil {
 			return EntDownloadResult{}, fmt.Errorf("ent download: close the previous runtime: %w", closeErr)
 		}
+
+		// The close puts back the bytes the session patched, on the machine that
+		// also signs. The architecture note has always listed that as a risk and
+		// nothing has measured it; one signature costs milliseconds and says
+		// whether the machine came out of the close intact.
+		//
+		// signLocked, not Sign: this function holds s.mu and the mutex is not
+		// reentrant -- that deadlock is exactly what store_smoke.go documents.
+		if _, signErr := s.signLocked([]byte("probe reopen: does the machine still sign?")); signErr != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] probe reopen: signing after the close failed: %v\n", signErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "[SAP] probe reopen: signing after the close: ok\n")
+		}
 	}
 
 	if runtime == nil {
-		if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
-			blob, fromCache = s.kbsyncBlob, true
-		} else if stored := loadStoredKBSync(dsid); stored != nil {
-			blob, fromCache = stored, true
-			s.kbsyncBlob, s.kbsyncDSID = stored, dsid
+		if len(blob) == 0 {
+			if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
+				blob, fromCache = s.kbsyncBlob, true
+			} else if stored := loadStoredKBSync(dsid); stored != nil {
+				blob, fromCache = stored, true
+				s.kbsyncBlob, s.kbsyncDSID = stored, dsid
 
-			fmt.Fprintf(os.Stderr, "[SAP] ent download: kbsync from disk (%d bytes)\n", len(stored))
-		} else {
-			blob, err = machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
-			if err != nil {
-				return EntDownloadResult{}, fmt.Errorf("ent download: kbsync: %w", err)
+				fmt.Fprintf(os.Stderr, "[SAP] ent download: kbsync from disk (%d bytes)\n", len(stored))
+			} else {
+				blob, err = machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
+				if err != nil {
+					return EntDownloadResult{}, fmt.Errorf("ent download: kbsync: %w", err)
+				}
+
+				s.kbsyncBlob, s.kbsyncDSID = blob, dsid
 			}
-
-			s.kbsyncBlob, s.kbsyncDSID = blob, dsid
 		}
 
 		openStart := time.Now()
@@ -433,6 +476,27 @@ func kbsyncCachePath(dsid uint64) string {
 	}
 
 	return filepath.Join(root, "dlipa", fmt.Sprintf("kbsync-%d.bin", dsid))
+}
+
+// cachedKBSync answers with the blob this process or this device already holds
+// for dsid, and with nothing otherwise. Generating is deliberately not part of
+// it, because whether generating is *allowed* depends on the state of the
+// machine, and the two callers here are on opposite sides of that question: the
+// first download of a session generates, the reopen after a close must not.
+func (s *Signer) cachedKBSync(dsid uint64) ([]byte, bool) {
+	if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
+		return s.kbsyncBlob, true
+	}
+
+	if stored := loadStoredKBSync(dsid); stored != nil {
+		s.kbsyncBlob, s.kbsyncDSID = stored, dsid
+
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: kbsync from disk (%d bytes)\n", len(stored))
+
+		return stored, true
+	}
+
+	return nil, false
 }
 
 func loadStoredKBSync(dsid uint64) []byte {
