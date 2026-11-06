@@ -325,6 +325,15 @@ jobs:
           # registration with error 181. The "-" identity produces an adhoc
           # signature, which is what TrollStore and AltStore expect, and needs
           # no developer account.
+          #
+          # CFBundleVersion comes from the run number instead of the default 1.
+          # AppDelegate clears the cached kbsync blobs when the build number
+          # changes, because a blob carries the assumptions of the binary that
+          # wrote it -- and every CI build answered 1/1.4.1, so the rule never
+          # fired between two builds and an over-install kept testing against
+          # bytes the previous binary produced. The marketing version is left
+          # alone: that number is a release decision, this one is a fact about
+          # a build.
           set -o pipefail
           xcodebuild \
             -project DLiPARebuild.xcodeproj \
@@ -335,6 +344,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             clean build
       - name: Locate the built app
         id: app
