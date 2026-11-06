@@ -137,121 +137,73 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// has accepted the blob once.
 	fromCache := false
 
-	// The runtime belongs to whichever account opened it. A download for a
-	// second account is refused by default -- the guest carries the first
-	// account's session objects and the request comes back from Apple as a
-	// framework error that names nothing, so the refusal says something the
-	// failure does not.
+	// What the account switch costs is decided here, and the runtime is not the
+	// thing that holds an account. Read what this request actually carries: the
+	// body has the device `guid`, the per-DSID `kbsync` blob and the product ids;
+	// the account object is created fresh and empty for every request by
+	// `ephemeralAccount(nil)`; the encoder is told not to take cookies or
+	// storefront from the guest (`setShouldSetCookieHeader: 0` in client.go); and
+	// DSID, token, storefront and cookies are set per call from the caller's
+	// headers. One runtime can therefore serve a second account, which is what the
+	// switch now tests.
 	//
-	// The probe is the other branch. It exists because the price of an open
-	// changed: about a minute and a half when the shared cache was mapped in
-	// full, about a second now. Whether a session that has been closed and
-	// reopened on the same engine actually works has never been measured.
-	probeReopen := false
-
-	var (
-		reopenStart time.Time
-		closeTook   time.Duration
-	)
-
+	// The other route -- close and open a fresh session -- is closed off by two
+	// device runs on two consecutive builds: the signature into
+	// AppleMediaServices taken right after a `Close` returns -42306 with a null
+	// output pointer, whether or not the close released the address space, and the
+	// second session's encoder died at the same heap address every time on our own
+	// `unknown receiver` panic. A close also puts the machine out of reach for the
+	// signer that shares it, so a design that avoids closing is worth more here
+	// than one that reopens cleanly.
 	if runtime != nil && s.storeRuntimeDSID != 0 && s.storeRuntimeDSID != dsid {
-		if !emulator.AccountReopen() {
+		if !emulator.AccountReuse() {
 			return EntDownloadResult{}, fmt.Errorf(
-				"ent download: the store runtime belongs to DSID %d, not %d; "+
+				"ent download: the store runtime was opened for DSID %d, not %d; "+
 					"restart the app after switching accounts",
 				s.storeRuntimeDSID, dsid)
 		}
 
-		// The blob is resolved before anything is closed, and a missing one is
-		// refused before anything is closed.
-		//
-		// Two measured facts set this order. The generator cannot run while a
-		// store session is mapped -- the note above, and E3 died on it. Nor after
-		// one has been closed: on device, with the probe on, a second account's
-		// blob was generated 180 ms after `close(): unmapped 36447 pages` and the
-		// machine answered `-42306` out of StoreAgent global initialization,
-		// without ever reaching the open. So there is no point on this path where
-		// generating is allowed, and a reopen can only be attempted on an account
-		// whose blob is already cached.
-		//
-		// That also keeps the two variables apart. Refusing first meant the open
-		// after a close was never once exercised; generating in place meant a
-		// broken reopen and a broken generator looked like the same line.
+		// The blob is the one per-account input this request has, and generating it
+		// needs a machine with no store session mapped into it -- the note above,
+		// and E3 died exactly there. So a cross-account download runs on a blob that
+		// memory or disk already holds, and a missing one is refused rather than
+		// generated in front of an open session.
 		var cached bool
 
 		blob, cached = s.cachedKBSync(dsid)
 		if !cached {
 			return EntDownloadResult{}, fmt.Errorf(
-				"ent download: the store runtime is DSID %d's, and DSID %d has no cached kbsync to "+
-					"reopen with: restart the app and download once with this account to generate one "+
-					"(generating it after a session has been opened fails, -42306)",
-				s.storeRuntimeDSID, dsid)
+				"ent download: DSID %d has no cached kbsync to reuse the store runtime with; "+
+					"download once with this account after a restart to generate one "+
+					"(generating it while a store session is open is the failure the note above records)",
+				dsid)
 		}
 
 		fromCache = true
 
-		previous := s.storeRuntimeDSID
-
-		reopenStart = time.Now()
-		closeErr := runtime.Close()
-		closeTook = time.Since(reopenStart)
-
-		fmt.Fprintf(os.Stderr,
-			"[SAP] probe reopen: closed the runtime for DSID %d in %s (err=%v)\n",
-			previous, closeTook.Round(time.Millisecond), closeErr)
-
-		s.storeRuntime, s.storeRuntimeDSID = nil, 0
-		runtime = nil
-		probeReopen = true
-
-		if closeErr != nil {
-			return EntDownloadResult{}, fmt.Errorf("ent download: close the previous runtime: %w", closeErr)
-		}
-
-		// The close puts back the bytes the session patched, on the machine that
-		// also signs. The architecture note has always listed that as a risk and
-		// nothing has measured it; one signature costs milliseconds and says
-		// whether the machine came out of the close intact.
-		//
-		// signLocked, not Sign: this function holds s.mu and the mutex is not
-		// reentrant -- that deadlock is exactly what store_smoke.go documents.
-		if _, signErr := s.signLocked([]byte("probe reopen: does the machine still sign?")); signErr != nil {
-			fmt.Fprintf(os.Stderr, "[SAP] probe reopen: signing after the close failed: %v\n", signErr)
-		} else {
-			fmt.Fprintf(os.Stderr, "[SAP] probe reopen: signing after the close: ok\n")
-		}
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing DSID %d's store runtime for DSID %d (kbsync %d bytes)\n",
+			s.storeRuntimeDSID, dsid, len(blob))
 	}
 
 	if runtime == nil {
-		if len(blob) == 0 {
-			if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
-				blob, fromCache = s.kbsyncBlob, true
-			} else if stored := loadStoredKBSync(dsid); stored != nil {
-				blob, fromCache = stored, true
-				s.kbsyncBlob, s.kbsyncDSID = stored, dsid
+		if s.kbsyncBlob != nil && s.kbsyncDSID == dsid {
+			blob, fromCache = s.kbsyncBlob, true
+		} else if stored := loadStoredKBSync(dsid); stored != nil {
+			blob, fromCache = stored, true
+			s.kbsyncBlob, s.kbsyncDSID = stored, dsid
 
-				fmt.Fprintf(os.Stderr, "[SAP] ent download: kbsync from disk (%d bytes)\n", len(stored))
-			} else {
-				blob, err = machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
-				if err != nil {
-					return EntDownloadResult{}, fmt.Errorf("ent download: kbsync: %w", err)
-				}
-
-				s.kbsyncBlob, s.kbsyncDSID = blob, dsid
+			fmt.Fprintf(os.Stderr, "[SAP] ent download: kbsync from disk (%d bytes)\n", len(stored))
+		} else {
+			blob, err = machine.GenerateKBSyncOn(ctx, s.machine, s.hardware, dsid)
+			if err != nil {
+				return EntDownloadResult{}, fmt.Errorf("ent download: kbsync: %w", err)
 			}
+
+			s.kbsyncBlob, s.kbsyncDSID = blob, dsid
 		}
 
-		openStart := time.Now()
 		runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, data, s.machine.HeapUsed())
-		openTook := time.Since(openStart)
-
 		if err != nil {
-			if probeReopen {
-				fmt.Fprintf(os.Stderr,
-					"[SAP] probe reopen: open for DSID %d failed after %s: %v\n",
-					dsid, time.Since(reopenStart).Round(time.Millisecond), err)
-			}
-
 			return EntDownloadResult{}, fmt.Errorf("ent download: open runtime: %w", err)
 		}
 
@@ -259,15 +211,12 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		s.storeRuntimeDSID = dsid
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: store runtime opened\n")
-
-		if probeReopen {
-			fmt.Fprintf(os.Stderr,
-				"[SAP] probe reopen: DSID %d ready in %s (close %s, open %s)\n",
-				dsid, time.Since(reopenStart).Round(time.Millisecond),
-				closeTook.Round(time.Millisecond), openTook.Round(time.Millisecond))
-		}
 	} else {
-		blob = s.kbsyncBlob
+		// Same account, or the cross-account reuse above -- which already set both
+		// the blob and fromCache, so it must not be overwritten from the slot here.
+		if len(blob) == 0 {
+			blob = s.kbsyncBlob
+		}
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: reusing the store runtime\n")
 	}
@@ -462,10 +411,10 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 // because that call is where the consequence lands.
 func SetLazyCachePages(on bool) { emulator.SetLazyCachePages(on) }
 
-// SetAccountReopen decides whether a download for a second account may close the
+// SetAccountReuse decides whether a download for a second account may share the
 // runtime that belongs to the first and open a new one. Off is the shipped
 // behaviour: refuse, and ask for a restart.
-func SetAccountReopen(on bool) { emulator.SetAccountReopen(on) }
+func SetAccountReuse(on bool) { emulator.SetAccountReuse(on) }
 
 // kbsyncCachePath is beside the staged assets: writable, already created by the
 // staging step, and wiped with the app.

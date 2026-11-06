@@ -47,19 +47,23 @@ struct DiagnosticsScreen: View {
     /// belongs to the first and open a new one, instead of being refused with
     /// "restart the app".
     ///
-    /// Off, and a probe rather than a feature. A session reopened on the same
-    /// engine has never been run on device, the memory each close leaves behind
-    /// has never been measured, and the price of the open is what changed: about
-    /// a second now, against a minute and a half when the shared cache was
-    /// mapped in full. If the reopen fails, the account in hand stops
-    /// downloading until the app restarts.
+    /// Off, and a probe rather than a feature. On, a download for the second
+    /// account runs through the runtime the first one opened instead of being
+    /// refused: the request carries its own kbsync blob, its own account object
+    /// and its own headers, so nothing about the account lives in the runtime.
+    /// Whether Apple agrees is what this measures -- if it comes back refused,
+    /// the account in hand stops downloading until the app restarts.
+    ///
+    /// Nothing is closed to make this happen. Closing is measured broken: the
+    /// next signature after a close returned -42306 with and without releasing
+    /// the address space, so a design that avoids the close is worth more here.
     ///
     /// Read on every download rather than once at open, so flipping the row
-    /// takes effect at the next switch. The log carries `[SAP] close():`, a
-    /// `probe reopen:` line per attempt, and the resident size before and after
-    /// each request.
-    static let accountReopenKey = "com.a23bc.dliparebuild.accountReopenProbe"
-    @AppStorage(accountReopenKey) private var accountReopen = false
+    /// takes effect at the next switch. The log carries
+    /// `reusing DSID <a>'s store runtime for DSID <b>`, or the refusal naming
+    /// the missing blob, plus the resident size before and after each request.
+    static let accountReuseKey = "com.a23bc.dliparebuild.accountReuseProbe"
+    @AppStorage(accountReuseKey) private var accountReuse = false
     @State private var logText = ""
 
     var body: some View {
@@ -78,9 +82,9 @@ struct DiagnosticsScreen: View {
                             .onChange(of: prewarmAtLaunch) { _ in refresh() }
                         Toggle("Map the shared cache on demand (next launch)", isOn: $lazyCachePages)
                             .onChange(of: lazyCachePages) { _ in refresh() }
-                        Toggle("Reopen the runtime when the account changes (probe)",
-                               isOn: $accountReopen)
-                            .onChange(of: accountReopen) { _ in refresh() }
+                        Toggle("Reuse one runtime across accounts (probe)",
+                               isOn: $accountReuse)
+                            .onChange(of: accountReuse) { _ in refresh() }
                     }
 
                     Section {

@@ -758,7 +758,7 @@ func diagnosticKBSync() async -> String {
         // whether each switch costs the process another runtime's worth. Two
         // lines per download, only while the probe is on, because the device
         // report is the log itself.
-        let probe = UserDefaults.standard.bool(forKey: DiagnosticsScreen.accountReopenKey)
+        let probe = UserDefaults.standard.bool(forKey: DiagnosticsScreen.accountReuseKey)
         if probe {
             AppLog.info("probe: rss before the request " + String(ProcessMemory.residentMiB()) + " MB", .sap)
         }

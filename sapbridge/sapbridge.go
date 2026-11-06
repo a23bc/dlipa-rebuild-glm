@@ -513,26 +513,28 @@ func EnableLazyCachePages() {
 	sap.SetLazyCachePages(true)
 }
 
-// EnableAccountReopenProbe lets a download for a second account close the
-// runtime that belongs to the first and open a new one on the same engine.
+// EnableAccountReuseProbe lets a download for a second account run through the
+// store runtime the first account opened.
 //
 // Off is the shipped behaviour: the request is refused with a message that says
-// to restart the app, because the guest carries the first account's session
-// objects and a request for another account comes back from Apple as a framework
-// error that names nothing.
+// to restart the app.
 //
-// On is a probe, not a feature. It exists because the price of an open changed
-// from about a minute and a half to about a second, which is what makes
-// switching accounts by reopening worth reconsidering. It answers three things
-// that have never been measured on device: whether a session closed and reopened
-// on the same engine works at all, what it costs, and whether the process keeps
-// the memory of every session it closes. If the reopen fails, downloads for the
-// account in hand stop working until the app restarts.
+// On is a probe, not a feature. It rests on what the request actually carries:
+// the per-account kbsync blob, an account object created fresh and empty for
+// every request, and an encoder told not to take cookies or storefront from the
+// guest -- so the runtime holds no account state to be wrong about. The claim
+// that it does is what the refusal was written for, and it has never been
+// reproduced with a log attached.
+//
+// What it does not do is close anything. Two device runs measured that route:
+// the signature taken right after a Close returned -42306 both with and without
+// releasing the address space, and the session opened afterwards died in our own
+// bridge at the same heap address each time.
 //
 // One-way, like the cache switch, and there is no bool parameter for the reason
 // given above: only bool returns are known to map to BOOL. It is read on every
 // download rather than once at open, so turning the row on takes effect at the
 // next switch.
-func EnableAccountReopenProbe() {
-	sap.SetAccountReopen(true)
+func EnableAccountReuseProbe() {
+	sap.SetAccountReuse(true)
 }

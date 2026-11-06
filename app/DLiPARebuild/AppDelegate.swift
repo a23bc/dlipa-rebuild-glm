@@ -151,9 +151,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // directions for the same reason as the switch above: a run that
             // refused the second account is indistinguishable from a run where
             // nobody turned the probe on.
-            if UserDefaults.standard.bool(forKey: DiagnosticsScreen.accountReopenKey) {
-                SapbridgeEnableAccountReopenProbe()
-                AppLog.info("account switch: a second account may reopen the runtime (probe)", .sap)
+            if UserDefaults.standard.bool(forKey: DiagnosticsScreen.accountReuseKey) {
+                SapbridgeEnableAccountReuseProbe()
+                AppLog.info("account switch: a second account reuses the runtime (probe)", .sap)
             } else {
                 AppLog.info("account switch: a second account is refused until a restart", .sap)
             }

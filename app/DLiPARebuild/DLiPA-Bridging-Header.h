@@ -61,7 +61,7 @@ FOUNDATION_EXPORT void SapbridgeEnableLazyCachePages(void);
 // Also one-way, and for the same two reasons: nothing has to be undone inside a
 // session, and a bool argument has no proven mapping. Read on every download, so
 // unlike the cache switch it takes effect at the next account switch.
-FOUNDATION_EXPORT void SapbridgeEnableAccountReopenProbe(void);
+FOUNDATION_EXPORT void SapbridgeEnableAccountReuseProbe(void);
 
 NS_ASSUME_NONNULL_END
 FOUNDATION_EXPORT NSString * _Nullable SapbridgePatchIPA(NSString * _Nullable path, NSString * _Nullable email, NSError * _Nullable * _Nullable error);

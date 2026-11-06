@@ -67,25 +67,31 @@ func SetLazyCachePages(on bool) { lazyCachePages.Store(on) }
 // which of the two shapes its log lines will take.
 func LazyCachePages() bool { return lazyCachePages.Load() }
 
-// accountReopen decides what a download for a second account does when the
+// accountReuse decides what a download for a second account does while the
 // runtime still belongs to the first.
 //
-// Off -- the shipped behaviour -- it refuses and asks for a restart, because
-// the guest carries the first account's session state and a request for
-// another one comes back from Apple as a framework error that names nothing.
-// On, it closes that session and opens a new one on the same engine, which has
-// never been run on device: the probe exists to find out whether a reopened
-// session works, what it costs, and whether the process holds on to memory each
-// time. It is a switch, not a policy, and it defaults off.
-var accountReopen atomic.Bool
+// Off -- the shipped behaviour -- it refuses and asks for a restart. On, it
+// uses the live runtime for the other account as well, which needs nothing from
+// the runtime but the account's kbsync blob: the request body carries the device
+// guid and the product ids, the account object is created fresh and empty per
+// request, and the encoder is told not to take cookies or storefront from the
+// guest (client.go). The premise that the guest holds an account has never been
+// reproduced with a log attached to it, so this is a switch and not a policy.
+//
+// It does not close anything. Closing is off the table by measurement: two
+// device runs, one with the address space released and one without, both came
+// back with the next signature into AppleMediaServices failing at -42306, and
+// the reopened session died in our own bridge at the same heap address every
+// time. Defaults off.
+var accountReuse atomic.Bool
 
-// SetAccountReopen turns the account-switch probe on or off. Like the cache
+// SetAccountReuse turns the account-switch probe on or off. Like the cache
 // switch it has to be set before the runtime is used, because the decision is
 // made inside the download that hits the mismatch.
-func SetAccountReopen(on bool) { accountReopen.Store(on) }
+func SetAccountReuse(on bool) { accountReuse.Store(on) }
 
-// AccountReopen reports whether a second account may reopen the runtime.
-func AccountReopen() bool { return accountReopen.Load() }
+// AccountReuse reports whether a second account may reuse the live runtime.
+func AccountReuse() bool { return accountReuse.Load() }
 
 const heapBase = uint64(0x400000000000)
 const heapSize = uint64(64 << 20)
