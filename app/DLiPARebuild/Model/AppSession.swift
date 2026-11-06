@@ -635,7 +635,11 @@ func diagnosticKBSync() async -> String {
                     }
                 }
             }
-            report.append("assets staged: " + String(AssetStaging.isReady))
+            // "staged: false" would read like a fault in a build that ships no
+            // binaries on purpose, so name the case that is working as designed.
+            report.append(AssetStaging.resolvesOnDemand
+                ? "assets: not bundled, resolving on demand"
+                : "assets staged: " + String(AssetStaging.isReady))
 
             AppLog.info("kbsync gate: generating, this may take a while", .sap)
             let started = Date()

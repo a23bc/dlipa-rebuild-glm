@@ -72,7 +72,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 return
             }
 
-            AppLog.info("SAP assets staged for the arm64 bridge", .assets)
+            // Two different successes share this callback: the binaries were
+            // copied out of the bundle, or this build ships none and the bridge
+            // will fetch them. Saying "staged" for the second one is a lie that
+            // costs an hour when someone reads the log to find out why sign-in
+            // is slow.
+            AppLog.info(AssetStaging.resolvesOnDemand
+                ? "SAP assets are not bundled; the first sign-in resolves them from Apple"
+                : "SAP assets staged for the arm64 bridge", .assets)
 
             // Pre-warming at launch is off.
             //

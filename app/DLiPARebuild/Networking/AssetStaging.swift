@@ -23,6 +23,14 @@ enum AssetStaging {
     /// they live. Signing and downloading need this.
     static var isReady = false
 
+    /// True when this build ships without the four binaries. That is now a
+    /// normal build, not a broken one: the bridge resolves them from Apple's
+    /// restore image the first time something needs them, so staging has
+    /// nothing to copy and must not point the bridge at an empty directory --
+    /// an explicit BundleDir is checked before the fallback and would fail
+    /// there, hiding the download behind a "file not found".
+    private(set) static var resolvesOnDemand = false
+
     /// True while staging is in progress. Guards against concurrent
     /// stageIfNeeded invocations (AppDelegate and MainViewController both
     /// call it on launch).
@@ -53,7 +61,7 @@ enum AssetStaging {
         // only one staging task runs; subsequent callers wait and then
         // see isReady=true.
         stagingLock.lock()
-        if isReady {
+        if isReady || resolvesOnDemand {
             stagingLock.unlock()
             DispatchQueue.main.async { completion(nil) }
             return
@@ -85,6 +93,17 @@ enum AssetStaging {
                 return
             }
 
+            // A build that ships no binaries at all is not a broken build: the
+            // bridge resolves them on first use. Answer every caller with nil,
+            // because staging genuinely has nothing left to do.
+            guard bundledSource(for: files[0]) != nil else {
+                AppLog.info(
+                    "SAP assets are not bundled; the bridge resolves them on first use",
+                    .assets)
+                finishWithoutAssets(completion: completion)
+                return
+            }
+
             for name in files {
                 let target = destination.appendingPathComponent(name)
 
@@ -93,14 +112,7 @@ enum AssetStaging {
                 // different macOS version's binaries) would fail that check.
                 // Copying every time is ~125 MB but only on cold start.
 
-                // The Apple binaries live in the SapAssets/ subdirectory of the
-                // bundle (staged there by scripts/stage-assets.sh and copied
-                // as a folder reference in project.yml). Bundle.main.url(
-                // forResource:withExtension:) does not search arbitrary
-                // subdirectories by default, so pass subdirectory: "SapAssets".
-                // Fall back to a bundle-wide search for safety.
-                let source = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "SapAssets")
-                    ?? Bundle.main.url(forResource: name, withExtension: nil)
+                let source = bundledSource(for: name)
                 guard let source else {
                     AppLog.error(name + " is missing from the app bundle", .assets)
                     firstError = AssetError.missingFromBundle(name)
@@ -170,6 +182,31 @@ enum AssetStaging {
         DispatchQueue.main.async {
             completion(error)
             for waiter in pending { waiter(error) }
+        }
+    }
+
+    /// The bundle lookup, in one place: the binaries sit in a SapAssets/
+    /// subdirectory (added as a folder reference by project.yml), and
+    /// `url(forResource:withExtension:)` does not search subdirectories
+    /// unless told, so pass it and keep a bundle-wide search as a fallback.
+    private static func bundledSource(for name: String) -> URL? {
+        Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "SapAssets")
+            ?? Bundle.main.url(forResource: name, withExtension: nil)
+    }
+
+    /// Answers like finish() but without claiming a staged directory: neither
+    /// BundleDir nor isReady may be touched here, because there is nothing for
+    /// the bridge to read from this bundle.
+    private static func finishWithoutAssets(completion: @escaping (Error?) -> Void) {
+        stagingLock.lock()
+        resolvesOnDemand = true
+        isStaging = false
+        let pending = waiters
+        waiters.removeAll()
+        stagingLock.unlock()
+        DispatchQueue.main.async {
+            completion(nil)
+            for waiter in pending { waiter(nil) }
         }
     }
 }
