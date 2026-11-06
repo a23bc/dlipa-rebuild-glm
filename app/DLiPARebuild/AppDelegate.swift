@@ -87,26 +87,57 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // A switch, not a policy. Opening the engine at launch is the one
             // step that can end the process before a screen is drawn; not opening
             // it costs two minutes on the first thing that needs the store.
-            // A new build starts from no cached session material. The kbsync blobs carry
-        // the assumptions of the binary that wrote them, and after an upgrade the old
-        // one makes the guest reject the request in setup -- which looked like a
-        // broken account until a clean install worked.
-        let buildKey = "com.a23bc.dliparebuild.lastBuild"
-        let current = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0")
-            + "/" + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0")
+            // A new version starts from no cached session material. The kbsync
+            // blobs carry the assumptions of the binary that wrote them, and
+            // after an upgrade the old one makes the guest reject the request in
+            // setup -- which looked like a broken account until a clean install
+            // worked.
+            //
+            // The version, not the CI build number. The build number changes on
+            // every push, and clearing on it cost the first download of each new
+            // build a kbsync regeneration: 117 s with nothing in the log between
+            // the request and the open, then 0 s on the next launch, which read
+            // the blob back off disk. A key that is too coarse still self-heals
+            // -- Apple's rejection drops the stored blob, so the worst case is
+            // one failed download rather than a dead account.
+            let versionKey = "com.a23bc.dliparebuild.lastVersion"
+            let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 
-        if UserDefaults.standard.string(forKey: buildKey) != current {
-            var failure: NSError?
-            _ = SapbridgeClearCachedKBSync(&failure)
+            if UserDefaults.standard.string(forKey: versionKey) != current {
+                var failure: NSError?
+                _ = SapbridgeClearCachedKBSync(&failure)
 
-            if let failure {
-                AppLog.warn("kbsync cache clear failed: " + failure.localizedDescription, .sap)
-            } else {
-                AppLog.info("new build " + current + ": kbsync cache cleared", .sap)
+                if let failure {
+                    AppLog.warn("kbsync cache clear failed: " + failure.localizedDescription, .sap)
+                } else {
+                    AppLog.info("new version " + current + ": kbsync cache cleared", .sap)
+                }
+
+                UserDefaults.standard.set(current, forKey: versionKey)
             }
 
-            UserDefaults.standard.set(current, forKey: buildKey)
-        }
+            // Read before anything can open the store runtime: open() decides once,
+            // from this, whether the shared cache is mapped up front or handed out a
+            // page at a time, and a decision made after the open would be a decision
+            // about the next launch while reporting this one.
+            // Both directions log, the way the pre-warm switch right below does.
+            // A switch that is silent when off cannot be told apart from a switch
+            // that was never read -- the first lazy measurement came back on the
+            // eager path and the log could not say whether anyone had flipped it.
+            //
+            // On unless the diagnostics switch says otherwise. The switch used to
+            // be the way to get the fast path; measured device-side, the demand
+            // shape opens in 1.2 s against 99.3 s mapped in full, and the two
+            // flows that were watched asked the cache for no pages at all, so
+            // now it is the way back out.
+            let lazyCachePages = UserDefaults.standard.object(forKey: DiagnosticsScreen.lazyCacheKey) as? Bool ?? true
+
+            if lazyCachePages {
+                SapbridgeEnableLazyCachePages()
+                AppLog.info("shared cache: pages will be mapped on demand", .sap)
+            } else {
+                AppLog.info("shared cache: mapped in full at open (switch off)", .sap)
+            }
 
         // Off unless asked for. Opening the engine at launch is the step that
             // can end the process before a screen is drawn, and it is now a

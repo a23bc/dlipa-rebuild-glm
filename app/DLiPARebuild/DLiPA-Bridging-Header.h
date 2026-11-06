@@ -52,6 +52,12 @@ FOUNDATION_EXPORT void SapbridgeSetBundleDir(NSString * _Nullable path);
 FOUNDATION_EXPORT BOOL SapbridgeAssetsCached(void);
 FOUNDATION_EXPORT BOOL SapbridgeAssetFetchAllowed(void);
 FOUNDATION_EXPORT void SapbridgeAllowAssetFetch(void);
+// One-way on purpose: open() reads the choice once, so the row that flips it
+// takes effect at the next launch, and there is nothing to undo mid-session.
+// It takes no bool argument for the same reason the three above take none: the
+// generated header proves how gomobile renders a bool return and says nothing
+// about a bool argument.
+FOUNDATION_EXPORT void SapbridgeEnableLazyCachePages(void);
 
 NS_ASSUME_NONNULL_END
 FOUNDATION_EXPORT NSString * _Nullable SapbridgePatchIPA(NSString * _Nullable path, NSString * _Nullable email, NSError * _Nullable * _Nullable error);

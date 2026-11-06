@@ -245,6 +245,13 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 
 	method, url, body, _ := runtime.RequestParts(address)
 
+	// The number this whole switch exists to produce: how much of the shared
+	// cache one signed request actually needed.
+	served, kiB, spent, absent, failed, waiting := runtime.LazyStats()
+
+	fmt.Fprintf(os.Stderr, "[SAP] ent download: shared cache served %d pages (%d KiB in %d ms), %d faults outside the blob, %d failed, %d untouched\n",
+		served, kiB, spent, absent, failed, waiting)
+
 	headers := http.Header{}
 	headers.Set("X-Dsid", input.DSID)
 	headers.Set("iCloud-DSID", input.DSID)
@@ -356,6 +363,11 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 
 	return result, nil
 }
+
+// SetLazyCachePages decides whether the store runtime maps the shared cache up
+// front or hands it out a page at a time. It sits beside the open that reads it,
+// because that call is where the consequence lands.
+func SetLazyCachePages(on bool) { emulator.SetLazyCachePages(on) }
 
 // kbsyncCachePath is beside the staged assets: writable, already created by the
 // staging step, and wiped with the app.

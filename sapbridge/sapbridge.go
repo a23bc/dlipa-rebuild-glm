@@ -496,3 +496,19 @@ func FetchSapAssets() (string, error) {
 func ClearCachedKBSync() error {
 	return sap.ClearCachedKBSync()
 }
+
+// EnableLazyCachePages chooses demand paging for the shared cache: open()
+// indexes the 9,927 pages instead of mapping them, and the guest is handed one
+// when it touches it.
+//
+// It is one-way and applies to the next open, because the two shapes are a bet
+// on one unmeasured number -- the census prices mapping at about 0.8 s per MiB,
+// so the eager path costs every launch 32.8 s, while demand paging costs about
+// 4 ms per page actually touched. There is deliberately no bool parameter: the
+// generated header in build/hdr shows gomobile rendering a bool *return* as
+// BOOL and says nothing about a bool argument, and guessing wrong here costs a
+// build-and-install cycle. The switch is read once by open(), which is why the
+// app's row says next launch.
+func EnableLazyCachePages() {
+	sap.SetLazyCachePages(true)
+}
