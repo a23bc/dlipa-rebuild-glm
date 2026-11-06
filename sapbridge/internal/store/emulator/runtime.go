@@ -149,7 +149,7 @@ type Runtime struct {
 	lazyStripped int
 	lazySkipped  int
 	lazyTotal    int
-	lazyFaults   uint64
+	lazyServed   uint64
 	lazyBytes    uint64
 	lazyMs       int64
 	lazyAbsent   uint64
@@ -628,7 +628,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 		fmt.Fprintf(os.Stderr,
 			"[SAP]   map census: %s at +%d MiB: n=%d total=%s median=%s worst=%s\n",
-			chunkLabel(key[0]), key[1]*progressStep, cell.count,
+			chunkLabel(key[0]), key[1]*int(progressStep>>20), cell.count,
 			cell.total.Round(time.Millisecond),
 			cell.samples[len(cell.samples)/2].Round(time.Millisecond),
 			cell.worst.Round(time.Millisecond))
@@ -2214,9 +2214,20 @@ func (r *Runtime) mapLazyPage(address uint64, size uint32, fetch bool) bool {
 		return false
 	}
 
-	r.lazyFaults++
+	r.lazyServed++
 	r.lazyBytes += 4096
 	r.lazyMs += time.Since(start).Milliseconds()
+
+	// The hook is the only place that knows how many pages have gone out, and
+	// the operation that needed them is not always driven by Execute: the signer
+	// reaches this code under the SAP machine. So report from here, on the first
+	// page and every 256 after it. A modulo on a path that costs milliseconds a
+	// page is free, and a log tail that always carries the running number beats
+	// one that depends on which caller finished last.
+	if r.lazyServed == 1 || r.lazyServed%256 == 0 {
+		fmt.Fprintf(os.Stderr, "[SAP] lazy cache pages so far: %d served, %d KiB in %d ms, %d still waiting\n",
+			r.lazyServed, r.lazyBytes/1024, r.lazyMs, len(r.lazyPages))
+	}
 
 	return true
 }
@@ -2225,14 +2236,27 @@ func (r *Runtime) mapLazyPage(address uint64, size uint32, fetch bool) bool {
 // page count and seconds the guest asked for, and the fraction of the index it
 // did not need. Printed at the end of a run rather than at Close, which the
 // store runtime reaches only when the app tears it down.
+// LazyStats reports what the on-demand shared cache did: pages handed over,
+// their size and the time they cost, faults on addresses the blob never
+// contained, maps that failed, and pages still waiting to be asked for.
+//
+// It is read by the caller that finishes a signed request rather than only by
+// the emulator's own run, because Execute is not the only driver -- the signer
+// reaches this code under the SAP machine. A census printed on a path nobody
+// took reports nothing, which is how the first device run of demand paging came
+// back with the timings and no working-set number at all.
+func (r *Runtime) LazyStats() (served uint64, kiB uint64, ms int64, absent uint64, failed uint64, waiting int) {
+	return r.lazyServed, r.lazyBytes / 1024, r.lazyMs, r.lazyAbsent, r.lazyFailed, len(r.lazyPages)
+}
+
 func (r *Runtime) lazyCensus() {
-	if r.lazyPages == nil || r.lazyFaults+r.lazyAbsent == r.lazyPrinted {
+	if r.lazyPages == nil || r.lazyServed+r.lazyAbsent == r.lazyPrinted {
 		return
 	}
 
-	r.lazyPrinted = r.lazyFaults + r.lazyAbsent
+	r.lazyPrinted = r.lazyServed + r.lazyAbsent
 
 	fmt.Fprintf(os.Stderr,
 		"[SAP] lazy cache pages: %d mapped (%d KiB, %d ms), %d faults on addresses not in the blob, %d map failures, %d of %d still waiting\n",
-		r.lazyFaults, r.lazyBytes/1024, r.lazyMs, r.lazyAbsent, r.lazyFailed, len(r.lazyPages), r.lazyTotal)
+		r.lazyServed, r.lazyBytes/1024, r.lazyMs, r.lazyAbsent, r.lazyFailed, len(r.lazyPages), r.lazyTotal)
 }

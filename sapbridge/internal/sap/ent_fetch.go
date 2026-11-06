@@ -245,6 +245,13 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 
 	method, url, body, _ := runtime.RequestParts(address)
 
+	// The number this whole switch exists to produce: how much of the shared
+	// cache one signed request actually needed.
+	served, kiB, spent, absent, failed, waiting := runtime.LazyStats()
+
+	fmt.Fprintf(os.Stderr, "[SAP] ent download: shared cache served %d pages (%d KiB in %d ms), %d faults outside the blob, %d failed, %d untouched\n",
+		served, kiB, spent, absent, failed, waiting)
+
 	headers := http.Header{}
 	headers.Set("X-Dsid", input.DSID)
 	headers.Set("iCloud-DSID", input.DSID)
