@@ -143,8 +143,16 @@ struct DiagnosticsScreen: View {
             }
             .navigationTitle("Diagnostics")
             .onAppear {
-                AppLog.onUpdate { _ in refresh() }
+                AppLog.onChanged { refresh() }
                 refresh()
+            }
+            .onDisappear {
+                // Released, not left armed. The handler sat in a static slot, so
+                // every line written after this screen was opened once re-rendered
+                // its text for the rest of the session -- which is how a guest run
+                // froze a screen the user had already left, for exactly as long as
+                // the run that produced the lines took.
+                AppLog.onChanged(nil)
             }
         }
         .navigationViewStyle(.stack)
@@ -173,20 +181,20 @@ struct DiagnosticsScreen: View {
     }
 
     private func refresh() {
-        // The tail, not everything. The view lays out this string on the main
-        // thread, and the probe can add a thousand lines in one run: rendering
-        // all of them on every refresh is main-thread work that competes with
-        // the very thing it is reporting on. The full log is still exported by
-        // the share button.
-        let text = AppLog.exportText()
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        // The tail, read as a tail. It said so before while exporting the whole
+        // window -- a synchronous copy of every entry, a formatted string for
+        // each, one join, one split, and only then the last 400 lines joined
+        // again -- and it did that per line the guest wrote. Copying 400 entries
+        // is a constant; copying 4000 on every line is the quadratic that made
+        // the reporting screen the thing that stopped responding. The share
+        // button still exports everything, once, because that is a click.
+        let tail = AppLog.tail(400)
+        let omitted = AppLog.lineCount - tail.count
+        let text = tail.map { $0.plainText }.joined(separator: "\n")
 
-        if lines.count > 400 {
-            logText = "… " + String(lines.count - 400) + " earlier lines omitted …\n"
-                + lines.suffix(400).joined(separator: "\n")
-        } else {
-            logText = text
-        }
+        logText = omitted > 0
+            ? "… " + String(omitted) + " earlier entries omitted …\n" + text
+            : text
     }
 
     /// The question this answers: does the probeapp chain run on this device.
