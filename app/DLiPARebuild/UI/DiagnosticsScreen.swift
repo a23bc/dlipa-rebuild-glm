@@ -64,6 +64,26 @@ struct DiagnosticsScreen: View {
     /// switches prints `reusing DSID <a>'s store runtime for DSID <b>`.
     static let accountReuseKey = "com.a23bc.dliparebuild.accountReuseProbe"
     @AppStorage(accountReuseKey) private var accountReuse = true
+
+    /// Whether the next store-runtime open prints the mapping measurements: one
+    /// line per used cell of the map-cost census, and one per region mapped page
+    /// by page.
+    ///
+    /// Off by default. They are the loudest thing in a normal launch -- 89 of the
+    /// roughly 110 lines an open writes inside its own second -- and they are about
+    /// the mapping rather than about the download, in the same log a bug report
+    /// gets typed into.
+    ///
+    /// It takes effect at the next launch, because open() reads it once. On is what
+    /// every build up to this switch printed, and it stays switchable because the
+    /// census is what killed three speculative levers and found the coupling
+    /// between the region phase and the shared cache.
+    ///
+    /// The log says which shape a launch took -- `map census: mapping measurements
+    /// will be logged` or `map census: off by switch, ...` -- and what the lines
+    /// mean, with the numbers they produced, is in `docs/diagnostics.md`.
+    static let mappingCensusKey = "com.a23bc.dliparebuild.mappingCensus"
+    @AppStorage(mappingCensusKey) private var mappingCensus = false
     // The tail as entries rather than as one joined string: the rows are laid
     // out lazily now, so the cost is what fits on screen, not what fits in the
     // window.
@@ -91,6 +111,9 @@ struct DiagnosticsScreen: View {
                         Toggle("Reuse one runtime across accounts (next launch)",
                                isOn: $accountReuse)
                             .onChange(of: accountReuse) { _ in refresh() }
+                        Toggle("Log the mapping measurements (next launch)",
+                               isOn: $mappingCensus)
+                            .onChange(of: mappingCensus) { _ in refresh() }
                     }
 
                     Section {

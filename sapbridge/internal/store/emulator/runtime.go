@@ -93,6 +93,28 @@ func SetAccountReuse(on bool) { accountReuse.Store(on) }
 // AccountReuse reports whether a second account may reuse the live runtime.
 func AccountReuse() bool { return accountReuse.Load() }
 
+// mappingCensus decides whether open() prints the mapping measurements: one
+// line per used cell of the map census and one per region mapped.
+//
+// They are the loudest thing in a normal launch -- 89 of the roughly 110 lines
+// a store-runtime open writes inside its own second -- and the questions they
+// answer are about the mapping itself: whether a map call costs what the
+// bookkeeping of already-mapped pages makes it, or what the bytes it covers
+// make it. Nobody asks that while downloading an app, and the log where they
+// print is the same log a bug report gets typed into.
+//
+// Defaults off; the instrument stays, because it is what killed three
+// speculative levers and what found the region/cache coupling. A measurement
+// nobody can switch back on is a measurement that gets guessed at again.
+var mappingCensus atomic.Bool
+
+// SetMappingCensus turns the mapping measurements on or off, before a runtime
+// is opened -- open() reads it once, while it is doing the work.
+func SetMappingCensus(on bool) { mappingCensus.Store(on) }
+
+// MappingCensus reports whether open() will print them.
+func MappingCensus() bool { return mappingCensus.Load() }
+
 const heapBase = uint64(0x400000000000)
 const heapSize = uint64(64 << 20)
 const stackBase = uint64(0x500000000000)
@@ -562,6 +584,10 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 
 	cells := map[[2]int]*mapCell{}
 
+	// Read once, so the census cannot turn itself on halfway through a phase and
+	// report cells filled by two different rules.
+	census := MappingCensus()
+
 	var mappedInPhase uint64
 
 	for _, region := range regions {
@@ -600,29 +626,31 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 			spent := time.Since(regionMark)
 			regionTime += spent
 
-			// The second key is MiB mapped by this phase so far, in 16 MiB
-			// steps. It is a proxy for the engine's own region bookkeeping --
-			// what the "grows with what is already there" hypothesis is about
-			// -- and it starts with the phase, not with the process, so it
-			// under-states the pressure the images and the cache pages already
-			// put on it. Reading a fixed size down that row is still the test.
-			key := [2]int{bits.Len64(size), int(mappedInPhase / progressStep)}
+			if census {
+				// The second key is MiB mapped by this phase so far, in 16 MiB
+				// steps. It is a proxy for the engine's own region bookkeeping --
+				// what the "grows with what is already there" hypothesis is about
+				// -- and it starts with the phase, not with the process, so it
+				// under-states the pressure the images and the cache pages already
+				// put on it. Reading a fixed size down that row is still the test.
+				key := [2]int{bits.Len64(size), int(mappedInPhase / progressStep)}
 
-			cell := cells[key]
-			if cell == nil {
-				cell = &mapCell{}
-				cells[key] = cell
+				cell := cells[key]
+				if cell == nil {
+					cell = &mapCell{}
+					cells[key] = cell
+				}
+
+				cell.count++
+				cell.total += spent
+				cell.samples = append(cell.samples, spent)
+
+				if spent > cell.worst {
+					cell.worst = spent
+				}
+
+				mappedInPhase += size
 			}
-
-			cell.count++
-			cell.total += spent
-			cell.samples = append(cell.samples, spent)
-
-			if spent > cell.worst {
-				cell.worst = spent
-			}
-
-			mappedInPhase += size
 		}
 	}
 
@@ -635,29 +663,31 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 	// order, or once per arena instead of once per gap, is the lever. Flat rows
 	// that rise with span mean bytes -- then only mapping less helps, which is
 	// what the architecture document claims and this data exists to test.
-	keys := make([][2]int, 0, len(cells))
-	for key := range cells {
-		keys = append(keys, key)
-	}
-
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i][0] != keys[j][0] {
-			return keys[i][0] < keys[j][0]
+	if census {
+		keys := make([][2]int, 0, len(cells))
+		for key := range cells {
+			keys = append(keys, key)
 		}
 
-		return keys[i][1] < keys[j][1]
-	})
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i][0] != keys[j][0] {
+				return keys[i][0] < keys[j][0]
+			}
 
-	for _, key := range keys {
-		cell := cells[key]
-		sort.Slice(cell.samples, func(i, j int) bool { return cell.samples[i] < cell.samples[j] })
+			return keys[i][1] < keys[j][1]
+		})
 
-		fmt.Fprintf(os.Stderr,
-			"[SAP]   map census: %s at +%d MiB: n=%d total=%s median=%s worst=%s\n",
-			chunkLabel(key[0]), key[1]*int(progressStep>>20), cell.count,
-			cell.total.Round(time.Millisecond),
-			cell.samples[len(cell.samples)/2].Round(time.Millisecond),
-			cell.worst.Round(time.Millisecond))
+		for _, key := range keys {
+			cell := cells[key]
+			sort.Slice(cell.samples, func(i, j int) bool { return cell.samples[i] < cell.samples[j] })
+
+			fmt.Fprintf(os.Stderr,
+				"[SAP]   map census: %s at +%d MiB: n=%d total=%s median=%s worst=%s\n",
+				chunkLabel(key[0]), key[1]*int(progressStep>>20), cell.count,
+				cell.total.Round(time.Millisecond),
+				cell.samples[len(cell.samples)/2].Round(time.Millisecond),
+				cell.worst.Round(time.Millisecond))
+		}
 	}
 
 	r.deferFlush = false
@@ -1257,9 +1287,11 @@ func (r *Runtime) mapPerPage(address, size uint64) error {
 		fresh += int((page - runStart) / 4096)
 	}
 
-	fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x mapped per page (%d new, %d maps, probe %s, map %s)\n",
-		address, size, fresh, mapCalls,
-		probeTime.Round(time.Millisecond), mapTime.Round(time.Millisecond))
+	if MappingCensus() {
+		fmt.Fprintf(os.Stderr, "[SAP]   region %#x+%#x mapped per page (%d new, %d maps, probe %s, map %s)\n",
+			address, size, fresh, mapCalls,
+			probeTime.Round(time.Millisecond), mapTime.Round(time.Millisecond))
+	}
 
 	return nil
 }

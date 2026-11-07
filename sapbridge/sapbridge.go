@@ -545,3 +545,22 @@ func EnableLazyCachePages() {
 func EnableAccountReuseProbe() {
 	sap.SetAccountReuse(true)
 }
+
+// EnableMappingCensus turns the mapping measurements back on: one line per used
+// cell of the map-cost census, and one per region mapped page by page.
+//
+// Off is the shipped behaviour. These two are the loudest thing in a normal
+// launch -- 89 of the roughly 110 lines a store-runtime open writes inside its
+// own second -- and they answer questions about the mapping itself rather than
+// about the download, in the same log a bug report gets typed into.
+//
+// The instrument stays switchable rather than deleted because it is what killed
+// three speculative levers and what found the coupling between the region phase
+// and the shared cache. A measurement that can only be taken by editing the
+// source is one that gets guessed at again.
+//
+// One-way, for the reason the two switches above give, and read once by open():
+// the row changes the next launch rather than the one in hand.
+func EnableMappingCensus() {
+	sap.SetMappingCensus(true)
+}

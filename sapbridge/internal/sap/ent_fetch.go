@@ -452,6 +452,12 @@ func SetLazyCachePages(on bool) { emulator.SetLazyCachePages(on) }
 // behaviour: refuse, and ask for a restart.
 func SetAccountReuse(on bool) { emulator.SetAccountReuse(on) }
 
+// SetMappingCensus decides whether an open prints the mapping measurements --
+// the map-cost census and the per-region mapped-per-page line. Off is the
+// shipped behaviour: they are the loudest part of a normal launch, and the log
+// they fill is the one a bug report gets typed into.
+func SetMappingCensus(on bool) { emulator.SetMappingCensus(on) }
+
 // blobAction is what a failed ent/download answer means for the cached kbsync.
 type blobAction int
 
