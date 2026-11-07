@@ -22,8 +22,45 @@ enum RequestPurpose: String {
     case metadata
 }
 
+/// Refuses to let URLSession follow a redirect on the signed API session.
+///
+/// A redirect on these endpoints has to be replayed as the *same* request: the
+/// same method over the same bytes, because the signature covers the body and
+/// the Store pod re-validates it. URLSession's automatic policy turns POST into
+/// GET on a 301 or 302 and drops the body on the way, and a GET with no body is
+/// not a request this scheme can sign. So the response has to reach the manual
+/// loop in `signedRequest`, and handing it `nil` at this point is the only way
+/// to say "surface it instead of following it".
+///
+/// The comment that has lived in the client's initialiser for months -- "the
+/// body must be re-signed at the destination rather than forwarded, so redirects
+/// are handled manually" -- described an intention the session was never
+/// configured to honour. The manual loop existed; it could not be reached.
+///
+/// Its own type, not the client: URLSession retains its delegate, and a delegate
+/// that is the client would keep the client alive as long as the session, which
+/// is as long as the app.
+final class NoAutoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 final class AppStoreClient {
     private let session: URLSession
+
+    /// The signed API calls go here, with redirects surfaced instead of followed.
+    ///
+    /// A second session rather than a change to the one above, because `session`
+    /// also carries the bag fetch and the classic endpoints, and for those the
+    /// automatic policy is the behaviour that has been working. Same
+    /// configuration object: what must differ is the redirect policy alone, and
+    /// nothing else.
+    private let signedSession: URLSession
     private let decoder = PropertyListDecoder()
 
     /// The address Apple redirected the authenticate endpoint to.
@@ -74,9 +111,15 @@ final class AppStoreClient {
         configuration.httpCookieStorage = HTTPCookieStorage.shared
         // The authenticate endpoint redirects to a Store pod; the body must be
         // re-signed at the destination rather than forwarded, so redirects are
-        // handled manually.
+        // handled manually -- which needs a session that does not follow them
+        // first, and that is what signedSession below is for. Saying it here is
+        // the fix: this sentence has been in the initialiser since the manual
+        // loop was written, and nothing until now made it true.
         configuration.httpMaximumConnectionsPerHost = 4
         self.session = URLSession(configuration: configuration)
+        self.signedSession = URLSession(configuration: configuration,
+                                        delegate: NoAutoRedirectDelegate(),
+                                        delegateQueue: nil)
         restoreCookieJar()
     }
 
@@ -2048,6 +2091,56 @@ final class AppStoreClient {
     /// - A 303 asks for a GET, so the body is gone and there is nothing to
     ///   sign. Treating it as replayable would re-POST incorrectly.
     /// - `Location` can be relative, so resolve it against the current URL.
+    /// Why a redirect is being handed back to the caller instead of followed.
+    ///
+    /// Status, Location (or its absence), the URL the response claims to be at,
+    /// and the URL we asked: those four together separate the three faults that
+    /// "HTTP 301" hides.
+    ///
+    /// Non-3xx answers are ignored, so a caller that is returning a 204 or a 404
+    /// through the same guard does not have to ask whether this is a redirect it
+    /// should mention -- which also keeps the test out of the function that is
+    /// already close to the complexity limit.
+    ///
+    /// Everything after `?` is cut from a **Location** before it is written.
+    /// A Location is a URL, and the upstream contract treats a query on one as
+    /// carrying a token -- that is exactly the case its redirect test pins, that
+    /// the destination is reported and the secret is not. The request and
+    /// response URLs are shown whole, as every other line in this file already
+    /// shows them: their queries are routing (`Pod=47&PRH=47`), and a query on a
+    /// Location is a credential.
+    private func logUnfollowedRedirect(_ http: HTTPURLResponse, request: URLRequest,
+                                       reason: String, location raw: String? = nil) {
+        guard (300..<400).contains(http.statusCode) else { return }
+
+        let destination = Self.destinationWithoutQuery(
+            raw ?? http.value(forHTTPHeaderField: "Location"))
+
+        AppLog.warn("not following redirect: HTTP " + String(http.statusCode)
+                    + ", " + reason
+                    + ", location " + destination
+                    + ", response url " + (http.url?.absoluteString ?? "?")
+                    + ", request url " + (request.url?.absoluteString ?? "?"), .network)
+    }
+
+    /// A URL for the log, with anything after `?` or `#` removed, and `none` for
+    /// the absent case so an empty header cannot read as an empty path.
+    private static func destinationWithoutQuery(_ raw: String?) -> String {
+        guard let raw, !raw.isEmpty else { return "none" }
+
+        var value = raw
+
+        if let cut = value.firstIndex(of: "?") {
+            value = String(value[..<cut])
+        }
+
+        if let cut = value.firstIndex(of: "#") {
+            value = String(value[..<cut])
+        }
+
+        return value
+    }
+
     private func signedRequest(_ request: URLRequest,
                                signer: SAPSigner,
                                redirects: Int) async throws -> (Data, HTTPURLResponse) {
@@ -2062,7 +2155,7 @@ final class AppStoreClient {
             signed.setValue(try signer.signatureHeaderValue(for: body),
                            forHTTPHeaderField: "X-Apple-ActionSignature")
 
-            let (data, response) = try await session.data(for: signed)
+            let (data, response) = try await signedSession.data(for: signed)
             guard let http = response as? HTTPURLResponse else {
                 AppLog.error("response was not HTTP", .network)
                 throw StoreError.httpError(-1, "not an HTTP response")
@@ -2072,9 +2165,16 @@ final class AppStoreClient {
             // pair that explains most failures: 403 with a signature present
             // means Apple rejected it, 403 with no signature means it was never
             // sent.
+            //
+            // Both lengths are named, because they used to share one word:
+            // "body 461 bytes" beside an HTTP 204 reads as though Apple answered
+            // a no-content request with 461 bytes of content, when the number was
+            // the size of what we sent. A log that invites that reading is worth
+            // less than the two numbers it hides.
             AppLog.info("signed request to " + (signed.url?.absoluteString ?? "?")
                         + " returned " + String(http.statusCode)
-                        + ", body " + String(body.count) + " bytes", .network)
+                        + ", request " + String(body.count) + " bytes, response "
+                        + String(data.count) + " bytes", .network)
             captureCookies(from: http)
             if http.statusCode == 403 {
                 let hadSignature = signed.value(forHTTPHeaderField: "X-Apple-ActionSignature")
@@ -2096,15 +2196,38 @@ final class AppStoreClient {
 
             // A 3xx that should be replayed as-is carries a Location and keeps
             // the body. A 303 does not: it converts to a GET, so the body is
-            // gone and re-signing is meaningless.
-            guard isReplayableRedirect(http.statusCode),
-                  let location = http.value(forHTTPHeaderField: "Location"),
+            // gone and re-signing is meaningless -- and since this session no
+            // longer follows anything on its own, a 303 now reaches the caller
+            // as what it is rather than as a reshaped GET. No endpoint here is
+            // known to answer 303, which is why it is surfaced rather than
+            // invented: the alternative is a bodyless request through a signature
+            // scheme that was never asked to cover one.
+            guard isReplayableRedirect(http.statusCode) else {
+                logUnfollowedRedirect(http, request: signed,
+                                      reason: "not a replayable redirect code")
+
+                return (data, http)
+            }
+
+            // Every path below hands a 3xx back without following it, and each
+            // one now says which. Three device captures showed "HTTP 301" and
+            // nothing else, which is one fact where the useful question was
+            // whether Apple sent no Location at all, sent one this client could
+            // not resolve, or sent one off Apple's domain -- three different
+            // faults, indistinguishable in the log, and the difference decides
+            // whether the fix lives here.
+            guard let location = http.value(forHTTPHeaderField: "Location"),
                   !location.isEmpty else {
+                logUnfollowedRedirect(http, request: signed, reason: "no Location header")
+
                 return (data, http)
             }
 
             guard let next = resolvedURL(location, relativeTo: signed.url) else {
-                // An unresolvable Location is a dead end; surface the redirect.
+                logUnfollowedRedirect(http, request: signed,
+                                      reason: "Location could not be resolved as https",
+                                      location: location)
+
                 return (data, http)
             }
 
@@ -2114,13 +2237,20 @@ final class AppStoreClient {
             // response happens to say.
             guard Self.isAppleHost(next.host) else {
                 AppLog.warn("refusing redirect off Apple's domain: "
-                            + next.absoluteString + " from "
+                            + Self.destinationWithoutQuery(next.absoluteString) + " from "
                             + (signed.url?.absoluteString ?? "?"), .network)
 
                 return (data, http)
             }
 
-            AppLog.debug("following redirect to " + next.absoluteString, .network)
+            // The destination without its query, for the same reason the
+            // surfaced case has none: a Location is allowed to carry a token in
+            // its query, and this line ends up in a log that gets shared. The
+            // host and path are what a reader needs in order to know where the
+            // request went; the query would only say whether it was worth
+            // reading.
+            AppLog.debug("following redirect to "
+                         + Self.destinationWithoutQuery(next.absoluteString), .network)
             var redirected = URLRequest(url: next)
             redirected.httpMethod = signed.httpMethod
             redirected.httpBody = signed.httpBody
@@ -2141,6 +2271,14 @@ final class AppStoreClient {
             }
             current = redirected
         }
+
+        // Named rather than left to the status: a loop that gave up and a server
+        // that refused are different faults with the same outcome for the person
+        // watching, and the redirect chain is the only thing that distinguishes
+        // them.
+        AppLog.warn("redirect budget exhausted for "
+                    + Self.destinationWithoutQuery(request.url?.absoluteString)
+                    + " after " + String(max(redirects, 0) + 1) + " hops", .network)
 
         throw StoreError.httpError(310, "too many redirects")
     }
