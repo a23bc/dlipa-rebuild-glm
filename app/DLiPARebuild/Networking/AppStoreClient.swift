@@ -247,10 +247,7 @@ final class AppStoreClient {
                 // What actually goes out, header by header. Apple routes a sign-in to
                 // a regional pod, and a value in here is the only thing that can carry
                 // the previous account's region into this one.
-                let described = attemptRequest.allHTTPHeaderFields?
-                    .map { key, value in key + "=" + String(value.prefix(24)) }
-                    .sorted()
-                    .joined(separator: " ") ?? "none"
+                let described = Self.describeRequestHeaders(attemptRequest)
                 AppLog.info("authenticate request to " + attemptRequest.url!.absoluteString
                             + " headers: " + described, .auth)
 
@@ -889,17 +886,42 @@ final class AppStoreClient {
         }
     }
 
+    /// What goes out on a request, header by header, through the same redaction
+    /// the response dumps use.
+    ///
+    /// This call site used to have its own rule -- the first 24 characters of
+    /// every value -- which was written when Content-Type and User-Agent were the
+    /// only headers a sign-in carried. A request in this class can carry a session,
+    /// and 24 characters of a cookie is a credential fragment in the log that the
+    /// diagnostics tab invites the person to share.
+    private static func describeRequestHeaders(_ request: URLRequest) -> String {
+        let headers: [AnyHashable: Any] = request.allHTTPHeaderFields ?? [:]
+
+        return headers.isEmpty ? "none" : redactedHeaders(headers, cap: 24)
+    }
+
     /// Header names with the values of anything carrying a credential replaced
     /// by its length. Names and lengths still say what the response contained.
-    private static func redactedHeaders(_ headers: [AnyHashable: Any]) -> String {
+    ///
+    /// `cap` shortens the values that are *not* credentials, for the callers that
+    /// want a compact line -- a User-Agent is 60-some characters and no dump needs
+    /// all of it. The list is matched on the lower-cased name because the store
+    /// spells the same field three ways across the flows (`X-Dsid`,
+    /// `iCloud-DSID`, `X-Apple-DSID`), and the second of those is the one this
+    /// client itself sets on the buy and download requests -- the earlier list
+    /// covered `x-icloud-dsid`, which no header ever matches.
+    private static func redactedHeaders(_ headers: [AnyHashable: Any], cap: Int = 0) -> String {
         let sensitive = ["set-cookie", "cookie", "x-token", "authorization",
-                         "x-apple-dsid", "x-icloud-dsid", "x-dsid"]
+                         "x-apple-dsid", "icloud-dsid", "x-dsid"]
         let parts: [String] = headers.keys.map { key in
             let name = String(describing: key)
             let lower = name.lowercased()
             let value = String(describing: headers[key] ?? "")
             if sensitive.contains(where: { lower.contains($0) }) {
                 return name + "=<redacted " + String(value.count) + " chars>"
+            }
+            if cap > 0, value.count > cap {
+                return name + "=" + String(value.prefix(cap))
             }
             return name + "=" + value
         }
