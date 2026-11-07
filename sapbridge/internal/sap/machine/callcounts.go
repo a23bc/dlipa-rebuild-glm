@@ -3,6 +3,7 @@ package machine
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // ExternalCall is one external symbol the guest actually entered, with the
@@ -15,15 +16,30 @@ type ExternalCall struct {
 var (
 	externalCallsMu sync.Mutex
 	externalCalls   = map[string]uint64{}
+
+	// countShimCalls decides whether the dispatcher records anything. Recording
+	// is a mutex and a map write on the hottest path in an interpreted guest, and
+	// it was removed from that path once the question it answered had been
+	// answered -- which left the reader side intact and the report permanently
+	// zero, silently. So the write is back, and it happens only while something
+	// asks for it.
+	countShimCalls atomic.Bool
 )
 
-// recordExternalCall used to be called from the service dispatcher on every
-// external symbol the guest entered. That is the hottest path in an interpreted
-// guest, and the mutex plus map write cost was paid on every call long after the
-// question it answered had been settled.
+// SetCallCounting turns the dispatcher's recording on or off and reports the
+// previous value, so a caller restores what it found instead of assuming it was
+// off.
 //
-// It is kept, and still wired into the callreport test, but nothing on the
-// production path calls it any more.
+// The counts are process-wide, not per machine, which is what lets one caller
+// attribute them to one operation with ResetExternalCalls while another is
+// measuring a whole test.
+func SetCallCounting(on bool) bool { return countShimCalls.Swap(on) }
+
+// CallCounting reports the current setting.
+func CallCounting() bool { return countShimCalls.Load() }
+
+// recordExternalCall is the write side of the report, called from the service
+// dispatcher while SetCallCounting is on.
 func recordExternalCall(name string) {
 	externalCallsMu.Lock()
 	defer externalCallsMu.Unlock()
