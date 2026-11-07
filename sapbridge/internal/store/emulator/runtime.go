@@ -96,8 +96,9 @@ func AccountReuse() bool { return accountReuse.Load() }
 // mappingCensus decides whether open() prints the mapping measurements: one
 // line per used cell of the map census and one per region mapped.
 //
-// They are the loudest thing in a normal launch -- 89 of the roughly 110 lines
-// a store-runtime open writes inside its own second -- and the questions they
+// They are the loudest thing in a normal launch -- 89 of the 118 lines a
+// store-runtime open writes inside its own second, measured with this switch on
+// and the same second holding 38 with it off -- and the questions they
 // answer are about the mapping itself: whether a map call costs what the
 // bookkeeping of already-mapped pages makes it, or what the bytes it covers
 // make it. Nobody asks that while downloading an app, and the log where they

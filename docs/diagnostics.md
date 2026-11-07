@@ -91,11 +91,11 @@ The last line is the one shape reuse cannot serve: a second account whose kbsync
 
 ### Log the mapping measurements
 
-Off by default. On, an `open()` prints the two instruments that measure the mapping itself (the numbers below are one run's, not a typical run's):
+Off by default. On, an `open()` prints the two instruments that measure the mapping itself. Both lines below are from a device capture of a demand-paged open, unedited:
 
 ```
-  map census: 4 MiB at +64 MiB: n=16 total=11.3s median=706ms worst=1.204s
-  region 0x1a24c3900+0x4000 mapped per page (3 new, 1 maps, probe 213ms, map 1.9ms)
+  map census: 4 KiB at +128 MiB: n=23 total=14ms median=1ms worst=2ms
+  region 0x1e7753000+0x3c8000 mapped per page (951 new, 2 maps, probe 2ms, map 1ms)
 ```
 
 The first line is one cell of the map-cost census. Its two axes are the span of a single `uc_mem_map` call and how much the phase had already mapped when the call ran, in 16 MiB steps; each cell reports how many calls landed in it, and the total, median and worst time they took. Read a fixed span *down* the progress column: a median that grows means the price is the bookkeeping of what is already mapped, and mapping in a different order is the lever; a row that is flat and rises only with span means the price is bytes, and only mapping less helps.
@@ -104,9 +104,11 @@ That test was run, twice, at 4 MiB and at 1 MiB. The two agree: 176 calls over 7
 
 The second line appears when a whole-range map fails and the range is filled page by page instead: pages mapped fresh, map calls, and the time spent probing versus mapping. It is the successor to the shape that cost minutes — one `uc_mem_map` per page, where a single 951-page region took 78 s.
 
+Those two example numbers are what the census reports today, with the cache indexed rather than mapped: the same 951-page region is 3 ms end to end, and the heaviest cell in the capture is 14 ms across 23 calls. Turned on now, the instrument reads as confirmation rather than as diagnosis -- which is the right shape for a switch that defaults off, because the answer it re-prints is the one already recorded above.
+
 Why the instrument survives the default: it is what killed three speculative levers — chunking the region phase into 4 MiB pieces (37.5 s against 38.3 s, nothing), a 1 MiB split (worse, reverted), and a per-page map on the sparse profile (the 78 s above) — and it is what found the coupling between the region phase and the shared cache. The eager run mapped *more* regions (193 against 170) and finished the phase in 127 ms instead of 62.1 s, so neither the count nor the bytes in the region set can account for a 490-fold gap; what differs, by 38.8 MiB, is the cache already in the address space. A measurement nobody can switch back on is a measurement that gets guessed at again.
 
-Turning this on costs log volume, not time: on a device capture the two lines together were **89 of the roughly 110 lines** an open wrote inside its own second. Turning it off costs only the breakdown — the summary that survives is `open(): 193 regions mapped in 127ms`, so the phase still has a number, without the per-cell shape that explains it.
+Turning this on costs log volume, not time. Counted on device, on two launches of the same build: the open's own second holds **118 lines with the census on, 89 of them these two prints**, and **38 lines with it off** — and the region phase measured 105 ms off against 100 ms on, which is inside noise. Turning it off costs only the breakdown: the summary that survives is `open(): 193 regions mapped in 105ms`, so the phase still has a number, without the per-cell shape that explains it.
 
 ---
 
@@ -153,7 +155,7 @@ During a download, the useful ones:
 [SAP] ent download: response carries sinfs=1 metadata=1 md5=1
 [SAP] ent download: cached kbsync kept (9610 answers about the account, not the blob)
 [SAP] ent download: cached kbsync rejected (<code>), discarded
-[SAP] patch ipa: rewrote <file>: 772 MiB, <n> of <m> entries new, 13.667s, 56 MiB/s
+[SAP] patch ipa: rewrote com.toyopagroup.picaboo-14.31.1.0.ipa: 342 MiB, 2 of 2 entries new, 3.56s, 96 MiB/s
 ```
 
 Two of those carry the numbers this project argues with. The served-pages line is the demand-paging bet reported honestly: on the signed download the guest asked for no pages at all, which is why indexing 9,903 of them in 336 ms beats mapping them for 32.8 s. The `patch ipa` line is the cost of writing the package back — measured at 772 MiB in 13.667 s (56 MiB/s) and 342 MiB in 4.046 s (85 MiB/s) — and when a package already carries everything the flow would inject, it says so and rewrites nothing:
@@ -161,5 +163,7 @@ Two of those carry the numbers this project argues with. The served-pages line i
 ```
 [SAP] patch ipa: <file> already carries all <n> entries; nothing rewritten
 ```
+
+That last one is the shape rather than a measurement: no device flow has yet re-patched a package that already carried the entries, so the short-circuit has never printed.
 
 The kept/rejected pair is the blob cache policy. A failure about the account or the licence — `9610`, `5002`, `2042`, `2034`, `2002`, `signInRequired`, `passwordTokenExpired` — keeps the cached kbsync, because the blob did not cause it; an earlier build deleted the blob on those answers and turned a browse of the version history into a restart-only dead end. Anything else discards it, and `nothing was stored` marks the case where the failure hit a blob that was generated for this request, so there was nothing on disk to lose.

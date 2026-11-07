@@ -70,9 +70,10 @@ struct DiagnosticsScreen: View {
     /// by page.
     ///
     /// Off by default. They are the loudest thing in a normal launch -- 89 of the
-    /// roughly 110 lines an open writes inside its own second -- and they are about
-    /// the mapping rather than about the download, in the same log a bug report
-    /// gets typed into.
+    /// 118 lines an open writes inside its own second, against 38 in that second
+    /// with this row off, both counted on device at the build that added it -- and
+    /// they are about the mapping rather than about the download, in the same log a
+    /// bug report gets typed into.
     ///
     /// It takes effect at the next launch, because open() reads it once. On is what
     /// every build up to this switch printed, and it stays switchable because the

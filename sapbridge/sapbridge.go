@@ -550,8 +550,9 @@ func EnableAccountReuseProbe() {
 // cell of the map-cost census, and one per region mapped page by page.
 //
 // Off is the shipped behaviour. These two are the loudest thing in a normal
-// launch -- 89 of the roughly 110 lines a store-runtime open writes inside its
-// own second -- and they answer questions about the mapping itself rather than
+// launch -- 89 of the 118 lines a store-runtime open writes inside its own
+// second, device-measured, against 38 lines in that second with this switch off
+// -- and they answer questions about the mapping itself rather than
 // about the download, in the same log a bug report gets typed into.
 //
 // The instrument stays switchable rather than deleted because it is what killed
