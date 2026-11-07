@@ -191,6 +191,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 AppLog.info("SAP pre-warm off by switch: the engine opens on first use", .sap)
             }
         }
+
+        // Probe build only, and the whole reason this branch exists: whether the
+        // data-protection keychain accepts an item on a build signed the way this
+        // app is signed, and whether that item outlives the launch that wrote it.
+        // The answers decide where the session tokens, the cookie jar, the device
+        // identity and the kbsync blob go, so they get measured here instead of
+        // being assumed by the migration that would move them. What the two lines
+        // mean, and what each possible answer rules in or out, is written up in
+        // docs/probes/keychain-shapes.md.
+        KeychainProbe.run()
+
         print("[DLiPA] AppDelegate.didFinishLaunchingWithOptions returning true")
         return true
     }
