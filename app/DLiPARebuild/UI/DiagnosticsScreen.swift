@@ -64,7 +64,13 @@ struct DiagnosticsScreen: View {
     /// switches prints `reusing DSID <a>'s store runtime for DSID <b>`.
     static let accountReuseKey = "com.a23bc.dliparebuild.accountReuseProbe"
     @AppStorage(accountReuseKey) private var accountReuse = true
-    @State private var logText = ""
+    // The tail as entries rather than as one joined string: the rows are laid
+    // out lazily now, so the cost is what fits on screen, not what fits in the
+    // window.
+    @State private var tail: [LogEntry] = []
+    @State private var omitted = 0
+    @State private var lastRender = Date.distantPast
+    @State private var renderQueued = false
 
     var body: some View {
         NavigationView {
@@ -133,12 +139,29 @@ struct DiagnosticsScreen: View {
                 Divider()
 
                 ScrollView {
-                    Text(logText.isEmpty ? "No log entries yet." : logText)
-                        .font(.system(.caption2, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .textSelection(.enabled)
+                    // Rows, and lazy ones. A single Text holding four hundred
+                    // joined lines made the screen build one text layout and one
+                    // selection grammar over roughly a hundred kilobytes --
+                    // seconds on entry, before anything else had run. A LazyVStack
+                    // gives the layout to the rows that are visible, so entering
+                    // the screen stops costing what the window holds.
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        if omitted > 0 {
+                            Text("… " + String(omitted) + " earlier entries omitted …")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+
+                        ForEach(tail) { entry in
+                            Text(entry.plainText)
+                                .font(.system(.caption2, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                 }
             }
             .navigationTitle("Diagnostics")
@@ -181,20 +204,39 @@ struct DiagnosticsScreen: View {
     }
 
     private func refresh() {
+        // At most one render per quarter second. AppLog already coalesces its
+        // notifications to one per turn of the main thread, which bounds the
+        // copies but not the layout: during a store-runtime open a turn is
+        // sixteen milliseconds, so the tail would be rebuilt sixty times a
+        // second -- and rebuilding it is exactly the main-thread work this
+        // screen asks for while the guest is running on the other core.
+        // Suppressed renders are folded into one follow-up rather than dropped,
+        // so the window still ends up on screen once the burst stops.
+        if Date().timeIntervalSince(lastRender) < 0.25 {
+            if !renderQueued {
+                renderQueued = true
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    renderQueued = false
+                    refresh()
+                }
+            }
+
+            return
+        }
+
+        lastRender = Date()
+
         // The tail, read as a tail. It said so before while exporting the whole
         // window -- a synchronous copy of every entry, a formatted string for
         // each, one join, one split, and only then the last 400 lines joined
-        // again -- and it did that per line the guest wrote. Copying 400 entries
-        // is a constant; copying 4000 on every line is the quadratic that made
-        // the reporting screen the thing that stopped responding. The share
-        // button still exports everything, once, because that is a click.
-        let tail = AppLog.tail(400)
-        let omitted = AppLog.lineCount - tail.count
-        let text = tail.map { $0.plainText }.joined(separator: "\n")
+        // again. Reading 400 entries and laying out the twenty that are visible
+        // is the same information; the share button still exports everything,
+        // once, because that is a click.
+        let fetched = AppLog.tail(400)
 
-        logText = omitted > 0
-            ? "… " + String(omitted) + " earlier entries omitted …\n" + text
-            : text
+        tail = fetched
+        omitted = AppLog.lineCount - fetched.count
     }
 
     /// The question this answers: does the probeapp chain run on this device.
