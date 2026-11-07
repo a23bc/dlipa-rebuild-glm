@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"howett.net/plist"
 )
@@ -61,14 +62,46 @@ func PatchIPA(path, email string) (string, error) {
 
 	all := append([]extraEntry{{Name: "iTunesMetadata.plist", Data: entries}}, sinfs...)
 
-	if err := appendToZip(path, tmpPath, all); err != nil {
-		_ = os.Remove(tmpPath)
+	// How much of that list the package does not already hold. The reason this is
+	// counted before writing is that appendToZip copies every payload byte
+	// verbatim and then skips the names it finds: a package that already carries
+	// everything therefore costs a full read plus a full write of its own size and
+	// changes nothing on disk. That is the whole of "the bigger the package the
+	// longer the injection, and the more injections the worse it gets" -- the cost
+	// is linear in the package and blind to what is being added -- and when nothing
+	// is new the rewrite is simply skipped, leaving the sidecar below to be written
+	// as before. The line that prints when it does rewrite is the measurement that
+	// says what a pass costs on this device, because none of that was recorded.
+	pending := pendingEntries(source, all)
 
-		return "", err
-	}
+	if pending > 0 {
+		size, sizeErr := fileSize(path)
 
-	if err := os.Rename(tmpPath, path); err != nil {
-		return "", fmt.Errorf("patch ipa: rename: %w", err)
+		start := time.Now()
+
+		if err := appendToZip(path, tmpPath, all); err != nil {
+			_ = os.Remove(tmpPath)
+
+			return "", err
+		}
+
+		if err := os.Rename(tmpPath, path); err != nil {
+			return "", fmt.Errorf("patch ipa: rename: %w", err)
+		}
+
+		elapsed := time.Since(start)
+		rate := 0.0
+
+		if elapsed.Seconds() > 0 && sizeErr == nil {
+			rate = float64(size) / (1 << 20) / elapsed.Seconds()
+		}
+
+		fmt.Fprintf(os.Stderr, "[SAP] patch ipa: rewrote %s: %d MiB, %d of %d entries new, %s, %.0f MiB/s\n",
+			filepath.Base(path), size>>20, pending, len(all),
+			elapsed.Round(time.Millisecond), rate)
+	} else {
+		fmt.Fprintf(os.Stderr, "[SAP] patch ipa: %s already carries all %d entries; nothing rewritten\n",
+			filepath.Base(path), len(all))
 	}
 
 	// What the package says about itself, left beside it for the app to read. The
@@ -83,6 +116,39 @@ func PatchIPA(path, email string) (string, error) {
 	}
 
 	return path, nil
+}
+
+// pendingEntries counts what the package does not carry yet.
+//
+// The names decide, because appendToZip skips an entry whose name it finds and
+// copies every payload byte regardless: so a package that already holds all of
+// them is a pass that reads and writes its whole size and changes no byte.
+// Counting first is the only way to know that before paying for it.
+func pendingEntries(source *zip.ReadCloser, entries []extraEntry) int {
+	present := make(map[string]struct{}, len(source.File))
+	for _, file := range source.File {
+		present[file.Name] = struct{}{}
+	}
+
+	var pending int
+
+	for _, entry := range entries {
+		if _, found := present[entry.Name]; !found {
+			pending++
+		}
+	}
+
+	return pending
+}
+
+// fileSize answers how much a patch pass has to copy.
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("patch ipa: stat: %w", err)
+	}
+
+	return info.Size(), nil
 }
 
 // metadataDocument returns the plist's bytes: the one inside the package if there
