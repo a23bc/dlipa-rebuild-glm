@@ -499,6 +499,14 @@ func FetchSapAssets() (string, error) {
 }
 
 // ClearCachedKBSync drops the per-account kbsync blobs left by a previous build.
+//
+// Nothing in the app calls it any more: the launch-time sweep keyed on the
+// version went, because shipping a new build is not a reason to discard a blob
+// and pay 32 s again for it. It stays exported because it is the only way to
+// remove all of them in one call, which is what moving the blobs to their own
+// storage needs when the old location is abandoned -- and because refusing to
+// delete credential material nobody reads any more is not the posture this
+// project has settled on.
 func ClearCachedKBSync() error {
 	return sap.ClearCachedKBSync()
 }

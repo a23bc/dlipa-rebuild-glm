@@ -504,9 +504,33 @@ func decideBlobAction(failureType string, fromCache bool) blobAction {
 	return actionNothingStored
 }
 
+// kbsyncFormatVersion names what a stored blob has to be for this build to use
+// it, and it is part of the file name so that changing it retires every stored
+// blob at once, by missing, rather than by a sweep.
+//
+// It replaces the launch-time clear keyed on CFBundleShortVersionString. That
+// sweep conflated two things: shipping a new build, and shipping a bridge whose
+// guest assumptions changed. The first is not a reason to pay 32 s again --
+// device measured 32.06 s of storeagent global init for 212 bytes -- and the
+// second is, which is when this constant moves. Apple's rejection of a blob
+// already discards it, so the sweep was also the weaker of the two mechanisms.
+const kbsyncFormatVersion = "v1"
+
 // kbsyncCachePath is beside the staged assets: writable, already created by the
 // staging step, and wiped with the app.
 func kbsyncCachePath(dsid uint64) string {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		root = os.TempDir()
+	}
+
+	return filepath.Join(root, "dlipa",
+		fmt.Sprintf("kbsync-%s-%d.bin", kbsyncFormatVersion, dsid))
+}
+
+// legacyKBSyncPath is where the blob for dsid lived before the name carried a
+// format version.
+func legacyKBSyncPath(dsid uint64) string {
 	root, err := os.UserCacheDir()
 	if err != nil {
 		root = os.TempDir()
@@ -533,7 +557,28 @@ func (s *Signer) cachedKBSync(dsid uint64) ([]byte, bool) {
 		return stored, true
 	}
 
+	dropLegacyKBSync(dsid)
+
 	return nil, false
+}
+
+// dropLegacyKBSync deletes the un-versioned file for dsid if one is there, and
+// says whether it went.
+//
+// Those bytes are credential material this build no longer reads, and the
+// launch-wide sweep that used to remove them at every upgrade is gone, so the
+// removal happens on the one path that touches the account: a miss. Logging it
+// is what tells "this account never had a blob" apart from "an old one was just
+// dropped", which otherwise look identical in the log and differ in what they
+// mean for the next download.
+func dropLegacyKBSync(dsid uint64) bool {
+	if err := os.Remove(legacyKBSyncPath(dsid)); err != nil {
+		return false
+	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] ent download: dropped the un-versioned kbsync file for DSID %d\n", dsid)
+
+	return true
 }
 
 func loadStoredKBSync(dsid uint64) []byte {

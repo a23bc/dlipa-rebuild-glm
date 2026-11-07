@@ -87,42 +87,20 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             // A switch, not a policy. Opening the engine at launch is the one
             // step that can end the process before a screen is drawn; not opening
             // it costs two minutes on the first thing that needs the store.
-            // A new version starts from no cached session material. The kbsync
-            // blobs carry the assumptions of the binary that wrote them, and
-            // after an upgrade the old one makes the guest reject the request in
-            // setup -- which looked like a broken account until a clean install
-            // worked.
+            // An upgrade no longer throws the cached kbsync blobs away.
             //
-            // The version, not the CI build number. The build number changes on
-            // every push, and clearing on it cost the first download of each new
-            // build a kbsync regeneration: 117 s with nothing in the log between
-            // the request and the open, then 0 s on the next launch, which read
-            // the blob back off disk. A key that is too coarse still self-heals
-            // -- Apple's rejection drops the stored blob, so the worst case is
-            // one failed download rather than a dead account.
-            let versionKey = "com.a23bc.dliparebuild.lastVersion"
-            let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-
-            if UserDefaults.standard.string(forKey: versionKey) != current {
-                var failure: NSError?
-                _ = SapbridgeClearCachedKBSync(&failure)
-
-                if let failure {
-                    AppLog.warn("kbsync cache clear failed: " + failure.localizedDescription, .sap)
-                } else {
-                    AppLog.info("new version " + current + ": kbsync cache cleared", .sap)
-                }
-
-                UserDefaults.standard.set(current, forKey: versionKey)
-            } else {
-                // Both branches, for the reason the shared-cache switch above
-                // already gives: a one-sided log cannot tell a decision from a
-                // block that never ran. A device run on 2026-11-06 needed exactly
-                // that distinction -- no clear line appeared, and whether that
-                // meant the key matched or the launch never reached here decides
-                // whether the data container survived the install.
-                AppLog.info("kbsync cache kept: version " + current + " unchanged", .sap)
-            }
+            // The sweep keyed on CFBundleShortVersionString conflated two things:
+            // shipping a new build, and shipping a bridge whose guest assumptions
+            // changed. Only the second is a reason to discard a blob, and the
+            // discard was not cheap -- 32 s of full-core work per account, measured
+            // on device, and the first download of every new build paid it.
+            //
+            // Retirement now happens two ways, both narrower than a version bump:
+            // the stored name carries a blob format version, so changing what a blob
+            // has to be makes every old one miss; and a blob Apple refuses is
+            // dropped by the answer that refused it, which is the mechanism that was
+            // always doing the real work -- the old comment here said as much.
+            AppLog.info("kbsync cache: blobs kept across the upgrade", .sap)
 
             // Read before anything can open the store runtime: open() decides once,
             // from this, whether the shared cache is mapped up front or handed out a
