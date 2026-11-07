@@ -85,6 +85,29 @@ struct DiagnosticsScreen: View {
     /// mean, with the numbers they produced, is in `docs/diagnostics.md`.
     static let mappingCensusKey = "com.a23bc.dliparebuild.mappingCensus"
     @AppStorage(mappingCensusKey) private var mappingCensus = false
+
+    /// Whether signing in also generates this account's kbsync blob.
+    ///
+    /// On by default, because the generation is the expensive part of a first
+    /// download and its result is reusable: device measured 32.06 s of storeagent
+    /// global init for 212 bytes, against 371 ms for the part that is actually
+    /// about the account. Paying it at sign-in, when nothing is queued behind it,
+    /// is the difference between a download that starts in a third of a second and
+    /// one that starts after half a minute of full-core work.
+    ///
+    /// Off puts that wait back where the person is watching a progress bar. It is
+    /// here because 32 s of CPU at sign-in is a real cost on a warm device, and
+    /// because signing into an account one never downloads from pays it for
+    /// nothing.
+    ///
+    /// Takes effect at the next sign-in rather than at the tap, and it skips with a
+    /// log line when a download is already in flight -- generating against a mapped
+    /// store session is the failure this project calls e3. The log says which way
+    /// the launch took: `kbsync pre-generated at sign-in: 212 bytes in 32.4s`,
+    /// `kbsync pre-generation off by switch: ...`, or
+    /// `kbsync pre-generation skipped: a download is in flight (e3)`.
+    static let pregenerateKey = "com.a23bc.dliparebuild.pregenerateKBSync"
+    @AppStorage(pregenerateKey) private var pregenerateAtSignIn = true
     // The tail as entries rather than as one joined string: the rows are laid
     // out lazily now, so the cost is what fits on screen, not what fits in the
     // window.
@@ -115,6 +138,9 @@ struct DiagnosticsScreen: View {
                         Toggle("Log the mapping measurements (next launch)",
                                isOn: $mappingCensus)
                             .onChange(of: mappingCensus) { _ in refresh() }
+                        Toggle("Generate kbsync when signing in",
+                               isOn: $pregenerateAtSignIn)
+                            .onChange(of: pregenerateAtSignIn) { _ in refresh() }
                     }
 
                     Section {

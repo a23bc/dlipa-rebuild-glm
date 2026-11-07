@@ -184,6 +184,59 @@ final class AppSession: ObservableObject {
                     + " storefront=" + (result.storefront.isEmpty ? "none" : result.storefront)
                     + " pod=" + (result.pod.isEmpty ? "none" : result.pod)
                     + " token=" + String(result.passwordToken.count) + "ch", .auth)
+
+        pregenerateKBSync(signer: signer, dsid: result.dsid)
+    }
+
+    /// Ask the guest for this account's kbsync blob now, instead of at the first
+    /// download.
+    ///
+    /// The generation is the one step in this app that costs tens of seconds of
+    /// full-core CPU -- 32.06 s measured on device for 212 bytes of output, of
+    /// which the store runtime's own work is 371 ms -- and the result is reusable,
+    /// so a download that finds it stored goes through in no time at all. Sign-in
+    /// is the moment that says the person means to download something, and the
+    /// signer's machine is already open by the time this runs, so the wait has no
+    /// queue behind it.
+    ///
+    /// Two conditions keep it out of trouble, and both are the reason the skip is
+    /// logged rather than silent. A download already in flight means a store
+    /// session may be mapped, and generating against a mapped session is the
+    /// failure this project calls e3. And the work goes off the main actor, because
+    /// an emulated guest holding the screen thread is indistinguishable from a
+    /// hang.
+    private func pregenerateKBSync(signer: SAPSigner, dsid: String) {
+        // On unless the row says otherwise, which needs the explicit read:
+        // `bool(forKey:)` answers false for an unset key, and a default that has
+        // to be switched on to work is a default that does not work.
+        let on = UserDefaults.standard.object(forKey: DiagnosticsScreen.pregenerateKey) as? Bool ?? true
+
+        guard on else {
+            AppLog.info("kbsync pre-generation off by switch: the first download pays it", .sap)
+            return
+        }
+
+        guard DownloadManager.shared.activeJobs.isEmpty else {
+            AppLog.info("kbsync pre-generation skipped: a download is in flight (e3)", .sap)
+            return
+        }
+
+        Task {
+            let started = Date()
+
+            do {
+                let blob = try await runOffMain { try signer.kbsync(dsid: dsid) }
+
+                AppLog.info("kbsync pre-generated at sign-in: " + String(blob.count) + " bytes in "
+                            + String(format: "%.1f", Date().timeIntervalSince(started)) + "s", .sap)
+            } catch {
+                // Not a failed sign-in. The download path generates for itself and
+                // reports there, where a result is already being waited on, so this
+                // outcome only costs the retry.
+                AppLog.warn("kbsync pre-generation failed, the first download will generate: "
+                            + error.localizedDescription, .sap)
+            }
+        }
     }
 
     // MARK: - The list
