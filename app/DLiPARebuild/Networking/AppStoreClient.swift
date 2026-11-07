@@ -8,6 +8,20 @@ import Foundation
 /// 1. The `X-Apple-ActionSignature` header over the exact body bytes.
 /// 2. A trailing slash on the authenticate URL. Without it Apple answers 204
 ///    with an empty body and never looks at the request.
+/// Why an `ent/download` request is being made.
+///
+/// `licence` means the answer is a package the account keeps, so the ownership
+/// question is worth asking before the guest opens and the sinfs and metadata in
+/// the response are worth storing -- the patch step reads them back. `metadata`
+/// means the answer is a field inside the response: a version string, or the
+/// identifiers of every version. Neither question is asked and nothing is
+/// written in that case, because a version list was measured buying twenty
+/// licences and overwriting the sinf slot twenty times while reading strings.
+enum RequestPurpose: String {
+    case licence
+    case metadata
+}
+
 final class AppStoreClient {
     private let session: URLSession
     private let decoder = PropertyListDecoder()
@@ -451,7 +465,8 @@ final class AppStoreClient {
                                               guid: guid,
                                               account: account,
                                               bag: bag,
-                                              signer: signer)
+                                              signer: signer,
+                                              purpose: .metadata)
 
         let songs = plist["songList"] as? [[String: Any]]
         let metadata = songs?.first?["metadata"] as? [String: Any]
@@ -479,7 +494,8 @@ final class AppStoreClient {
                       signer: SAPSigner) async throws -> VersionList {
         let plist = try await downloadProduct(
             appId: appId, externalVersionId: nil,
-            guid: guid, account: account, bag: bag, signer: signer)
+            guid: guid, account: account, bag: bag, signer: signer,
+            purpose: .metadata)
 
         let failure = plist["failureType"] as? String ?? ""
         // 5002 is "licence already exists". Alongside a songList it is not an
@@ -1483,13 +1499,14 @@ final class AppStoreClient {
     }
 
     /// The `ent/download` round trip, acquring a licence first if Apple says
-    /// one is missing.
+    /// one is missing -- when the answer is something the account keeps.
     private func downloadProduct(appId: String,
                                  externalVersionId: String?,
                                  guid: String,
                                  account: Account,
                                  bag: StoreBag,
-                                 signer: SAPSigner) async throws -> [String: Any] {
+                                 signer: SAPSigner,
+                                 purpose: RequestPurpose = .licence) async throws -> [String: Any] {
         // The licence gate, before the guest.
         //
         // ent/download needs the emulated Store runtime, and opening it costs
@@ -1502,6 +1519,17 @@ final class AppStoreClient {
         // The gate's own songList is dropped on a positive answer: ent/download
         // is the path the bridge has been measured on, and this check is about
         // the licence, not about which endpoint serves the file.
+        // Skipped for a metadata read. The gate is six classic attempts and, in
+        // this run, 1.9-6.4 s per call; the ownership of every row in a version
+        // list is already settled by the list itself, and asking costs a second
+        // and answers nothing. The download path keeps it.
+        if purpose == .metadata {
+            return try await downloadWithRetries(
+                appId: appId, externalVersionId: externalVersionId, guid: guid,
+                account: account, bag: bag, signer: signer,
+                acquiredLicence: false, purpose: purpose)
+        }
+
         let gateStart = Date()
         let missing = await licenceMissing(appId: appId,
                                            externalVersionId: externalVersionId,
@@ -1530,7 +1558,7 @@ final class AppStoreClient {
         return try await downloadWithRetries(
             appId: appId, externalVersionId: externalVersionId, guid: guid,
             account: account, bag: bag, signer: signer,
-            acquiredLicence: false)
+            acquiredLicence: false, purpose: purpose)
     }
 
     /// Whether the account owns the app, asked of the cheap endpoint.
@@ -1578,7 +1606,8 @@ final class AppStoreClient {
                                      account: Account,
                                      bag: StoreBag,
                                      signer: SAPSigner,
-                                     acquiredLicence: Bool) async throws -> [String: Any] {
+                                     acquiredLicence: Bool,
+                                     purpose: RequestPurpose) async throws -> [String: Any] {
         var acquiredLicence = acquiredLicence
         var resumedBuy = false
         var discardedBlob = false
@@ -1587,7 +1616,8 @@ final class AppStoreClient {
             do {
                 return try await downloadProductOnce(
                     appId: appId, externalVersionId: externalVersionId,
-                    guid: guid, account: account, bag: bag, signer: signer)
+                    guid: guid, account: account, bag: bag, signer: signer,
+                    purpose: purpose)
             } catch {
                 guard let store = error as? StoreError,
                       case .failureType(let type, _) = store else {
@@ -1680,13 +1710,15 @@ final class AppStoreClient {
                                      guid: String,
                                      account: Account,
                                      bag: StoreBag,
-                                     signer: SAPSigner) async throws -> [String: Any] {
+                                     signer: SAPSigner,
+                                     purpose: RequestPurpose) async throws -> [String: Any] {
         if let ent = bag.volumeStoreDownloadProduct {
             do {
                 return try await entDownload(appId: appId,
                                              externalVersionId: externalVersionId,
                                              guid: guid, account: account,
-                                             endpoint: ent, signer: signer)
+                                             endpoint: ent, signer: signer,
+                                             purpose: purpose)
             } catch let error as StoreError {
                 // A licence error is an answer, not a transport problem.
                 if case .failureType(let type, _) = error, type == "9610" {
@@ -1715,7 +1747,8 @@ final class AppStoreClient {
                              guid: String,
                              account: Account,
                              endpoint: String,
-                             signer: SAPSigner) async throws -> [String: Any] {
+                             signer: SAPSigner,
+                             purpose: RequestPurpose) async throws -> [String: Any] {
         guard let numericID = Int64(appId) else {
             throw StoreError.failureType("badAppID", "app id " + appId + " is not numeric")
         }
@@ -1746,7 +1779,8 @@ final class AppStoreClient {
         let json = try await Task.detached(priority: .utility) {
             try signer.entDownload(dsid: dsid, token: token, storefront: storefront,
                                    endpoint: endpoint, cookieHeader: cookieHeader,
-                                   appID: numericID, externalVersionID: version)
+                                   appID: numericID, externalVersionID: version,
+                                   purpose: purpose.rawValue)
         }.value
 
         guard let raw = json.data(using: .utf8),
