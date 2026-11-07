@@ -82,15 +82,15 @@ The URL request and the transfer have very different lifetimes — seconds of em
 
 ## The kbsync blob
 
-The blob Apple wants attached to each signed request is produced by running the guest, and generation costs on the order of a minute — with **nothing written to the log between the incoming request and the open that follows it**. This is the one place in the codebase where a long silence is normal rather than a hang, and it is why the blob is kept rather than regenerated. Three sources are tried in this order:
+The blob Apple wants attached to each signed request is produced by running the guest, and it is the most expensive thing this app does on a user's behalf: **32.4 s measured on device, of which 32.06 s is the storeagent global init and 371 ms is the call that is actually about the account** -- each step stamps its own wall time, emulation starts and Go-emulated instructions now, so the silence between the request and the open is gone. The init step takes the hardware block and the SC Info path and no DSID, which is why the blob is kept rather than regenerated, and why a fresh sign-in generates it before anything asks. Three sources are tried in this order:
 
 1. **memory** — the signer holds one blob and the DSID it belongs to;
-2. **disk** — `Library/Caches/dlipa/kbsync-<dsid>.bin`, written with mode 0600 only after Apple has accepted the blob once, and read back with no measurable cost;
+2. **disk** — `Library/Caches/dlipa/kbsync-v1-<dsid>.bin`, written with mode 0600 only after Apple has accepted the blob once, and read back with no measurable cost;
 3. **generate** — `machine.GenerateKBSyncOn`, the expensive path.
 
-A blob Apple rejects is removed from memory and from disk, and the next attempt generates a fresh one (`cached kbsync rejected (%s), discarded`). A key that is too coarse therefore self-heals: the worst case is one failed download, not an account that has to be rebuilt.
+A blob Apple rejects is removed from memory and from disk, and the next attempt generates a fresh one (`cached kbsync rejected (%s), discarded`) -- unless the answer was about the account or the licence rather than the blob (`9610`, `5002`, `2042`, `2034`, `2002`, `signInRequired`, `passwordTokenExpired`), which keeps it: an earlier build deleted the blob on those answers and turned a browse of the version history into a restart-only dead end.
 
-Upgrades clear the cache by comparing **`CFBundleShortVersionString` only**. `CFBundleVersion` is the CI run number, so keying on it cleared every new build and paid for a regeneration before that build's first download.
+Upgrades no longer clear the cache. The sweep keyed on `CFBundleShortVersionString` conflated shipping a build with shipping a bridge whose guest assumptions changed, and only the second is a reason to discard a blob that costs 32 s to replace; `CFBundleVersion` is the CI run number, which is why that one was never the key. Retirement is the **format version inside the stored name** -- bump `kbsync-v1` when what a blob has to be changes, and every old one retires by missing -- plus Apple's own rejection, which was always the mechanism doing the real work. A file whose name carries no version predates this change: it is not read, and the first lookup that misses deletes it, because credential material nothing reads has no business staying in the container.
 
 ---
 

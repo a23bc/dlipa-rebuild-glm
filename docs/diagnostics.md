@@ -32,8 +32,9 @@ Three consequences matter when reading a capture:
 | Map the shared cache on demand | **on** | next launch | `com.a23bc.dliparebuild.lazyCachePages` |
 | Reuse one runtime across accounts | **on** | next launch | `com.a23bc.dliparebuild.accountReuseProbe` |
 | Log the mapping measurements | off | next launch | `com.a23bc.dliparebuild.mappingCensus` |
+| Generate kbsync when signing in | **on** | next sign-in | `com.a23bc.dliparebuild.pregenerateKBSync` |
 
-"Next launch" is a property of the code, not a convenience: the bridge reads each of these once, at startup, and hands the value to the Go side, where the decision is made inside an `open()` or a download that is already in progress. Flipping a row does nothing to the run you are looking at. Every one of them logs which way the launch went, so a capture always says which shape it took — a switch that is silent when off cannot be told apart from a switch that was never read.
+"Next launch" is a property of the code, not a convenience: the bridge reads each of these once, at startup, and hands the value to the Go side, where the decision is made inside an `open()` or a download that is already in progress. Flipping a row does nothing to the run you are looking at. One row is read at the next sign-in instead, because that is where it applies. Every one of them logs which way the launch went, so a capture always says which shape it took — a switch that is silent when off cannot be told apart from a switch that was never read.
 
 ### Record log
 
@@ -110,6 +111,43 @@ Why the instrument survives the default: it is what killed three speculative lev
 
 Turning this on costs log volume, not time. Counted on device, on two launches of the same build: the open's own second holds **118 lines with the census on, 89 of them these two prints**, and **38 lines with it off** — and the region phase measured 105 ms off against 100 ms on, which is inside noise. Turning it off costs only the breakdown: the summary that survives is `open(): 193 regions mapped in 105ms`, so the phase still has a number, without the per-cell shape that explains it.
 
+### Generate kbsync when signing in
+
+On, a finished sign-in immediately asks the guest for that account's kbsync blob, instead of leaving that work for the first download to discover.
+
+The reason is a measurement, not a hunch. The stamps say a generation costs 32.4 s of which **32.06 s is the `storeagent global init` step** — a call that takes the hardware block and the SC Info path and *no DSID* — while the part that is actually about the account, `generate`, costs 371 ms. So the expensive half is not the per-account half, and the moment to pay it is the one where nobody is waiting on a result: sign-in has just proved the person means to download something, and the signer's machine is already open by then.
+
+Off puts that 32 s back in front of a progress bar, once per account per format version. It is on the page because paying 32 s of full-core work at sign-in is a real cost on a warm device, and because signing into an account one never downloads from buys nothing.
+
+Two rules decide what actually happens, and both announce themselves:
+
+* a download already in flight skips the pre-generation, because generating against a mapped store session is the failure this project calls e3;
+* the work runs off the main thread, because an emulated guest holding the screen thread is indistinguishable from a hang — which is the same reason the store-smoke button starts a heartbeat.
+
+```
+kbsync pre-generated at sign-in: 212 bytes in 32.4s
+kbsync pre-generation off by switch: the first download pays it
+kbsync pre-generation skipped: a download is in flight (e3)
+kbsync pre-generation failed, the first download will generate: <error>
+```
+
+The last is not a failed sign-in. The download path generates for itself and reports there, where a result is already being waited on, so a pre-generation that dies costs only the retry.
+
+### An upgrade no longer discards the blobs
+
+Not a switch, but it belongs with the switches because it used to be one, and because the reason for the row above is the same reason this changed.
+
+Until now, a launch that saw a different `CFBundleShortVersionString` deleted every cached blob. That conflated shipping a build with shipping a bridge whose guest assumptions changed — and only the second is a reason to throw a blob away, since the first costs each account 32 s at its next download.
+
+Retirement now happens two ways, both narrower: the stored file name carries a blob format version (`kbsync-v1-<dsid>.bin`), so changing what a blob has to be and moving that constant makes every old one retire by missing; and a blob Apple refuses is dropped by the answer that refused it, classified by what the refusal was about — an account or licence answer keeps the blob, because the blob did not cause it. A stored file whose name carries no version is not read, and is deleted on the way past, because credential material nothing reads should not sit in the container.
+
+```
+kbsync cache: blobs kept across the upgrade
+[SAP] ent download: dropped the un-versioned kbsync file for DSID <n>
+[SAP] ent download: cached kbsync kept (9610 answers about the account, not the blob)
+[SAP] ent download: cached kbsync rejected (<code>), discarded
+```
+
 ---
 
 ## The buttons
@@ -126,16 +164,20 @@ Turning this on costs log volume, not time. Counted on device, on two launches o
 
 **Generate kbsync** and **Open Store runtime** are the pair that has to be read together, and they are the reason "how long did that take" could not be answered from the clock here. Generation used to print nothing at all: it runs inside the already-open SAP machine, and the only lines in that package belonged to opening the machine, not to the call. So a launch that generated a blob looked like a gap between `[SAP] ent input: …` and the first `open()` line. On device that gap has measured 35 s and 117 s. A capture put `08:10:00` on the incoming request and `08:11:57` on the open with nothing in between, and 117 s of generation is a plausible reading — but silence is exactly what the one-second drain looks like, and nothing in the interval said when generation began or ended. What settled that case was structural: `ent download: kbsync from disk (212 bytes)` at the point where the earlier capture fell silent, with no gap before the open. Two runs of the same flow, one generating and one reading a file — that is the difference the timestamps were being asked to show, and the line shows it without the clock.
 
-The gap itself now stamps its own shape, one line per step plus the total (the numbers below are the shape of the output, not a measured run):
+The gap itself now stamps its own shape, one line per step plus the total. These are device numbers, from two launches of the same build on two flows — the Gate 0 button, then a real download with the account's cached blob deleted — and the counters matched exactly between them:
 
 ```
-[SAP] kbsync: storeagent global init in 41.2s (3 emulation starts, 0 instructions emulated in Go)
-[SAP] kbsync: generate in 76.9s (412 emulation starts, 118392 instructions emulated in Go)
-[SAP] kbsync: DSID 5189748 generated 212 bytes in 1m58.11s (init and generate)
-[SAP] kbsync: storeagent global close in 0s (1 emulation start, 0 instructions emulated in Go)
+[SAP] kbsync: storeagent global init in 32.06s (2223 emulation starts, 2198 instructions emulated in Go)
+[SAP] kbsync: generate in 363ms (1134 emulation starts, 1132 instructions emulated in Go)
+[SAP] kbsync: DSID 20825825307 generated 212 bytes in 32.423s (init and generate)
+[SAP] kbsync: storeagent global close in 103ms (383 emulation starts, 382 instructions emulated in Go)
 ```
 
-Read the two counters together, because the wall time alone cannot separate the two ways this costs money. `emulation starts` is how often the engine had to be entered, each run bounded at 20,000,000 instructions, and every instruction the compatibility layer handles also costs a start — so a small count means the engine ran a lot of Apple's code and nothing was interpreted in Go. `instructions emulated in Go` is the compatibility layer's own work: `eor3`, `svc`, the paired `casp` in the crypto loops, each one executed by this process between engine restarts. A step that prints a few starts and no Go count is TCI interpreting Apple's routine, and the only lever is running that routine fewer times — caching the blob, not speeding the call. A step that prints thousands of starts and a large Go count is being interpreted here, and that path has been worth fixing before: it is where the compatibility layer exhausted the process's threads (`qemu_thread_create: Resource temporarily unavailable` at `0x18088a368`, a `casp` inside a crypto loop), and where a handler that failed to advance the program counter hung for five minutes printing nothing.
+**98.9% of a generation is the storeagent global init** — 32.06 s of 32.42 s — and that call takes the hardware block and the SC Info path and *no DSID*. The step that is actually about the account costs 371 ms. That is the whole argument for the sign-in row above, and the whole reason the row defaults on.
+
+Read the two counters together, because the wall time alone cannot separate the two ways this costs money. `emulation starts` is how often the engine had to be entered, each run bounded at 20,000,000 instructions, and every instruction the compatibility layer handles also costs a start — so a small count means the engine ran a lot of Apple's code and nothing was interpreted in Go. `instructions emulated in Go` is the compatibility layer's own work: `eor3`, `svc`, the paired `casp` in the crypto loops, each one executed by this process between engine restarts. On device the two counters are equal to within 25 in the init step and 2 in the generate step, so nearly every restart ends at a compatibility stop — and yet one start costs 14.4 ms in init against 0.32 ms in generate, which is why making the restarts rarer cannot buy the 32 s back: the time is the work between the stops. The threads fact is worth knowing too, because it is where a "fix" would have gone: that path exhausted the process's threads once (`qemu_thread_create: Resource temporarily unavailable` at `0x18088a368`, a `casp` inside a crypto loop) and a handler that failed to advance the program counter hung for five minutes printing nothing.
+
+What these lines cannot say is *why* 32 s of engine work is 32 s. The next instrument asks the host what the guest was calling while it ran, and that line is not in this build; when it is, it appears under each step as `kbsync <step> asked the host: …`.
 
 ---
 
@@ -144,14 +186,16 @@ Read the two counters together, because the wall time alone cannot separate the 
 The lines that say which shape a launch took, in the order they appear:
 
 ```
-new version <x>: kbsync cache cleared              (or)  kbsync cache kept: version <x> unchanged
+kbsync cache: blobs kept across the upgrade
 shared cache: pages will be mapped on demand       (or)  shared cache: mapped in full at open (switch off)
 account switch: a second account reuses the runtime (probe)   (or)  … is refused until a restart
 map census: mapping measurements will be logged    (or)  map census: off by switch, …
 SAP runtime pre-warmed                             (or)  SAP pre-warm off by switch: …
 ```
 
-The first is not a switch: the cached kbsync blobs under `Library/Caches/dlipa/kbsync-<dsid>.bin` are dropped when `CFBundleShortVersionString` changes, because a blob produced by an earlier build of the bridge is not something a new build should trust. It is keyed on the version rather than the CI run number deliberately — the run number changes on every push, and clearing on it cost the first download of each new build a regeneration measured at 117 s. A fresh install prints the cleared line too, because there is no stored version to compare against.
+At each sign-in, one more line says whether that account's blob was generated there: `kbsync pre-generated at sign-in: …`, `… off by switch: …`, or `… skipped: a download is in flight (e3)`.
+
+The first line is not a switch, and it replaced one. The cached blobs under `Library/Caches/dlipa/kbsync-v1-<dsid>.bin` used to be deleted by any launch whose `CFBundleShortVersionString` differed, which made the first download of every new build pay a regeneration — measured at 32 s, and once at 117 s. See "An upgrade no longer discards the blobs" above for what retires a blob now.
 
 During a download, the useful ones:
 
