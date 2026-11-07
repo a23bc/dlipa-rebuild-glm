@@ -55,12 +55,21 @@ enum KeychainProbe {
                              accessible: accessible, value: markerValue)
         let readBack = read(label: label, dataProtection: dataProtection)
 
-        AppLog.info("keychain probe " + label
-                    + ": previous=" + (previous ?? "absent")
-                    + ", delete=" + String(statuses.delete)
-                    + ", add=" + String(statuses.add)
-                    + ", read-back=" + (readBack ?? "absent")
-                    + (readBack == markerValue ? "" : " (DIFFERS FROM WHAT WAS WRITTEN)"), .app)
+        // Assembled a field at a time. One expression joining five pieces with
+        // two ternaries inside it is something the compiler will not type-check
+        // in reasonable time -- the archive said so on the first build of this
+        // file -- and a probe that only compiles in a build log is no use here.
+        var line = "keychain probe " + label
+        line += ": previous=" + (previous ?? "absent")
+        line += ", delete=" + String(statuses.delete)
+        line += ", add=" + String(statuses.add)
+        line += ", read-back=" + (readBack ?? "absent")
+
+        if readBack != markerValue {
+            line += " (DIFFERS FROM WHAT WAS WRITTEN)"
+        }
+
+        AppLog.info(line, .app)
     }
 
     private static func query(label: String, dataProtection: Bool) -> [String: Any] {
