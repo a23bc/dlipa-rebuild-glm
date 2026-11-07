@@ -10,7 +10,18 @@ name: Lint
 #   SwiftLint       -- style and a few bug-prone patterns. No type checking.
 #   check-ios15-apis -- names of APIs newer than the iOS 15 target in
 #                       app/project.yml. A list, not a type checker.
+#   Lint Go         -- go vet and go test for the bridge, on Linux.
 # Neither one proves the app builds. Build iOS IPA still does that.
+#
+# Why the Go job exists: the bridge's tests were only ever run inside the macOS
+# archive -- five minutes and a manual dispatch away -- so a pull request that
+# touched nothing but Go had no automatic gate at all, and four of them went by
+# on the strength of a build someone remembered to start. Go runs anywhere, so
+# that was never necessary.
+#
+# What it still does not check: the bridging header against the generated one.
+# That comparison needs gomobile's output, which means the c-archive build,
+# which belongs to the archive job.
 
 on:
   push:
@@ -21,6 +32,7 @@ on:
       # started. The /** is what makes the filter mean "anything under".
       - app/**
       - probeapp/**
+      - sapbridge/**
       - .swiftlint.yml
       - scripts/check-ios15-apis.sh
       - .github/workflows/lint.yml
@@ -28,6 +40,7 @@ on:
     paths:
       - app/**
       - probeapp/**
+      - sapbridge/**
       - .swiftlint.yml
       - scripts/check-ios15-apis.sh
       - .github/workflows/lint.yml
@@ -80,3 +93,27 @@ jobs:
           # baseline in .swiftlint.yml was taken from the first run of this
           # job, so a new error here is new code, not an old habit.
           swiftlint lint --quiet --config .swiftlint.yml --reporter xcode app probeapp
+
+  go:
+    name: Lint Go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: sapbridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sapbridge/go.mod
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -count=1 on purpose. A cached "ok" line is not evidence that the test
+        # ran -- it was read as exactly that here once, on a branch where the
+        # suite had never actually been executed since the change. The module
+        # cache costs nothing to keep; the verdict has to be earned every push.
+        run: go test -count=1 -timeout 300s ./...

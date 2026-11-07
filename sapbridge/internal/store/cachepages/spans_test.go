@@ -1,8 +1,6 @@
 package cachepages
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machimage"
@@ -18,24 +16,21 @@ import (
 // rather than a synthetic one, because the premise (the blob overlaps the
 // image) is exactly what would silently change.
 func TestWithoutSpansDropsTheLoadedImagesPages(t *testing.T) {
-	pages, err := Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
+	// The assets are what this filters against, and they are not in the
+	// repository -- VendorAssets/ is gitignored. The presence check comes first
+	// now: reaching it used to require decompressing the whole blob, and then
+	// the test skipped anyway.
+	raw, present := vendorAssets()
+	if !present {
+		t.Skip("VendorAssets is not in this checkout, so there are no image spans to filter against")
 	}
 
-	if len(pages) == 0 {
-		t.Skip("no page blob in this build")
-	}
+	pages := loadPages(t)
 
 	var spans [][2]uint64
 
-	for _, name := range []string{"AppleMediaServices", "commerce", "CoreFP"} {
-		raw, err := os.ReadFile(filepath.Join("../../../../VendorAssets", name))
-		if err != nil {
-			t.Skipf("asset %s not present: %v", name, err)
-		}
-
-		image, err := machimage.Open(name, raw)
+	for _, name := range vendorAssetNames {
+		image, err := machimage.Open(name, raw[name])
 		if err != nil {
 			t.Fatalf("open %s: %v", name, err)
 		}

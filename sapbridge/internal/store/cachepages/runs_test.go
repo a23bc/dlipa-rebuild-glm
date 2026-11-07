@@ -6,14 +6,7 @@ import "testing"
 // pages, so anything the grouping gets wrong shows up as corrupted cache data
 // far away from here.
 func TestRunsPreserveTheBlob(t *testing.T) {
-	pages, err := Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-
-	if len(pages) == 0 {
-		t.Skip("no page blob in this build")
-	}
+	pages := loadPages(t)
 
 	runs := Runs(pages)
 	if len(runs) == 0 {
