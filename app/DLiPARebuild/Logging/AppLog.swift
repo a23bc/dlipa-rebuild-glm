@@ -134,8 +134,18 @@ enum AppLog {
 
     static var entries: [LogEntry] { store.entries }
 
-    static func onUpdate(_ handler: @escaping ([LogEntry]) -> Void) {
-        store.onUpdate = handler
+    /// How many lines the window holds, for a view that shows a tail of it and
+    /// has to say how much it left out.
+    static var lineCount: Int { store.count }
+
+    static func tail(_ count: Int) -> [LogEntry] { store.tail(count) }
+
+    /// Calls the handler on the main thread when the buffer changes, at most
+    /// once per turn. It carries no payload on purpose: a viewer that wants the
+    /// window reads the tail of it, and a viewer that wants everything exports
+    /// it, which is a button and not a per-line cost.
+    static func onChanged(_ handler: (() -> Void)?) {
+        store.onChange = handler
     }
 
     static func clear() { store.clear() }
@@ -154,8 +164,20 @@ struct LogEntry: Identifiable {
     let message: String
     let source: String
 
+    /// One formatter for the process, never mutated after this.
+    ///
+    /// Built per line before: a log tail of four hundred entries allocated four
+    /// hundred of them, and the tail is the thing that runs when the app is
+    /// already busy -- so the reporter paid for the burst it was reporting. An
+    /// immutable formatter is shareable, and nothing here sets options or a
+    /// calendar on it.
+    private static let stamp: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
+
     var plainText: String {
-        let stamp = ISO8601DateFormatter().string(from: timestamp)
+        let stamp = LogEntry.stamp.string(from: timestamp)
         return stamp + " " + level.label + "/" + category.rawValue + " " + message
     }
 }
@@ -169,10 +191,23 @@ private final class LogStore {
     // before the run had finished.
     private let limit = 4000
 
-    var onUpdate: (([LogEntry]) -> Void)?
+    var onChange: (() -> Void)?
+
+    // Whether a notification is already waiting on the main thread. Read and
+    // written only on the queue above, so the reset arrives back through it.
+    private var notifying = false
 
     var entries: [LogEntry] {
         queue.sync { buffer }
+    }
+
+    var count: Int {
+        queue.sync { buffer.count }
+    }
+
+    /// The last `count` entries, copied without the rest of the window.
+    func tail(_ count: Int) -> [LogEntry] {
+        queue.sync { Array(buffer.suffix(count)) }
     }
 
     func append(_ entry: LogEntry) {
@@ -181,9 +216,20 @@ private final class LogStore {
             if self.buffer.count > self.limit {
                 self.buffer.removeFirst(self.buffer.count - self.limit)
             }
-            let snapshot = self.buffer
+
+            // One notification per turn of the main thread, whatever that turn
+            // produced. Copying the window and hopping to main for every line
+            // made each line cost what the whole window costs, and the writers
+            // that matter are the bursty ones: a store-runtime open reports over
+            // a hundred lines inside a second, and a version list reports several
+            // hundred. The screen that showed them was the thing that stopped
+            // responding while the thing it reported on was running.
+            guard !self.notifying else { return }
+            self.notifying = true
+
             DispatchQueue.main.async {
-                self.onUpdate?(snapshot)
+                self.onChange?()
+                self.queue.async { self.notifying = false }
             }
         }
     }
@@ -191,8 +237,9 @@ private final class LogStore {
     func clear() {
         queue.async {
             self.buffer.removeAll()
+
             DispatchQueue.main.async {
-                self.onUpdate?([])
+                self.onChange?()
             }
         }
     }
