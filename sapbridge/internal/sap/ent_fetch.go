@@ -387,13 +387,37 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		countOccurrences(text, "metadata"),
 		countOccurrences(text, "md5"))
 
-	// Apple rejected the blob: drop it so the next attempt generates a fresh one
-	// instead of replaying a value the server has already refused.
-	if result.FailureType != "" && fromCache {
+	// A refused blob is worth dropping. A licence or a session answer is not --
+	// and the two arrive in the same field.
+	//
+	// The condition was "any failure while a cached blob was in play". Apple
+	// answers 9610 (no licence), 5002 (already licensed), 2042/2034 (sign in
+	// again) with a top-level failureType shaped exactly like a refused blob's,
+	// so browsing the version history of an app the account does not own -- one
+	// 9610 per row -- deleted that account's cached kbsync. The next real
+	// download found no blob and, with a store session already open, was not
+	// allowed to generate one: a dead end that only a restart clears, and the
+	// restart costs the two minutes the cache exists to avoid.
+	switch action := decideBlobAction(result.FailureType, fromCache); action {
+	case actionDiscard:
 		clearStoredKBSync(dsid)
 		s.kbsyncBlob, s.kbsyncDSID = nil, 0
 
 		fmt.Fprintf(os.Stderr, "[SAP] ent download: cached kbsync rejected (%s), discarded\n", result.FailureType)
+
+	case actionKept:
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: cached kbsync kept (%s answers about the account, not the blob)\n",
+			result.FailureType)
+
+	case actionNothingStored:
+		// An answer this list does not recognise, on a blob generated for this
+		// very attempt. Nothing was stored, so there is nothing to drop, and the
+		// code is printed rather than acted on: recording what a real refusal
+		// looks like beats deleting a value on a guess.
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: failure (%s) on a freshly generated blob; nothing was stored\n",
+			result.FailureType)
+
+	case actionUnchanged:
 	}
 
 	// Only a blob Apple has accepted is worth keeping.
@@ -413,6 +437,53 @@ func SetLazyCachePages(on bool) { emulator.SetLazyCachePages(on) }
 // runtime that belongs to the first and open a new one. Off is the shipped
 // behaviour: refuse, and ask for a restart.
 func SetAccountReuse(on bool) { emulator.SetAccountReuse(on) }
+
+// blobAction is what a failed ent/download answer means for the cached kbsync.
+type blobAction int
+
+const (
+	// actionUnchanged: the answer succeeded, so nothing is in question.
+	actionUnchanged blobAction = iota
+
+	// actionKept: a failure about the account or the licence. The value in the
+	// request is not what Apple objected to, and deleting it would punish every
+	// later download of an app that happens not to be licensed.
+	actionKept
+
+	// actionDiscard: an answer this code does not recognise, on a blob that came
+	// from the cache. This is the self-heal path -- replaying a value the server
+	// has refused never succeeds -- so unknown codes stay here rather than in
+	// actionKept, and the line that prints them is how the list learns what a
+	// real refusal looks like.
+	actionDiscard
+
+	// actionNothingStored: an unrecognised answer on a blob generated for this
+	// attempt. It was never written to disk, so there is nothing to lose.
+	actionNothingStored
+)
+
+// decideBlobAction separates "Apple refused this value" from "Apple refused
+// this account".
+//
+// Every code in the kept list has been seen in a device log in this field: 9610
+// and 5002 are licence answers, 2042, 2034 and 2002 are session answers, and the
+// two names are what Apple writes instead of a number for the same trouble.
+func decideBlobAction(failureType string, fromCache bool) blobAction {
+	if failureType == "" {
+		return actionUnchanged
+	}
+
+	switch failureType {
+	case "9610", "5002", "2042", "2034", "2002", "signInRequired", "passwordTokenExpired":
+		return actionKept
+	}
+
+	if fromCache {
+		return actionDiscard
+	}
+
+	return actionNothingStored
+}
 
 // kbsyncCachePath is beside the staged assets: writable, already created by the
 // staging step, and wiped with the app.
