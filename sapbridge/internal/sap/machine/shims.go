@@ -200,17 +200,19 @@ func (s *shims) dispatch(address uint64, _ uint32) {
 		return
 	}
 
-	// Counting every entry used to happen here. It was measurement code: a
-	// mutex and a map write on the hottest path in an interpreted guest, kept
-	// in the build long after the question it answered had been answered.
-	// externalCalls is still maintained by ExternalCalls/ResetExternalCalls for
-	// the callreport test, which drives the machine directly.
 	if s.traceLeft > 0 {
 		s.traceLeft--
 
 		x0, _ := s.engine.RegRead(unicorn.RegX0)
 
 		fmt.Fprintf(os.Stderr, "[SAP] call: %s(x0=%#x)\n", entry.name, x0)
+	}
+
+	// Recording every entry is a mutex and a map write on the hottest path in an
+	// interpreted guest, so it happens only while a caller is reading the report.
+	// See SetCallCounting.
+	if countShimCalls.Load() {
+		recordExternalCall(entry.name)
 	}
 
 	if err := entry.handler(); err != nil {

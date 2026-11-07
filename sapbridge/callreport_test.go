@@ -23,6 +23,15 @@ import (
 func TestReportExternalCalls(t *testing.T) {
 	applyAssetDir()
 
+	// The dispatcher records only while something asks: the write costs a mutex
+	// and a map write on the hottest path in an interpreted guest. This test is
+	// the thing that asks, and it is the reason the counters are still in the
+	// build -- which is also how the report went silently to zero once, when the
+	// write was taken off the dispatcher and the reader stayed behind. See
+	// reportCalls, which now refuses to accept an empty one.
+	restored := machine.SetCallCounting(true)
+	defer machine.SetCallCounting(restored)
+
 	hardware := []byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
 
 	// kbsync first. It is entirely local - no round trip to Apple - so its
@@ -77,6 +86,16 @@ func reportCalls(t *testing.T, label string, produced int) {
 	var total uint64
 	for _, call := range calls {
 		total += call.Count
+	}
+
+	// Zero here is not an empty measurement, it is the instrumentation unplugged:
+	// neither path below can reach the guest's answer without entering host
+	// services, and the previous shape of this test logged an empty report and
+	// passed.
+	if total == 0 {
+		t.Errorf("%s recorded no service calls while counting was on: the dispatcher is not reporting", label)
+
+		return
 	}
 
 	t.Logf("=== %s | %d distinct external symbols | %d calls ===",
