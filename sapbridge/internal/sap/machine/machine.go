@@ -107,6 +107,13 @@ type Machine struct {
 	scratchCursor  uint64
 	faultExplainer func()
 	closed         bool
+
+	// arm64Handled counts the instructions this process executed in Go instead
+	// of in the engine, for the life of the machine. kbsync stamps read it as a
+	// delta across one step; it is a counter rather than a timer because the
+	// question it answers is "how much of this call did we interpret ourselves",
+	// and that is a count of work, not of time.
+	arm64Handled uint64
 }
 
 // SetFaultExplainer installs a callback that describes a guest fault in more
@@ -781,6 +788,8 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 				return 0, compatibilityErr
 			}
 			if handled {
+				m.arm64Handled++
+
 				next, compatibilityErr = m.engine.RegRead(unicorn.RegPC)
 				if compatibilityErr != nil {
 					return 0, fmt.Errorf("resume SAP guest function: %w", compatibilityErr)
