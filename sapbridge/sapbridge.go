@@ -263,8 +263,13 @@ func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEnd
 // EntDownload runs one ent/download request through the Store's own encoder and
 // returns a JSON result. This is the production path: the probe proved it, and
 // the Swift client no longer builds this request by hand.
+//
+// Purpose is "licence" or "metadata". Metadata asks no licence question and
+// stores nothing: the response is read for a field, and writing the sinfs it
+// carries would overwrite the slot the next real download patches from.
 func (s *Signer) EntDownload(dsid string, token string, storefront string, endpoint string,
-	cookieHeader string, appID int64, externalVersionID string) (result string, err error) {
+	cookieHeader string, appID int64, externalVersionID string,
+	purpose string) (result string, err error) {
 	if s == nil {
 		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
@@ -286,6 +291,7 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 		Endpoint:          endpoint,
 		CookieHeader:      cookieHeader,
 		AppID:             appID,
+		Purpose:           purpose,
 		ExternalVersionID: externalVersionID,
 	})
 }

@@ -172,10 +172,11 @@ final class SAPSigner {
 /// hand-built request this replaces is gone from the client because the encoder
 /// is the only construction Apple's endpoint accepted.
 func entDownload(dsid: String, token: String, storefront: String, endpoint: String,
-                 cookieHeader: String, appID: Int64, externalVersionID: String) throws -> String {
+                 cookieHeader: String, appID: Int64, externalVersionID: String,
+                 purpose: String) throws -> String {
     try bridge.entDownload(dsid, token: token, storefront: storefront, endpoint: endpoint,
                            cookieHeader: cookieHeader, appID: appID,
-                           externalVersionID: externalVersionID)
+                           externalVersionID: externalVersionID, purpose: purpose)
 }
 
 func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: String, cookieHeader: String) throws -> String {

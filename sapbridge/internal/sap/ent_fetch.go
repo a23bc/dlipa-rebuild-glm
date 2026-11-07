@@ -36,6 +36,9 @@ type EntDownloadInput struct {
 	// AppID and ExternalVersionID identify the package.
 	AppID             int64
 	ExternalVersionID string
+	// Purpose is why the request is being made: "licence" (the default) for a
+	// package the account keeps, "metadata" for a field read out of the answer.
+	Purpose string
 }
 
 // EntDownloadResult is the answer, parsed only as far as the caller needs.
@@ -374,12 +377,23 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// the response's songList[0].metadata when it installs. Anything that installs
 	// the package itself has to add it, so the dictionary is kept here where the
 	// patch step can pick it up.
-	if err := storeDownloadSinfs(text); err != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store sinfs: %v\n", err)
-	}
+	if input.Purpose == "metadata" {
+		// Nothing is stored for a metadata read. The answer carries the same fields
+		// as a purchase, and storing them meant that browsing a 169-version list
+		// wrote the sinf and metadata slots once per row -- with the sinfs of
+		// versions nobody is downloading -- while the patch step reads those slots
+		// as though they belonged to the package in hand. The counts still print
+		// below, because they are evidence about the response, not a record of
+		// what was kept.
+		fmt.Fprintf(os.Stderr, "[SAP] ent download: metadata lookup, nothing stored\n")
+	} else {
+		if err := storeDownloadSinfs(text); err != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store sinfs: %v\n", err)
+		}
 
-	if err := storeDownloadMetadata(text); err != nil {
-		fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store metadata: %v\n", err)
+		if err := storeDownloadMetadata(text); err != nil {
+			fmt.Fprintf(os.Stderr, "[SAP] ent download: could not store metadata: %v\n", err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "[SAP] ent download: response carries sinfs=%d metadata=%d md5=%d\n",
