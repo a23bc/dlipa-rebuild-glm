@@ -118,15 +118,24 @@ Turning this on costs log volume, not time. Counted on device, on two launches o
 | --- | --- | --- |
 | Run SAP self test | Does the `probeapp` chain run on this device? | Synchronous once started; works before sign-in, because it never touches the account UI. Prints `SELF TEST PASSED` or `FAILED`; the buttons release after 120 s even if no report line arrives. |
 | Run framework probe | Which frameworks can this process even load? | `dlopen`s the candidates and prints `[PROBE] <name> \| exists=… \| dlopen=OK \| symbols=n/m …`, then lists the private frameworks. Nothing here reaches the network. |
-| Generate kbsync (Gate 0) | Can this device produce a kbsync blob at all? | The answer decides whether the download plan continues. **35–117 s of silence is normal** — see below. |
+| Generate kbsync (Gate 0) | Can this device produce a kbsync blob at all? | The answer decides whether the download plan continues. **35–117 s is normal**, and the step stamps below say where it goes. |
 | Open Store runtime (E1-a) | Can the guest be opened and driven on this device? | Runs the same encode/execute the production download uses and prints the request, headers, response status and body head. Starts the heartbeat. |
 | Fetch SAP assets (measure) | What does extraction cost *on this device*? | The same extraction CI runs. It asks go-macho for about 1.6 GB in one allocation during the export step, which is enough to end the process. Pressing it while a download is already waiting joins that run rather than starting a second 212 MB download. |
 | Share log | — | Exports the whole window, not the displayed tail. Warns with `share log pressed with an empty log` if the record switch was off. |
 | Clear log | — | Empties the buffer; the files under `Library/Caches` are untouched. |
 
-**Generate kbsync** and **Open Store runtime** are the pair that has to be read together, and they are the reason "how long did that take" cannot be answered from the clock here. The generation itself prints nothing: it runs inside the already-open SAP machine, and the only lines in that package belong to opening the machine, not to the call. So a launch that generated a blob looks like a gap between `[SAP] ent input: …` and the first `open()` line. On device that gap has measured 35 s and 117 s. A later capture put `08:10:00` on the incoming request and `08:11:57` on the open with nothing in between, and 117 s of generation is a plausible reading — but silence is exactly what the one-second drain looks like, and nothing in the interval says when generation began or ended. What settles it is structural: `ent download: kbsync from disk (212 bytes)` at the point where the first capture fell silent, with no gap before the open. Two runs of the same flow, one generating and one reading a file — that is the difference the timestamps were being asked to show, and the line shows it without the clock.
+**Generate kbsync** and **Open Store runtime** are the pair that has to be read together, and they are the reason "how long did that take" could not be answered from the clock here. Generation used to print nothing at all: it runs inside the already-open SAP machine, and the only lines in that package belonged to opening the machine, not to the call. So a launch that generated a blob looked like a gap between `[SAP] ent input: …` and the first `open()` line. On device that gap has measured 35 s and 117 s. A capture put `08:10:00` on the incoming request and `08:11:57` on the open with nothing in between, and 117 s of generation is a plausible reading — but silence is exactly what the one-second drain looks like, and nothing in the interval said when generation began or ended. What settled that case was structural: `ent download: kbsync from disk (212 bytes)` at the point where the earlier capture fell silent, with no gap before the open. Two runs of the same flow, one generating and one reading a file — that is the difference the timestamps were being asked to show, and the line shows it without the clock.
 
-Adding stamps inside generation is the open item that would make this readable rather than inferable.
+The gap itself now stamps its own shape, one line per step plus the total (the numbers below are the shape of the output, not a measured run):
+
+```
+[SAP] kbsync: storeagent global init in 41.2s (3 emulation starts, 0 instructions emulated in Go)
+[SAP] kbsync: generate in 76.9s (412 emulation starts, 118392 instructions emulated in Go)
+[SAP] kbsync: DSID 5189748 generated 212 bytes in 1m58.11s (init and generate)
+[SAP] kbsync: storeagent global close in 0s (1 emulation start, 0 instructions emulated in Go)
+```
+
+Read the two counters together, because the wall time alone cannot separate the two ways this costs money. `emulation starts` is how often the engine had to be entered, each run bounded at 20,000,000 instructions, and every instruction the compatibility layer handles also costs a start — so a small count means the engine ran a lot of Apple's code and nothing was interpreted in Go. `instructions emulated in Go` is the compatibility layer's own work: `eor3`, `svc`, the paired `casp` in the crypto loops, each one executed by this process between engine restarts. A step that prints a few starts and no Go count is TCI interpreting Apple's routine, and the only lever is running that routine fewer times — caching the blob, not speeding the call. A step that prints thousands of starts and a large Go count is being interpreted here, and that path has been worth fixing before: it is where the compatibility layer exhausted the process's threads (`qemu_thread_create: Resource temporarily unavailable` at `0x18088a368`, a `casp` inside a crypto loop), and where a handler that failed to advance the program counter hung for five minutes printing nothing.
 
 ---
 
@@ -158,7 +167,9 @@ During a download, the useful ones:
 [SAP] patch ipa: rewrote com.toyopagroup.picaboo-14.31.1.0.ipa: 342 MiB, 2 of 2 entries new, 3.56s, 96 MiB/s
 ```
 
-Two of those carry the numbers this project argues with. The served-pages line is the demand-paging bet reported honestly: on the signed download the guest asked for no pages at all, which is why indexing 9,903 of them in 336 ms beats mapping them for 32.8 s. The `patch ipa` line is the cost of writing the package back — measured at 772 MiB in 13.667 s (56 MiB/s) and 342 MiB in 4.046 s (85 MiB/s) — and when a package already carries everything the flow would inject, it says so and rewrites nothing:
+The `kbsync from disk` line above is the cached case; a run that has to generate prints the `kbsync:` step stamps in its place, and the two together are what separates a 35 s download from a 117 s one without asking the clock.
+
+Two of those carry the numbers this project argues with. The served-pages line is the demand-paging bet reported honestly: on the signed download the guest asked for no pages at all, which is why indexing 9,903 of them in 336 ms beats mapping them for 32.8 s. The `patch ipa` line is the cost of writing the package back — measured at 772 MiB in 13.667 s (56 MiB/s), 342 MiB in 4.046 s (85 MiB/s), and the same 342 MiB again at 3.56 s and at 5.418 s (96 MiB/s and 63 MiB/s), which is why the rate is written as a range here rather than as a constant — and when a package already carries everything the flow would inject, it says so and rewrites nothing:
 
 ```
 [SAP] patch ipa: <file> already carries all <n> entries; nothing rewritten
