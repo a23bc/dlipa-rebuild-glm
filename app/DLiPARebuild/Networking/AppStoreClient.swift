@@ -295,6 +295,24 @@ final class AppStoreClient {
         guard let http else {
             throw StoreError.httpError(-1, "no response")
         }
+
+        // A pod with nothing to answer gives 204 and an empty body. 204 is in the
+        // transient set, so by here the backoff retries are spent, and validate()
+        // still accepts it -- 204 is a two-hundred. The plist parse then failed
+        // with the system's own complaint, "the data couldn't be read because it
+        // isn't in the correct format", and that is what a person saw for a
+        // sign-in that never reached an account handler. Say what happened, and
+        // do not parse an empty body.
+        if http.statusCode == 204 || data.isEmpty {
+            AppLog.error("authenticate ended with HTTP " + String(http.statusCode)
+                         + " and " + String(data.count) + " bytes after "
+                         + String(Self.authenticationRequestAttempts)
+                         + " request tries, none of which produced a body", .auth)
+
+            throw StoreError.failureType("no-content",
+                                         "the store answered with no content (HTTP 204); sign in again")
+        }
+
         try validate(http, data: data)
 
         let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
