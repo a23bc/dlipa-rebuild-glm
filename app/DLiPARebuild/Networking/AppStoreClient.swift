@@ -295,24 +295,7 @@ final class AppStoreClient {
         guard let http else {
             throw StoreError.httpError(-1, "no response")
         }
-
-        // A pod with nothing to answer gives 204 and an empty body. 204 is in the
-        // transient set, so by here the backoff retries are spent, and validate()
-        // still accepts it -- 204 is a two-hundred. The plist parse then failed
-        // with the system's own complaint, "the data couldn't be read because it
-        // isn't in the correct format", and that is what a person saw for a
-        // sign-in that never reached an account handler. Say what happened, and
-        // do not parse an empty body.
-        if http.statusCode == 204 || data.isEmpty {
-            AppLog.error("authenticate ended with HTTP " + String(http.statusCode)
-                         + " and " + String(data.count) + " bytes after "
-                         + String(Self.authenticationRequestAttempts)
-                         + " request tries, none of which produced a body", .auth)
-
-            throw StoreError.failureType("no-content",
-                                         "the store answered with no content (HTTP 204); sign in again")
-        }
-
+        try Self.rejectEmptyAnswer(http: http, data: data)
         try validate(http, data: data)
 
         let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
@@ -2196,6 +2179,35 @@ final class AppStoreClient {
         return resolved
     }
     // MARK: - Helpers
+
+    /// A two-hundred status with nothing to parse is not an answer to sign in
+    /// with, and it has to be said before anything tries to read the body.
+    ///
+    /// 204 is inside the transient set, so reaching this at all means the backoff
+    /// retries were spent. validate() then accepts it, because 204 is a
+    /// two-hundred, and the plist parse of the empty body failed with the
+    /// system's own complaint -- "the data couldn't be read because it isn't in
+    /// the correct format" -- which is what a person saw for a sign-in that never
+    /// reached an account handler.
+    ///
+    /// It lives here rather than inline because this call site cannot afford the
+    /// two branches an `if` with an `||` costs: the function stood at complexity
+    /// 19 on main, my inline version reached 21, and `Lint Swift` turned red --
+    /// the rule's error threshold sits somewhere between the two, and a baseline
+    /// that close to it is not something to spend on the shape of a response. A
+    /// successful authenticate always carries tokens, so an empty body with a 200
+    /// belongs to the same sentence.
+    private static func rejectEmptyAnswer(http: HTTPURLResponse, data: Data) throws {
+        guard http.statusCode == 204 || data.isEmpty else { return }
+
+        AppLog.error("authenticate ended with HTTP " + String(http.statusCode)
+                     + " and " + String(data.count) + " bytes after "
+                     + String(authenticationRequestAttempts)
+                     + " request tries, none of which produced a body", .auth)
+
+        throw StoreError.failureType("no-content",
+                                     "the store answered with no content (HTTP 204); sign in again")
+    }
 
     private func validate(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else {
