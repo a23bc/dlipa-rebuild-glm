@@ -61,15 +61,14 @@ type EntDownloadResult struct {
 // see the note on resident runtimes in the plan.
 func (s *Signer) EntDownload(image []byte, input EntDownloadInput) (string, error) {
 	// What this request is addressed to. A second account failing where the first
-	// works has to be one of these values, and printing them costs nothing.
-	token := input.Token
-	head := token
-	if len(head) > 8 {
-		head = head[:8]
-	}
-
-	fmt.Fprintf(os.Stderr, "[SAP] ent input: dsid=%s storefront=%q token=%dch/%s cookies=%d app=%d\n",
-		input.DSID, input.StoreFront, len(token), head,
+	// works has to be one of these values, so they all go out -- the token as its
+	// length only. This line is written into the log a person is asked to share
+	// with a bug report, and a token's first eight characters are a fragment of a
+	// live session credential that nothing here needs: the length already says
+	// whether the field arrived empty, short, or the right size, which is every
+	// question this line was ever used to answer.
+	fmt.Fprintf(os.Stderr, "[SAP] ent input: dsid=%s storefront=%q token=%dch cookies=%d app=%d\n",
+		input.DSID, input.StoreFront, len(input.Token),
 		len(strings.Split(strings.TrimSpace(input.CookieHeader), ";")), input.AppID)
 
 	result, err := s.entDownload(image, input)
