@@ -149,13 +149,13 @@ Two optimisations landed and one did not:
 * translation-cache flushes are batched to once per map set;
 * chunking the 19 MB region into 4 MiB pieces changed nothing (37.5 s vs 38.3 s), and a 1 MiB split was worse and was reverted. Bytes are the unit of the price, but the rate comes from the map state around them: the lever that works is not mapping them at all.
 
-The runtime is still kept open for the life of the signer, and the reason is no longer the clock — at 1.2 s an open would be affordable. What makes it a constraint is the account state the guest carries: cookies and session objects belong to the DSID it was opened with, so a download for another account is refused rather than attempted.
+The runtime is still kept open for the life of the signer, and the reason is no longer the clock — at 1.2 s an open would be affordable. It is kept open because closing it is what breaks: a signature taken on the machine right after a `Close` returned -42306, with and without releasing the address space, and the session opened afterwards died one call later at the same receiver. So nothing in the download path closes one, and a second account is served through the first account's runtime — see above.
 
 ---
 
 ## Diagnostics
 
-Everything the app does is observable without a debugger, because attaching one is not something anyone wants to do to report a bug:
+Everything the app does is observable without a debugger, because attaching one is not something anyone wants to do to report a bug. [`diagnostics.md`](diagnostics.md) is the operator's half of this — every switch on the Diagnostics tab, what it changes and when it takes effect, and what the lines it produces mean; this section is the half about why observation is shaped the way it is.
 
 * **stderr recorder** — each launch captures the previous run's stderr to a file the Diagnostics tab can share.
 * **phase stamps** — `open()` reports its own clock at each stage (`phase cache pages at …`), so time goes where the code measured it rather than where log timestamps suggest. Log timestamps are *not* a stopwatch: stderr is drained in batches, so lines seconds apart on the clock arrive tens of seconds apart, and a batch boundary can fall anywhere inside the interval being measured.

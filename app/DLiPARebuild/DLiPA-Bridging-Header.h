@@ -62,6 +62,11 @@ FOUNDATION_EXPORT void SapbridgeEnableLazyCachePages(void);
 // session, and a bool argument has no proven mapping. Read on every download, so
 // unlike the cache switch it takes effect at the next account switch.
 FOUNDATION_EXPORT void SapbridgeEnableAccountReuseProbe(void);
+// Also one-way, and also read once by open(). Unlike the two above this one is
+// off by default: the mapping measurements it turns on are 89 of the roughly
+// 110 lines a store-runtime open writes, and nobody needs them to download an
+// app. See docs/diagnostics.md for what each line means when they are on.
+FOUNDATION_EXPORT void SapbridgeEnableMappingCensus(void);
 
 NS_ASSUME_NONNULL_END
 FOUNDATION_EXPORT NSString * _Nullable SapbridgePatchIPA(NSString * _Nullable path, NSString * _Nullable email, NSError * _Nullable * _Nullable error);

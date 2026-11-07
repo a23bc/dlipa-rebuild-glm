@@ -66,6 +66,7 @@ The controlled experiment behind the first two rows is in `../SIGNATURE_EXPERIME
       build-unicorn-ios.sh      cross-compiles Unicorn TCI
       package-ipa.sh            sealed .app -> .ipa
     docs/architecture.md        how the pieces fit and why
+    docs/diagnostics.md         the Diagnostics tab, and how to read a log
     VendorAssets/               where the extracted Apple binaries would sit;
                                 gitignored, and no build reads it — the device
                                 fetches them from Apple itself
@@ -77,6 +78,7 @@ The controlled experiment behind the first two rows is in `../SIGNATURE_EXPERIME
 ## Documentation
 
 * **[docs/architecture.md](docs/architecture.md)** — how the pieces fit: the two tenants on one guest, why the Store runtime is opened once and kept open, the download flow end to end, the decisions that were forced by specific failures, and where the time goes on device.
+* **[docs/diagnostics.md](docs/diagnostics.md)** — the Diagnostics tab: what each switch changes and when it takes effect, what each button costs, and how to read the log — including the mapping measurements that are off by default now.
 * **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to work on this without a Mac: the two CI layers and what each can prove, the commit-message rules that actually fail pushes, and what counts as verified.
 * `DELIVERY_STATUS.md` — what works today, what does not, and the evidence.
 * `sapbridge/VERIFICATION.md` — build and test matrix for the Go side.

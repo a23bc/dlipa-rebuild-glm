@@ -162,7 +162,23 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 AppLog.info("account switch: a second account is refused until a restart", .sap)
             }
 
-        // Off unless asked for. Opening the engine at launch is the step that
+            // Off unless the diagnostics row asks, the way the pre-warm row below
+            // works. The census lines this turns on are the loudest part of an
+            // open -- 89 of the 118 lines that second holds, against 38 with this
+            // switch off -- and they answer questions about the mapping, not about
+            // the download, in the log a bug report gets typed into. Both directions
+            // still print: a launch that logged no census has to be able to say
+            // whether that was the switch or the open that never happened.
+            let mappingCensus = UserDefaults.standard.bool(forKey: DiagnosticsScreen.mappingCensusKey)
+
+            if mappingCensus {
+                SapbridgeEnableMappingCensus()
+                AppLog.info("map census: mapping measurements will be logged", .sap)
+            } else {
+                AppLog.info("map census: off by switch, the mapping measurements are not logged", .sap)
+            }
+
+            // Off unless asked for. Opening the engine at launch is the step that
             // can end the process before a screen is drawn, and it is now a
             // diagnostic switch rather than a default.
             let prewarm = UserDefaults.standard.bool(forKey: DiagnosticsScreen.prewarmKey)
