@@ -87,6 +87,9 @@ func GenerateKBSync(ctx context.Context, bundle assets.Bundle, hardwareID []byte
 	}
 	defer agent.Close()
 
+	// The machine here is brand new inside openStoreAgentGlobal, so its lifetime
+	// count is the delta for this step. The other two call sites read deltas
+	// because their machine outlives the call.
 	kbsyncStamp("open storeagent", openStart, unicorn.EmuStarts()-openStarts, agent.guest.arm64Handled)
 
 	return agent.guest.kbsyncBytes("generate", func() ([]byte, error) {
