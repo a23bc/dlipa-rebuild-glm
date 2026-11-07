@@ -190,12 +190,10 @@ struct DiagnosticsScreen: View {
         // button still exports everything, once, because that is a click.
         let tail = AppLog.tail(400)
         let omitted = AppLog.lineCount - tail.count
-        let text = tail.map { $0.plainText }.joined(separator: "
-")
+        let text = tail.map { $0.plainText }.joined(separator: "\n")
 
         logText = omitted > 0
-            ? "… " + String(omitted) + " earlier entries omitted …
-" + text
+            ? "… " + String(omitted) + " earlier entries omitted …\n" + text
             : text
     }
 
