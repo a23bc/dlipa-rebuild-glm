@@ -7,10 +7,7 @@ func TestBlobDecodes(t *testing.T) {
 		t.Fatalf("no page blob is embedded")
 	}
 
-	pages, err := Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
+	pages := loadPages(t)
 
 	if len(pages) == 0 {
 		t.Fatalf("blob carries no pages")
