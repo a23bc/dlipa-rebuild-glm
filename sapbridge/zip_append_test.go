@@ -171,3 +171,51 @@ func readAll(t *testing.T, path string) []byte {
 
 	return data
 }
+
+// TestPendingEntriesCountsASecondPassAsNothing pins the short-circuit in
+// PatchIPA: a package that already carries the entries must report nothing
+// pending, because a pass that ignores that reads and writes the package's whole
+// size to change no byte.
+func TestPendingEntriesCountsASecondPassAsNothing(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.zip")
+
+	writeTestZip(t, source, map[string]string{
+		"Payload/Demo.app/Info.plist": "<plist/>",
+	})
+
+	entries := []extraEntry{
+		{Name: "iTunesMetadata.plist", Data: []byte("<plist>metadata</plist>")},
+		{Name: "Payload/Demo.app/SC_Info/Demo.sinf", Data: []byte("fairplay")},
+	}
+
+	fresh, err := zip.OpenReader(source)
+	if err != nil {
+		t.Fatalf("open source: %v", err)
+	}
+
+	defer fresh.Close()
+
+	if got := pendingEntries(fresh, entries); got != len(entries) {
+		t.Fatalf("a package with none of the entries should count all %d pending, got %d",
+			len(entries), got)
+	}
+
+	patched := filepath.Join(dir, "patched.zip")
+	if err = appendToZip(source, patched, entries); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	second, err := zip.OpenReader(patched)
+	if err != nil {
+		t.Fatalf("open patched: %v", err)
+	}
+
+	defer second.Close()
+
+	if got := pendingEntries(second, entries); got != 0 {
+		t.Fatalf("the patched package still reports %d pending entries", got)
+	}
+}
