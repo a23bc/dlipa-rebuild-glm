@@ -197,10 +197,22 @@ At each sign-in, one more line says whether that account's blob was generated th
 
 The first line is not a switch, and it replaced one. The cached blobs under `Library/Caches/dlipa/kbsync-v1-<dsid>.bin` used to be deleted by any launch whose `CFBundleShortVersionString` differed, which made the first download of every new build pay a regeneration — measured at 32 s, and once at 117 s. See "An upgrade no longer discards the blobs" above for what retires a blob now.
 
+At sign-in, the lines that say what Apple actually answered:
+
+```
+authenticate request to <url> headers: Content-Type=…, User-Agent=…
+signed request to <url> returned 204, request 461 bytes, response 0 bytes
+not following redirect: HTTP 301, no Location header, location none, response url …, request url …
+authenticate ended with HTTP 204 and 0 bytes after 3 request tries, none of which produced a body
+sign-in failed: the store answered with no content (HTTP 204); sign in again
+```
+
+The second and third are the pair that turns a mystery into a fact. `request N bytes, response M bytes` used to be one word -- `body N bytes` -- which read as though a 204 had answered with 461 bytes of content when the number was the size of what we sent. And `not following redirect` names which of the three faults a 301 was: no `Location` at all, one that could not be resolved as https, or one that left Apple's domain. The destination is written without its query, because a `Location` is allowed to carry a token there and this log gets shared.
+
 During a download, the useful ones:
 
 ```
-[SAP] ent input: dsid=… storefront=… token=…ch/… cookies=… app=…
+[SAP] ent input: dsid=… storefront=… token=…ch cookies=… app=…
 [SAP] ent download: kbsync from disk (212 bytes)
 [SAP] ent download: store runtime opened
 [SAP] sign: … bytes in, …, … emulation starts (… -> …), heap used …

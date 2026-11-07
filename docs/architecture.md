@@ -94,6 +94,20 @@ Upgrades no longer clear the cache. The sweep keyed on `CFBundleShortVersionStri
 
 ---
 
+## Authenticating through a redirect
+
+`authenticate` is addressed to the generic host and answered by a Store pod, and the pod is discovered from the redirect rather than known in advance. The upstream contract for that hop is explicit: a `Location` can be a full URL, a bare path, a protocol-relative host, or a query string, the **payload travels unchanged**, and the signature is recomputed for each destination.
+
+Reaching it needed the redirect to arrive at our own code, and for as long as this app existed it did not: the session let URLSession follow redirects itself, and URLSession's policy for a 301 or 302 on a POST is to turn it into a **GET with no body**. So the first hop always landed on the pod broken. It worked anyway, by accident -- the pod answered that bodyless GET with a 404, the response URL named the pod, and the next attempt went there as a proper signed POST and got a 200. The comment in the initialiser said "redirects are handled manually" while nothing had switched off the automatic following, and the manual loop that had been written for exactly this job was unreachable.
+
+What it leaned on was the pod's willingness to 404 a bodyless GET. When that stopped -- three device captures answered the same request with 204, 404 and 301 in one session, and the URL never moved -- authentication had no way to find the pod at all, and the failure surfaced as an unusable status with no diagnostic behind it.
+
+Now the signed session refuses to follow (`NoAutoRedirectDelegate` hands `nil` to the redirect callback), and the loop owns every hop: same method and bytes, signature recomputed, credential headers dropped when the host changes, https and Apple hosts only, and a hop budget. The other session -- the bag and the classic endpoints -- keeps the automatic policy, because there following a CDN redirect is the behaviour that works.
+
+Each hop the loop *refuses* is logged with the status, the Location (query stripped, because a Location's query can be a token), the response URL and the request URL. That is not decoration: `HTTP 301` cannot tell "Apple sent no Location" from "we could not resolve it" from "it left Apple's domain", and those three faults need three different fixes. 303 is deliberately not converted into a GET -- with automatic following gone it now reaches the caller as a 303, which is a visible failure, and no endpoint in this app is known to answer one.
+
+---
+
 ## Decisions that were forced, not chosen
 
 | Decision | The failure that forced it |
