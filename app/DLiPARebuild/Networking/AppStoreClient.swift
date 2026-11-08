@@ -2134,14 +2134,6 @@ final class AppStoreClient {
 
     // MARK: - Signed transport
 
-    /// Sends `request`, signing the body, and follows redirects by
-    /// re-signing at each hop.
-    ///
-    /// Two details matter, both learned the hard way:
-    ///
-    /// - A 303 asks for a GET, so the body is gone and there is nothing to
-    ///   sign. Treating it as replayable would re-POST incorrectly.
-    /// - `Location` can be relative, so resolve it against the current URL.
     /// Why a redirect is being handed back to the caller instead of followed.
     ///
     /// Status, Location (or its absence), the URL the response claims to be at,
@@ -2192,6 +2184,20 @@ final class AppStoreClient {
         return value
     }
 
+    /// Sends `request`, signing the exact bytes that go on the wire, and follows
+    /// redirects by re-signing at each hop.
+    ///
+    /// Two details, both learned the hard way:
+    ///
+    /// - A 303 asks for a GET, so the body is gone and there is nothing to sign.
+    ///   Treating it as replayable would re-POST incorrectly.
+    /// - `Location` can be relative, so it resolves against the current URL.
+    ///
+    /// The signature covers the body and nothing else, so re-signing the same
+    /// bytes at the pod produces what the reference client gets by carrying the
+    /// first signature across; it is done here rather than carried because the
+    /// body is rebuilt per hop anyway by the callers that retry with a new
+    /// `attempt` value.
     private func signedRequest(_ request: URLRequest,
                                signer: SAPSigner,
                                redirects: Int) async throws -> (Data, HTTPURLResponse) {
