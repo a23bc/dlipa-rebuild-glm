@@ -33,6 +33,7 @@ Three consequences matter when reading a capture:
 | Reuse one runtime across accounts | **on** | next launch | `com.a23bc.dliparebuild.accountReuseProbe` |
 | Log the mapping measurements | off | next launch | `com.a23bc.dliparebuild.mappingCensus` |
 | Generate kbsync when signing in | **on** | next sign-in | `com.a23bc.dliparebuild.pregenerateKBSync` |
+| Developer state | off | immediately | `com.a23bc.dliparebuild.devState` |
 
 "Next launch" is a property of the code, not a convenience: the bridge reads each of these once, at startup, and hands the value to the Go side, where the decision is made inside an `open()` or a download that is already in progress. Flipping a row does nothing to the run you are looking at. One row is read at the next sign-in instead, because that is where it applies. Every one of them logs which way the launch went, so a capture always says which shape it took — a switch that is silent when off cannot be told apart from a switch that was never read.
 
@@ -133,6 +134,41 @@ kbsync pre-generation failed, the first download will generate: <error>
 
 The last is not a failed sign-in. The download path generates for itself and reports there, where a result is already being waited on, so a pre-generation that dies costs only the retry.
 
+### Developer state
+
+Development scaffolding, off by default, and the only switch here that writes nothing about itself at launch: it is read live, so turning it on and reproducing happen in the same run.
+
+It exists because of a specific dead end. `authenticate` answers 301, 204 and 404 inside one session, and rolling the app back to earlier builds — the one that introduced demand paging, the one that introduced the pre-warm — changes nothing. Persistent state that outlives the binary is the only explanation that survives a rollback, and this app has four of them: keychain items, the shared `HTTPCookieStorage` (which on iOS is itself stored in the keychain and survives a reinstall), the app's preferences, and the kbsync blobs under `Library/Caches/dlipa`. So the question is not *which* of them is wrong but **what is actually in them, and does what a request takes from them match what the endpoint expects** — which is answerable only by looking.
+
+Two things change when it is on:
+
+**Every signed request and response is logged whole**, header values and bodies in clear text. The status line says what came back; these say what was carried, and a 301 whose `Location` is missing, whose `Location` points somewhere unexpected, and whose `Location` this client refused are three faults the status line cannot separate:
+
+```
+wire out POST https://buy.itunes.apple.com/…/authenticate/ | Cookie=…, X-Apple-ActionSignature=…, … | body <the plist>
+wire in 301 https://buy.itunes.apple.com/…/authenticate/ | Location=…, Content-Type=…, … | body <html>
+```
+
+The redaction that the other lines carry — credential values replaced by their length, the `Location` stripped of its query — is deliberately not applied here. During development the state on the wire is the thing under investigation; `docs/probes/developer-state.md` says what has to happen before a release build is ever cut.
+
+**The persisted stores can be read and changed.** *Dump persisted state to the log* writes one block:
+
+```
+===== DEV STATE BEGIN =====
+keychain: 3 item(s)
+  [generic password, data-protection] service=com.a23bc.dliparebuild account=… value=…
+cookies in the shared jar: 2
+  itunes.apple.com X-Token=… (path /, expires …)
+preferences: 8 key(s)
+  com.a23bc.dliparebuild.accounts = dict …
+  caches/dlipa kbsync-v1-20825825307.bin (212 bytes)
+===== DEV STATE END =====
+```
+
+*List keychain items* puts a row per item on the page instead, each with the shape that found it — an item written through the data-protection keychain is invisible to a query that does not ask for it, so one unflagged pass would report "empty" and send the search in the wrong direction. `Set` writes a chosen value into that slot (or creates it) and `Delete` removes it; both answer with the OSStatus, because "deleted" and "there was nothing to delete" are different facts and a silent delete is how an item a query could not see keeps hiding. The point is to be able to empty the password slot, or fill it with a known-wrong value, and see whether the 2034 auto-relogin path is what sends an authenticate request nobody asked for.
+
+*Delete every cookie* clears the shared jar — the one store this app does not own and cannot show in a preference row.
+
 ### An upgrade no longer discards the blobs
 
 Not a switch, but it belongs with the switches because it used to be one, and because the reason for the row above is the same reason this changed.
@@ -208,6 +244,8 @@ sign-in failed: the store answered with no content (HTTP 204); sign in again
 ```
 
 The second and third are the pair that turns a mystery into a fact. `request N bytes, response M bytes` used to be one word -- `body N bytes` -- which read as though a 204 had answered with 461 bytes of content when the number was the size of what we sent. And `not following redirect` names which of the three faults a 301 was: no `Location` at all, one that could not be resolved as https, or one that left Apple's domain. The destination is written without its query, because a `Location` is allowed to carry a token there and this log gets shared.
+
+With **Developer state** on, the same exchanges appear again as `wire out` / `wire in` pairs with every header value and both bodies in clear text, un-redacted on purpose -- see that switch above.
 
 During a download, the useful ones:
 

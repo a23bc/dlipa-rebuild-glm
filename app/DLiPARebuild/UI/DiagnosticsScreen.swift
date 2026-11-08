@@ -183,6 +183,8 @@ struct DiagnosticsScreen: View {
                             refresh()
                         }
                     }
+
+                    DevStateSection()
                 }
                 .frame(height: 300)
 
