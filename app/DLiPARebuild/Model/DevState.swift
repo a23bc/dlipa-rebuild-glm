@@ -91,15 +91,26 @@ enum DevState {
             return []
         }
 
-        return items.compactMap { item in
-            guard let account = item[kSecAttrAccount as String] as? String else { return nil }
+        return items.compactMap { entry(from: $0, label: label, dataProtection: dataProtection) }
+    }
 
-            return Entry(className: label,
-                         service: item[kSecAttrService as String] as? String ?? "none",
-                         account: account,
-                         value: describe(item[kSecValueData as String] as? Data),
-                         dataProtection: dataProtection)
-        }
+    /// One keychain record read out of a query result.
+    ///
+    /// Its own function because the field-by-field `as?`-with-a-default shape is
+    /// long enough to type-check slowly inline, and this project has already paid
+    /// twice for guessing at that.
+    private static func entry(from item: [String: Any], label: String,
+                              dataProtection: Bool) -> Entry? {
+        guard let account = item[kSecAttrAccount as String] as? String else { return nil }
+
+        let service = item[kSecAttrService as String] as? String ?? "none"
+        let stored = item[kSecValueData as String] as? Data
+
+        return Entry(className: label,
+                     service: service,
+                     account: account,
+                     value: describe(stored),
+                     dataProtection: dataProtection)
     }
 
     /// Removes one row. Reports the OSStatus, because "deleted" and "there was
@@ -107,7 +118,7 @@ enum DevState {
     /// an item that a query could not see would keep hiding.
     @discardableResult
     static func delete(_ entry: Entry) -> OSStatus {
-        SecItemDelete(lookup(for: entry))
+        SecItemDelete(lookup(for: entry) as CFDictionary)
     }
 
     /// Writes a value into an existing row, or creates it.
@@ -117,13 +128,15 @@ enum DevState {
     /// the authenticate request nobody asked for, or emptied to see the refusal.
     @discardableResult
     static func write(_ entry: Entry, value: String) -> OSStatus {
-        let update = [kSecValueData as String: Data(value.utf8)]
-        let status = SecItemUpdate(lookup(for: entry), update as CFDictionary)
+        let data = Data(value.utf8)
+        let query = lookup(for: entry) as CFDictionary
+        let update = [kSecValueData as String: data] as CFDictionary
+        let status = SecItemUpdate(query, update)
 
         guard status == errSecItemNotFound else { return status }
 
         var attributes = lookup(for: entry)
-        attributes[kSecValueData as String] = Data(value.utf8)
+        attributes[kSecValueData as String] = data
 
         return SecItemAdd(attributes as CFDictionary, nil)
     }
@@ -158,12 +171,37 @@ enum DevState {
     /// therefore survives a reinstall. A cookie from the account that was signed
     /// in before is exactly the kind of state that outlives a rollback.
     static func cookieEntries() -> [String] {
-        (HTTPCookieStorage.shared.cookies ?? []).map { cookie in
-            cookie.domain + " " + cookie.name + "=" + cookie.value
-                + " (path " + cookie.path + ", expires "
-                + (cookie.expirationDate.map { ISO8601DateFormatter().string(from: $0) } ?? "session")
-                + ")"
+        guard let cookies = HTTPCookieStorage.shared.cookies, !cookies.isEmpty else { return [] }
+
+        return cookies.map { describeCookie($0) }
+    }
+
+    /// One keychain row, spelled the same in the log and on the screen: the
+    /// shape that found it first, because the same account can exist in both and
+    /// only one query can see each.
+    static func describeEntry(_ entry: Entry) -> String {
+        let shape = entry.dataProtection ? "data-protection" : "classic"
+
+        return "[" + entry.className + ", " + shape + "] service=" + entry.service
+            + " account=" + entry.account + " value=" + entry.value
+    }
+
+    /// One cookie on one line, with the two fields that decide whether it is
+    /// still the session it looks like: its path and its expiry.
+    ///
+    /// Built from locals rather than as one expression, because the chained form
+    /// -- a `map` over an optional date inside a `+` chain inside a closure
+    /// inside a `??` -- is the shape this project has watched the compiler time
+    /// out on twice now.
+    private static func describeCookie(_ cookie: HTTPCookie) -> String {
+        var expiry = "session"
+
+        if let date = cookie.expirationDate {
+            expiry = ISO8601DateFormatter().string(from: date)
         }
+
+        return cookie.domain + " " + cookie.name + "=" + cookie.value
+            + " (path " + cookie.path + ", expires " + expiry + ")"
     }
 
     @discardableResult
@@ -179,17 +217,28 @@ enum DevState {
         UserDefaults.standard.dictionaryRepresentation().keys
             .filter { $0.hasPrefix("com.a23bc.dliparebuild") }
             .sorted()
-            .map { key in
-                let raw = UserDefaults.standard.object(forKey: key)
+            .map { describePreference($0) }
+    }
 
-                if let data = raw as? Data { return key + " = " + describe(data, cap: 4096) }
-                if let text = raw as? String { return key + " = " + text }
-                if let values = raw as? [String: Any] {
-                    return key + " = dict " + values.keys.sorted().joined(separator: ", ")
-                }
+    /// One preference, printed as what it is: the account list is a JSON blob,
+    /// the cookie header a string, the tokens a dictionary.
+    ///
+    /// Its own function for the same reason as the cookie line -- four branches
+    /// of `as?` over one `Any?` is not an expression to leave inside a `map`.
+    private static func describePreference(_ key: String) -> String {
+        let raw = UserDefaults.standard.object(forKey: key)
 
-                return key + " = " + String(describing: raw ?? "nil")
-            }
+        if let data = raw as? Data { return key + " = " + describe(data, cap: 4096) }
+
+        if let text = raw as? String { return key + " = " + text }
+
+        if let values = raw as? [String: Any] {
+            return key + " = dict " + values.keys.sorted().joined(separator: ", ")
+        }
+
+        let fallback = raw.map { String(describing: $0) } ?? "nil"
+
+        return key + " = " + fallback
     }
 
     /// The kbsync blobs and the staged asset names under Caches.
@@ -220,11 +269,7 @@ enum DevState {
         let entries = keychainEntries()
         AppLog.info("keychain: " + String(entries.count) + " item(s)", .app)
         for entry in entries {
-            AppLog.info("  [" + entry.className
-                        + (entry.dataProtection ? ", data-protection" : ", classic")
-                        + "] service=" + entry.service
-                        + " account=" + entry.account
-                        + " value=" + entry.value, .app)
+            AppLog.info("  " + describeEntry(entry), .app)
         }
 
         let cookies = cookieEntries()

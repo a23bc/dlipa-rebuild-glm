@@ -59,8 +59,7 @@ struct DevStateSection: View {
         )
 
         return VStack(alignment: .leading, spacing: 4) {
-            Text(item.className + (item.dataProtection ? " [data-protection]" : " [classic]")
-                 + " service=" + item.service + " account=" + item.account)
+            Text(DevState.describeEntry(item))
                 .font(.system(.caption2, design: .monospaced))
 
             HStack {
