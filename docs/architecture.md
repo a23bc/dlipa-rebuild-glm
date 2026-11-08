@@ -106,6 +106,12 @@ Now the signed session refuses to follow (`NoAutoRedirectDelegate` hands `nil` t
 
 Each hop the loop *refuses* is logged with the status, the Location (query stripped, because a Location's query can be a token), the response URL and the request URL. That is not decoration: `HTTP 301` cannot tell "Apple sent no Location" from "we could not resolve it" from "it left Apple's domain", and those three faults need three different fixes. 303 is deliberately not converted into a GET -- with automatic following gone it now reaches the caller as a 303, which is a visible failure, and no endpoint in this app is known to answer one.
 
+Two things read out of the reference implementation while this was being checked, both worth stating because they change what a 204 means.
+
+The first is that **a transient 204, 403, 404, 429 or 5xx from `authenticate` is expected traffic**: upstream retries exactly those statuses, with an exponential backoff and precedence for a `Retry-After` header, and it gives up only after its own attempt budget with the message "apple returned no usable authentication response; try again later or from another network". A 204 is therefore not evidence that our request is malformed -- it is evidence that the pod it landed on is not answering. The phrase "or from another network" is upstream telling its user where it thinks the fault lives.
+
+The second is that upstream **isolates sign-in traffic from everything else**: the login client is a separate client with keep-alives disabled, its own dial timeout, and a deliberate comment that a login connection must not be shared with, or reused for, other Store operations. Redirects stay on that connection because only the URL changes -- the payload, and the signature recomputed over those same bytes at each `Send`, travel unchanged. This app cannot disable keep-alives: URLSession exposes no such switch, and the `Connection` header is one of the ones it refuses to send. What it *can* do is stop sharing, by giving the signed session a configuration of its own rather than the one the bag requests use. Whether the shared pool is what produced 204 then 404 then 301 for identical bytes on an unmoving URL is not measured, and it is the surviving explanation that a rollback cannot rule out -- so it stays a hypothesis with a name, not a fix that was applied.
+
 ---
 
 ## Decisions that were forced, not chosen
