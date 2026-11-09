@@ -14,10 +14,23 @@ struct DevStateSection: View {
     @State private var items: [DevState.Entry] = []
     @State private var listed = false
     @State private var drafts: [UUID: String] = [:]
+    @State private var email = ""
+    @State private var secret = ""
 
     var body: some View {
         Section {
             Toggle("Developer state: log requests in clear text", isOn: $enabled)
+                .onChange(of: enabled) { value in
+                    // Say it at the moment it becomes true, because the thing
+                    // this switch unlocks is a log that carries the Apple ID
+                    // password, and the same button that shares the log is two
+                    // rows below it.
+                    guard value else { return }
+
+                    AppLog.warn("developer state on: the log now carries credentials "
+                                + "in clear text, including the sign-in password -- "
+                                + "share it only to yourself", .app)
+                }
 
             Button("Dump persisted state to the log") { DevState.dump() }
 
@@ -31,6 +44,8 @@ struct DevStateSection: View {
                 let count = DevState.deleteAllCookies()
                 AppLog.warn("dev state: deleted " + String(count) + " cookie(s)", .app)
             }
+
+            passwordRow
 
             if listed {
                 if items.isEmpty {
@@ -47,6 +62,36 @@ struct DevStateSection: View {
                  + "can be deleted or overwritten. Comes out before a release build "
                  + "is ever cut.")
                 .font(.system(.caption2, design: .monospaced))
+        }
+    }
+
+    /// The half of "control what we write" that editing existing rows cannot
+    /// reach: a row that does not exist yet.
+    ///
+    /// The password slot is the one worth having, because a sign-in is the only
+    /// thing that ever writes it and sign-in is exactly what is broken -- so
+    /// without this, the 2034 refresh path cannot be driven at all. It goes
+    /// through `Keychain.save` rather than a second write of its own, so what
+    /// this produces is byte-for-byte what a successful sign-in would produce,
+    /// including the accessibility attribute.
+    private var passwordRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("write the password slot (the row a successful sign-in would create)")
+                .font(.system(.caption2, design: .monospaced))
+
+            HStack {
+                TextField("apple id", text: $email)
+                    .font(.system(.caption2, design: .monospaced))
+                TextField("password", text: $secret)
+                    .font(.system(.caption2, design: .monospaced))
+                    .autocapitalization(.none)
+                Button("Save") {
+                    Keychain.save(secret, for: email)
+                    AppLog.warn("dev state: asked to keep a password for that apple id", .app)
+                    items = DevState.keychainEntries()
+                    listed = true
+                }
+            }
         }
     }
 

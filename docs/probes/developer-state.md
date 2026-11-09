@@ -23,6 +23,37 @@ With the Diagnostics row **Developer state** on, and only then:
 
 * every signed request and its response are logged whole — method, URL, every header value, both bodies, in clear text;
 * **Dump persisted state to the log** writes one block covering all four stores: every keychain item this app can reach in *both* shapes, every cookie in the shared jar with its value, every `com.a23bc.dliparebuild*` preference with its value, and the cache files with their sizes;
+* **List keychain items** turns the same rows into controls: `Set` overwrites (or creates) a value, `Delete` removes an item, and both report the OSStatus;
+* **write the password slot** creates the keychain row a successful sign-in would create, through the same call and with the same accessibility attribute.
+
+## What reading the code already settled
+
+Two parts of the suspicion are answered without a device run, and they are recorded here so the run is spent on what is left.
+
+**Nothing in the interactive sign-in path reads the keychain.** `Keychain.password(for:)` has exactly one caller, `AppSession.signInAgain` ([app/DLiPARebuild/Model/AppSession.swift:68](file:///e/Projects/dlipa/dlipa-rebuild-glm/app/DLiPARebuild/Model/AppSession.swift#L68)), which runs only when the store has just retired a session token and only if a password row exists. `Keychain.save` is reached only after a *successful* sign-in (line 178), and `Keychain.delete` from the two account-removal paths (lines 300 and 369). So on a device whose accounts were deleted in-app and where no sign-in has succeeded for a week, the slot is empty -- which means the auto-relogin cannot be the thing sending authenticate requests, and a stored-but-wrong password cannot be reaching the wire.
+
+**A restored cookie jar cannot contaminate the first authenticate.** `AppStoreClient.init` does restore `cookieJar.header` from preferences (line 123), and the file-transfer session does run the default cookie policy against `HTTPCookieStorage.shared`; but `authenticate` clears both the persisted jar and the in-memory replay header before its first request (lines 227-229), and the signed session has `httpShouldSetCookies = false`, which stops URLSession attaching anything from the jar. What the first authenticate *does* carry from persisted state is one field: `guid`, read from `com.a23bc.dliparebuild.hardwareIdentity`.
+
+That leaves two questions the surface was built to answer, and no others: whether the bytes on the wire match what those stores hold -- above all whether the `guid` in the body equals the `hardware` the signer reports -- and what the response's own headers say (`Location`, `Retry-After`) about where the request actually landed. A `Retry-After` beside a 204 or a 429 would mean Apple is rate-limiting rather than refusing, and until this switch nothing in the log could tell those two apart.
+
+The password-slot writer is part of this surface for the same reason it is not an omission from it: the one path that could turn a keychain value into a sign-in request is unreachable while sign-in is broken, since a sign-in is the only thing that writes that row. Handing the path a known-wrong password is how it gets tested at all.
+
+## Reading it
+
+In order, on the failing device:
+
+1. open Diagnostics, turn **Developer state** on;
+2. **Dump persisted state to the log** *before* signing in -- that is the state that survived the rollback;
+3. attempt the sign-in and let it fail;
+4. dump again, then **Share log**.
+
+The first dump is the one that matters and it is easy to skip: after a sign-in attempt the interesting stores have been written by the attempt.
+
+
+With the Diagnostics row **Developer state** on, and only then:
+
+* every signed request and its response are logged whole — method, URL, every header value, both bodies, in clear text;
+* **Dump persisted state to the log** writes one block covering all four stores: every keychain item this app can reach in *both* shapes, every cookie in the shared jar with its value, every `com.a23bc.dliparebuild*` preference with its value, and the cache files with their sizes;
 * **List keychain items** turns the same rows into controls: `Set` overwrites (or creates) a value, `Delete` removes an item, and both report the OSStatus.
 
 Two of these are the actual instruments, and they are worth naming:
