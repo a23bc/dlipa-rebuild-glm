@@ -196,7 +196,7 @@ enum DevState {
     private static func describeCookie(_ cookie: HTTPCookie) -> String {
         var expiry = "session"
 
-        if let date = cookie.expirationDate {
+        if let date = cookie.expiresDate {
             expiry = ISO8601DateFormatter().string(from: date)
         }
 
