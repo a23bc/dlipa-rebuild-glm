@@ -258,6 +258,57 @@ enum DevState {
         }
     }
 
+    // MARK: - Writing a preference
+
+    /// Puts a chosen value back into one of this app's own preferences, as raw
+    /// bytes written from hex -- which is how `hardwareIdentity` is stored.
+    ///
+    /// This exists for one value. The device captures put a different
+    /// `hardwareIdentity` on either side of the last sign-in that worked, and
+    /// that key is the only persisted thing that reaches the authenticate body.
+    /// The way to find out whether it is the variable is to write the old value
+    /// back -- and the only two other ways to do that both change it again:
+    /// reinstalling wipes the container, and Filza edits a file that `cfprefsd`
+    /// may answer from its cache instead of from disk. Writing it from inside the
+    /// process is the one route that cannot be a stale read.
+    ///
+    /// Returns false when the hex does not parse, rather than writing something
+    /// shorter than six bytes, because `HardwareIdentity.current` treats a value
+    /// that is not exactly six bytes as absent and mints a new one -- which would
+    /// make the experiment look like it changed nothing.
+    @discardableResult
+    static func setPreferenceBytes(_ hex: String, forKey key: String) -> Bool {
+        let digits = hex.filter { $0.isHexDigit }
+
+        guard digits.count.isMultiple(of: 2), !digits.isEmpty else { return false }
+
+        var bytes: [UInt8] = []
+        var at = digits.startIndex
+
+        while at < digits.endIndex {
+            let next = digits.index(at, offsetBy: 2)
+
+            guard let byte = UInt8(digits[at..<next], radix: 16) else { return false }
+
+            bytes.append(byte)
+            at = next
+        }
+
+        UserDefaults.standard.set(Data(bytes), forKey: key)
+
+        return true
+    }
+
+    /// The identity the guest, the bag request and the authenticate body all use,
+    /// spelled the way the log spells it.
+    static func hardwareIdentityHex() -> String {
+        guard let saved = UserDefaults.standard.data(forKey: HardwareIdentity.storageKey) else {
+            return "none"
+        }
+
+        return saved.map { String(format: "%02X", $0) }.joined() + " (" + String(saved.count) + " bytes)"
+    }
+
     // MARK: - The log
 
     /// One block, four sections, every value in clear text. Written through the

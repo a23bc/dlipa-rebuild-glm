@@ -16,6 +16,7 @@ struct DevStateSection: View {
     @State private var drafts: [UUID: String] = [:]
     @State private var email = ""
     @State private var secret = ""
+    @State private var guid = ""
 
     var body: some View {
         Section {
@@ -46,6 +47,8 @@ struct DevStateSection: View {
             }
 
             passwordRow
+
+            identityRow
 
             if listed {
                 if items.isEmpty {
@@ -90,6 +93,42 @@ struct DevStateSection: View {
                     AppLog.warn("dev state: asked to keep a password for that apple id", .app)
                     items = DevState.keychainEntries()
                     listed = true
+                }
+            }
+        }
+    }
+
+    /// The one persisted value that reaches the authenticate body: the hardware
+    /// identity, which is also what the bag request is addressed with and what
+    /// the signer opens the guest with.
+    ///
+    /// Written from inside this process rather than edited on disk, because a
+    /// file edit can be answered by `cfprefsd` from its cache, and reinstalling
+    /// -- the other way to reach this value -- wipes it and mints a new one,
+    /// which is the very thing under test.
+    private var identityRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("hardware identity stored now: " + DevState.hardwareIdentityHex())
+                .font(.system(.caption2, design: .monospaced))
+
+            HStack {
+                TextField("hex, 12 digits", text: $guid)
+                    .font(.system(.caption2, design: .monospaced))
+                Button("Set") {
+                    // Anything that is not exactly six bytes is read as absent by
+                    // HardwareIdentity.current, which then mints a new identity --
+                    // so a malformed write would look like a write that changed
+                    // nothing.
+                    let written = DevState.setPreferenceBytes(guid,
+                                                              forKey: HardwareIdentity.storageKey)
+
+                    if written {
+                        AppLog.warn("dev state: hardware identity written from hex; "
+                                    + "restart the app so the signer picks it up", .app)
+                    } else {
+                        AppLog.error("dev state: refused to write that -- it is not an even "
+                                     + "number of hex bytes", .app)
+                    }
                 }
             }
         }
