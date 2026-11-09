@@ -24,7 +24,8 @@ With the Diagnostics row **Developer state** on, and only then:
 * every signed request and its response are logged whole — method, URL, every header value, both bodies, in clear text;
 * **Dump persisted state to the log** writes one block covering all four stores: every keychain item this app can reach in *both* shapes, every cookie in the shared jar with its value, every `com.a23bc.dliparebuild*` preference with its value, and the cache files with their sizes;
 * **List keychain items** turns the same rows into controls: `Set` overwrites (or creates) a value, `Delete` removes an item, and both report the OSStatus;
-* **write the password slot** creates the keychain row a successful sign-in would create, through the same call and with the same accessibility attribute.
+* **write the password slot** creates the keychain row a successful sign-in would create, through the same call and with the same accessibility attribute;
+* **hardware identity stored now** prints the six bytes under `hardwareIdentity` and writes chosen hex back into that key, refused unless it is a whole number of bytes.
 
 ## What reading the code already settled
 
@@ -38,6 +39,21 @@ That leaves two questions the surface was built to answer, and no others: whethe
 
 The password-slot writer is part of this surface for the same reason it is not an omission from it: the one path that could turn a keychain value into a sign-in request is unreachable while sign-in is broken, since a sign-in is the only thing that writes that row. Handing the path a known-wrong password is how it gets tested at all.
 
+## What the captures already show
+
+Reading the past captures against each other settled more than the device run has, and the finding is the reason the surface now reaches into preferences as well as the keychain.
+
+| | hardware identity | authenticate |
+| --- | --- | --- |
+| 2026-11-06 08:05–08:25 UTC, build `000973f` | `34EEF9D75FC4` | attempt 1 to the generic host, 404; attempt 2 to `https://p47-buy.itunes.apple.com/…/authenticate/?Pod=47&PRH=47` → **200**, tokens, `password kept for a session refresh` |
+| every capture from 2026-11-06 15:38 UTC on, through 2026-11-09 | `264378C8DF79` | 204, 404 and 301, all of them **on the generic host**, the URL never moving |
+
+The identity is not derived per launch. `HardwareIdentity.current` reuses the six bytes stored under `com.a23bc.dliparebuild.hardwareIdentity` and mints a new value only when that key is missing or does not hold exactly six bytes ([app/DLiPARebuild/Networking/SAPSigner.swift:46](file:///e/Projects/dlipa/dlipa-rebuild-glm/app/DLiPARebuild/Networking/SAPSigner.swift#L46)). So between those two windows the stored identity was replaced, and the two ways that happens are a wiped container (an uninstall, or the preferences file removed by hand) and the Settings button that calls `regenerate()`. No capture carries the `hardware identity regenerated` line, so the first fits better -- but that is an inference from an absent log line, not a measurement.
+
+Why that matters more than it looks: the guid is a **request field**, not an internal label. It goes into the authenticate body, it is the `?guid=` the bag is fetched with, and it is the hardware id the SAP guest signs against -- and it is half of every cached kbsync key (`dsid × guid`). A rollback of the binary cannot undo it, because the value does not live in the binary, and neither can a change of network. Everything Apple keys to a machine changed meaning at the same moment sign-in stopped working. And the last build that signed in successfully is *after* the asset-bundling removal (`e0186e0` is an ancestor of `000973f`), which is why comparing against a pre-asset package would compare two builds that both worked.
+
+What is not measured is whether a fresh guid is itself refused, or whether it only looks that way because the pod was never discovered. The first test is to write the old value back and sign in, which is what *hardware identity stored now / Set* is for: the write goes through this process rather than a file edit, because `cfprefsd` can answer a hand-edited preferences file from its cache, and reinstalling -- the other way to change it -- replaces the value with a new one.
+
 ## Reading it
 
 In order, on the failing device:
@@ -45,7 +61,10 @@ In order, on the failing device:
 1. open Diagnostics, turn **Developer state** on;
 2. **Dump persisted state to the log** *before* signing in -- that is the state that survived the rollback;
 3. attempt the sign-in and let it fail;
-4. dump again, then **Share log**.
+4. dump again, then **Share log**;
+5. if the dumps and the `wire out` lines agree and the answer is still a bare 301 or 204, write the identity from the working capture back into `hardwareIdentity` (`34EEF9D75FC4` at the time of writing), restart the app, and sign in once more.
+
+Step 5 is the one that can end the investigation: it changes exactly one persisted field, the one that reaches the request body, and leaves the binary alone.
 
 The first dump is the one that matters and it is easy to skip: after a sign-in attempt the interesting stores have been written by the attempt.
 
