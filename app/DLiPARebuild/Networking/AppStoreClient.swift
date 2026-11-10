@@ -201,9 +201,19 @@ final class AppStoreClient {
     /// Two-factor runs over two requests, and the shape is not obvious:
     ///
     /// - The code is appended to the password, not sent in a field of its own.
-    /// - `attempt` counts the request: 1 for the password, 2 for the retry that
-    ///   carries the code. Apple treats a code sent with `attempt` still at 1 as
-    ///   a password typo, so the counter must advance.
+    /// - `attempt` starts at 1 on every call, with or without a code, and
+    ///   reaches 2 only after an answer reports invalid credentials. That pair
+    ///   is what the reference client sends inside one login (v2.7.0
+    ///   pkg/appstore/appstore_login.go:147 for the first request at 1, :355
+    ///   for the condition that advances, :193 for the rebuild), and the
+    ///   condition there does not look at the code at all.
+    /// - What used to be claimed here -- that Apple reads a code at `attempt`
+    ///   1 as a password typo -- was never measured. Run 506 is the evidence
+    ///   against the way we did it: the code went out as the first request at
+    ///   2, which the reference client never sends, and came back 301 with no
+    ///   `Location`, then two empty 204s, while the password-only request at 1
+    ///   seconds earlier had been answered as an application with HTTP 200 and
+    ///   the four session cookies.
     /// - The challenge is signalled by an EMPTY `failureType` together with
     ///   `customerMessage` equal to "MZFinance.BadLogin.Configurator_message".
     ///   There is no failure code to match on, and a response shaped this way
@@ -297,6 +307,21 @@ final class AppStoreClient {
                 AppLog.info("authenticate request to " + attemptRequest.url!.absoluteString
                             + " headers: " + described, .auth)
 
+                // The names only. `describeRequestHeaders` lists what this
+                // object carries, and URLSession adds its jar at dispatch time,
+                // so a request can be sent with `itspod` while the log above
+                // says nothing about it -- which is exactly the gap run 506 left
+                // open, because `itspod` and `mzf_in` are what route a request
+                // to the pod that minted the 2FA challenge.
+                //
+                // The values are session credentials, so they stay out of a log
+                // anyone can share; a name answers the question they were asked
+                // for.
+                let attached = HTTPCookieStorage.shared.cookies(for: attemptRequest.url!) ?? []
+                AppLog.info("authenticate carries cookies: "
+                            + (attached.isEmpty ? "none" : attached.map { $0.name }.joined(separator: ",")),
+                            .auth)
+
                 let result = try await signedRequest(
                     attemptRequest, signer: signer, redirects: 4)
                 outcome = result
@@ -324,9 +349,18 @@ final class AppStoreClient {
             data = finished.0
             http = finished.1
 
-            // Only the first pass, only without a code, and only for the
-            // invalid-credentials code. Anything else ends the loop.
-            guard pass == 0, sentAttempt == 1, authCode == nil else { break }
+            // Only the first pass, and only for the invalid-credentials code.
+            // Anything else ends the loop.
+            //
+            // A verification code does not exempt a request from this. The
+            // reference client's branch reads "attempt is 1 and the failure is
+            // invalid credentials" with no condition on the code (v2.7.0
+            // pkg/appstore/appstore_login.go:355), so the second request --
+            // password plus the same code, counter advanced -- is how its 2FA
+            // sign-in reaches Apple at all. Excluding codes here is what pushed
+            // this branch into starting the code pass at 2 from the caller,
+            // which skips the first request of that pair entirely.
+            guard pass == 0, sentAttempt == 1 else { break }
             let probe = (try? PropertyListSerialization.propertyList(
                 from: data, options: [], format: nil)) as? [String: Any]
             guard (probe?["failureType"] as? String) == "-5000" else { break }
