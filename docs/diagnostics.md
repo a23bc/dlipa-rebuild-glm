@@ -246,7 +246,10 @@ signed request to <url> returned 204, request 461 bytes, response 0 bytes
 not following redirect: HTTP 301, no Location header, location none, response url …, request url …
 authenticate ended with HTTP 204 and 0 bytes after 3 request tries, none of which produced a body
 sign-in failed: the store answered with no content (HTTP 204); sign in again
+sign-in failed: the request was answered by Apple's front end, not by the store (HTTP 301, text/html, 162 bytes). This is not your password: a credential problem arrives as HTTP 200 with a failureType.
 ```
+
+The last line is the one that changed on 2026-11-10. A non-2xx used to paste up to 200 characters of whatever Apple sent into the message, which is right for a plist (the `failureType` and `customerMessage` are the answer) and wrong for an edge page, where the HTML repeats the status code and hides the fact that the request never reached the application. An HTML body now produces the sentence above instead.
 
 The second and third are the pair that turns a mystery into a fact. `request N bytes, response M bytes` used to be one word -- `body N bytes` -- which read as though a 204 had answered with 461 bytes of content when the number was the size of what we sent. And `not following redirect` names which of the three faults a 301 was: no `Location` at all, one that could not be resolved as https, or one that left Apple's domain. The destination is written without its query, because a `Location` is allowed to carry a token there and this log gets shared.
 
