@@ -98,6 +98,22 @@ Three front-end answers in one minute to byte-identical requests is not an appli
 
 So the surface grew the last control it needs: **overrides in force**, a typed authenticate endpoint and a typed `User-Agent`, both cleared by leaving the field empty, both named in the log on every request that uses them and printed by a dump. Each host worth trying is then one request rather than one build.
 
+## Reading, 2026-11-10 evening: what iOS actually exposes for anisette
+
+Package 503 on device, `build/dl-ipa/503.txt`. One lesson first, because it changes how to read every line: `exists=NO` with `dlopen=OK` is normal -- `FileManager` cannot see an image that lives only in the dyld shared cache. So absence has to be argued from the dlopen error text, not from `exists=`.
+
+| Image | Result |
+| --- | --- |
+| `AppleDeviceIdentity` | **absent** -- dlopen tried the private and public framework paths and both said `no such file` |
+| `CoreADI` | **absent** -- same, both paths |
+| `AppleMediaServices` | **dlopen=OK**, 419 classes, 4 matched: `AMSAnisette` (no instance methods of its own), `AMSAnisetteProvisionTask` (`performProvisioning`, `_startProvisioningWithOutputSessionID:error:`, `_createFinishProvisioningRequestWithClientData:error:`), `AMSAnisetteSyncTask`, `AMSDeviceIdentityCertificateTask` (`performDeviceIdentityRequestForAbsinthe`) |
+| `AuthKit` | **dlopen=OK**, 116 classes, 5 matched: `AKAnisetteData` with `oneTimePassword`/`machineID`/`routingInfo` and their setters, `AKAnisetteProvisioningController` with `anisetteDataWithCompletion:`, `fetchAnisetteDataAndProvisionIfNecessary:error:`, `anisetteDataForURLRequest:…`, `initForDevice:provider:`, plus `_AKAnisetteProviderProxy` with `legacyAnisetteDataForContext:DSID:withCompletion:` and `syncAnisetteForContext:withSIMData:completion:` |
+| The seven `adi_*` C names | not looked up where the image was absent; `0/7` on `AppleMediaServices` and on `AuthKit` |
+
+What that says: the **client half** of anisette is present in-process, including the data object the headers are built from and the provisioning request builders -- and the **identity half is not an image we can load**. So the only way Route 1 works is if the frameworks reach a system service that holds the device key. Nothing measured so far says whether a sandboxed app can reach it, and guessing that from the class list would be exactly the kind of inference this file has been keeping score of.
+
+Two things follow, in this order. The probe now prints the **type encoding** of every anisette/OTP/MITM/provisioning selector it finds, because a block argument of the wrong arity is a crash rather than a failed request, and the encodings are what let the call be written from evidence. And it lists the images already mapped in this process, because the service could be reachable through something already loaded. Then, and only then, a package that calls one entry point and logs what comes back -- the error text is the measurement that decides between Route 1 and Route 2.
+
 ## Reading it
 
 In order, on the failing device:

@@ -54,10 +54,23 @@ enum AnisetteProbe {
               path: "/System/Library/PrivateFrameworks/AppleMediaServices.framework/AppleMediaServices"),
         Image(label: "AuthKit",
               path: "/System/Library/PrivateFrameworks/AuthKit.framework/AuthKit"),
+        // The two that historically held the `aos_anisette` C entry points and
+        // the store's own anisette client. The identity library is not on this
+        // system, so if the proof can be made here at all, it is made in one of
+        // these two -- or in neither, which is the answer that sends us to
+        // emulating the identity service.
+        Image(label: "AOSKit",
+              path: "/System/Library/PrivateFrameworks/AOSKit.framework/AOSKit"),
+        Image(label: "StoreServices",
+              path: "/System/Library/PrivateFrameworks/StoreServices.framework/StoreServices"),
+        Image(label: "AppleIDAuthSupport",
+              path: "/System/Library/PrivateFrameworks/AppleIDAuthSupport.framework/AppleIDAuthSupport"),
     ]
 
     /// Names that appear in the identity service's C interface, as published
-    /// implementations of this problem call it.
+    /// implementations of this problem call it. A miss here is weaker evidence
+    /// than a miss on the class list: these names differ across generations of
+    /// the frameworks, and only a hit proves presence.
     private static let symbols = [
         "adi_init",
         "adi_provision",
@@ -66,9 +79,19 @@ enum AnisetteProbe {
         "adi_set_pin",
         "adi_get_random",
         "adi_set_otp",
+        "aos_anisette_getOTPAndMITMForDSID",
+        "aos_anisette_provisionWithResponseData",
+        "aos_anisette_set_provisioning_info",
+        "aos_anisette_machine_identifier",
     ]
 
-    private static let needles = ["anisette", "otp", "adi", "deviceidentity"]
+    private static let needles = ["anis", "otp", "adi", "deviceidentity", "mitm", "provision"]
+
+    /// The selectors worth their encoding: the ones that would be called to get
+    /// or provision the proof. Printing the encoding is what makes the next
+    /// package's call written from evidence rather than guessed -- a block
+    /// argument of the wrong arity is a crash, not a failed request.
+    private static let interesting = ["anisette", "otp", "mitm", "provision", "routinginfo"]
 
     static func run() {
         emit("===== ANISETTE PROBE =====")
@@ -77,7 +100,38 @@ enum AnisetteProbe {
             probe(image)
         }
 
+        mappedImages()
+
         emit("===== END ANISETTE PROBE =====")
+    }
+
+    private static let imageNeedles = ["anisette", "deviceidentity", "aoskit", "adi.framework",
+                                       "storeservices", "authkit", "appleidauth"]
+
+    /// What this process already has mapped. A path in this list is reachable
+    /// without a dlopen guess, which matters because the identity library turned
+    /// out to be on neither of the paths dyld tried -- so if the proof exists on
+    /// iOS at all, it lives in an image that is already loaded or in one of the
+    /// frameworks above.
+    private static func mappedImages() {
+        var hits: [String] = []
+        let total = _dyld_image_count()
+
+        for index in 0 ..< total {
+            guard let raw = _dyld_get_image_name(index) else { continue }
+
+            let path = String(cString: raw)
+
+            if imageNeedles.contains(where: { path.lowercased().contains($0) }) {
+                hits.append(path)
+            }
+        }
+
+        emit("[ANISETTE] mapped images matching needles=\(hits.count)/\(total)")
+
+        for path in hits.prefix(12) {
+            emit("[ANISETTE]   mapped: " + path)
+        }
     }
 
     private static func probe(_ image: Image) {
@@ -151,13 +205,24 @@ enum AnisetteProbe {
 
         defer { free(UnsafeMutableRawPointer(methods)) }
 
-        var names: [String] = []
+        var shaped: [String] = []
+        var plain: [String] = []
 
         for index in 0 ..< Int(count) {
-            names.append(NSStringFromSelector(method_getName(methods[index])))
+            let method = methods[index]
+            let name = NSStringFromSelector(method_getName(method))
+            plain.append(name)
+
+            if interesting.contains(where: { name.lowercased().contains($0) }) {
+                shaped.append(name + " :: " + String(cString: method_getTypeEncoding(method)))
+            }
         }
 
-        return names.prefix(10).joined(separator: ", ") + (count > 10 ? " … (\(count))" : "")
+        if !shaped.isEmpty {
+            return shaped.prefix(8).joined(separator: " | ") + " (matched \(shaped.count)/\(count))"
+        }
+
+        return plain.prefix(10).joined(separator: ", ") + (count > 10 ? " … (\(count))" : "")
     }
 
     /// Written to both sinks, like the framework probe: AppLog so it reaches
