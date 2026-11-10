@@ -258,6 +258,60 @@ enum DevState {
         }
     }
 
+    // MARK: - Request overrides
+
+    static let endpointKey = "com.a23bc.dliparebuild.devAuthEndpoint"
+    static let userAgentKey = "com.a23bc.dliparebuild.devUserAgent"
+
+    /// A typed replacement for the authenticate endpoint, and for the
+    /// `User-Agent` that goes with it.
+    ///
+    /// These exist because of what the wire log showed on 2026-11-09: the
+    /// request is well-formed -- the six payload fields, the urlencoded content
+    /// type, the signature over exactly those bytes, the trailing slash the
+    /// reference client normalizes to -- and `buy.itunes.apple.com` answers it
+    /// with an HTML 404, an HTML 301 **carrying no Location at all**, and an
+    /// empty 204, eleven requests in a row, from `Server: Apple`. Those are not
+    /// application answers. So the question moved from "what do we send" to
+    /// "where is it answered", and that question is asked by trying other hosts:
+    /// the pod the same account was served from on 2026-11-06
+    /// (`p47-buy.itunes.apple.com/…?Pod=47&PRH=47`), that host without the
+    /// routing query, the generic host with it.
+    ///
+    /// A typed field rather than a code change because each of those is a
+    /// one-request experiment, and a build costs ten minutes of it.
+    ///
+    /// Nothing here bypasses the checks a request still has to pass: the string
+    /// goes through `trustedEndpoint`, so it must be https on an Apple host, and
+    /// the password still only goes to hosts matching that rule.
+    static var endpointOverride: String? {
+        nonempty(UserDefaults.standard.string(forKey: DevState.endpointKey))
+    }
+
+    static var userAgentOverride: String? {
+        nonempty(UserDefaults.standard.string(forKey: DevState.userAgentKey))
+    }
+
+    /// An empty field means "no override", not "send an empty header".
+    private static func nonempty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+
+        return value
+    }
+
+    /// Sets or clears one of the two overrides, and returns what is now in force.
+    @discardableResult
+    static func setOverride(_ value: String, forKey key: String) -> String {
+        if value.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+            return "cleared"
+        }
+
+        UserDefaults.standard.set(value, forKey: key)
+
+        return value
+    }
+
     // MARK: - Writing a preference
 
     /// Puts a chosen value back into one of this app's own preferences, as raw
@@ -332,6 +386,12 @@ enum DevState {
         for line in preferences { AppLog.info("  " + line, .app) }
 
         for line in fileEntries() { AppLog.info("  caches/dlipa " + line, .app) }
+
+        // What the app will actually send, not only what it has stored: the two
+        // overrides change the request itself, so a capture that does not name
+        // them cannot be compared with another one.
+        AppLog.info("overrides: endpoint " + (DevState.endpointOverride ?? "from the bag")
+                    + ", user-agent " + (DevState.userAgentOverride ?? "built-in"), .app)
 
         AppLog.info("===== DEV STATE END =====", .app)
     }

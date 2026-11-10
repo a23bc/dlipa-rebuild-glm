@@ -239,8 +239,10 @@ final class AppStoreClient {
             authenticationPod = nil
         }
 
-        // A missing trailing slash gets a 204 and nothing else happens.
-        let url = endpoint.hasSuffix("/") ? endpoint : endpoint + "/"
+        // Where this request goes. The reference client normalizes the bag's URL
+        // to a trailing slash because the bare path is refused, and a developer
+        // override replaces the whole thing -- see authenticateURL below.
+        let url = Self.authenticateURL(endpoint)
         AppLog.info("authenticating against " + url + " attempt " + String(attempt)
                     + (authCode == nil ? " (no 2FA)" : " (with 2FA)"), .auth)
 
@@ -284,7 +286,8 @@ final class AppStoreClient {
                 attemptRequest.httpMethod = "POST"
                 attemptRequest.setValue("application/x-www-form-urlencoded",
                                         forHTTPHeaderField: "Content-Type")
-                attemptRequest.setValue(Self.bagUserAgent, forHTTPHeaderField: "User-Agent")
+                attemptRequest.setValue(Self.authenticateUserAgent,
+                                        forHTTPHeaderField: "User-Agent")
                 attemptRequest.httpBody = body
 
                 // What actually goes out, header by header. Apple routes a sign-in to
@@ -941,57 +944,6 @@ final class AppStoreClient {
         let headers: [AnyHashable: Any] = request.allHTTPHeaderFields ?? [:]
 
         return headers.isEmpty ? "none" : redactedHeaders(headers, cap: 24)
-    }
-
-    /// Every header, name and value, sorted -- the un-redacted sibling of
-    /// `redactedHeaders`, reachable only while the developer-state row is on.
-    private static func describedHeaders(_ headers: [AnyHashable: Any]) -> String {
-        headers.keys.map { key in
-            String(describing: key) + "=" + String(describing: headers[key] ?? "")
-        }.sorted().joined(separator: ", ")
-    }
-
-    /// A body for the log: text where it is text, a hex prefix where it is not,
-    /// newlines folded because the window is line-based, and the whole thing
-    /// capped so a 46 KB plist cannot push the interesting lines out of view.
-    private static func bytesForLog(_ input: Data) -> String {
-        guard !input.isEmpty else { return "none" }
-
-        let head = Data(input.prefix(4096))
-
-        if let text = String(data: head, encoding: .utf8) {
-            return text.replacingOccurrences(of: "\n", with: " ")
-                + (input.count > 4096 ? " … (" + String(input.count) + " bytes)" : "")
-        }
-
-        return head.prefix(64).map { String(format: "%02x", $0) }.joined()
-            + " (" + String(input.count) + " bytes)"
-    }
-
-    /// The whole exchange, headers and bodies included, while the developer
-    /// state row is on. The status line above says what came back; this says
-    /// what was carried. A 301 whose Location is absent, whose Location points
-    /// somewhere unexpected, and whose Location this client refused are three
-    /// different faults that the status line cannot separate -- which is the
-    /// reason the sign-in investigation has been going in circles.
-    ///
-    /// Clear text on purpose: this is a development build, and the state on the
-    /// wire is the thing under investigation. `docs/probes/developer-state.md`
-    /// says what to retire before any release is prepared.
-    private static func logWireExchange(_ request: URLRequest, body: Data,
-                                        reply: HTTPURLResponse, replyBody: Data) {
-        guard DevState.enabled else { return }
-
-        let sent: [AnyHashable: Any] = request.allHTTPHeaderFields ?? [:]
-
-        AppLog.info("wire out " + (request.httpMethod ?? "?")
-                    + " " + (request.url?.absoluteString ?? "?")
-                    + " | " + Self.describedHeaders(sent)
-                    + " | body " + Self.bytesForLog(body), .network)
-        AppLog.info("wire in " + String(reply.statusCode)
-                    + " " + (reply.url?.absoluteString ?? "?")
-                    + " | " + Self.describedHeaders(reply.allHeaderFields)
-                    + " | body " + Self.bytesForLog(replyBody), .network)
     }
 
     /// Header names with the values of anything carrying a credential replaced
@@ -2346,6 +2298,41 @@ final class AppStoreClient {
     /// How many times a single authentication request is sent. ipatool uses
     /// three, with the delays below between them.
     private static let authenticationRequestAttempts = 3
+
+    /// Where a sign-in is posted.
+    ///
+    /// The bag's URL, normalized the way the reference client normalizes it --
+    /// the bare path without the trailing slash is refused, which is a fact this
+    /// app learned the hard way -- unless the developer surface holds an
+    /// override. The override exists because the answers that arrived on
+    /// 2026-11-09 were not application answers at all: an HTML 404, an HTML 301
+    /// with no `Location`, and an empty 204, eleven requests in a row, all from
+    /// `Server: Apple`. That moves the question from what we send to where it is
+    /// answered, and the only way to ask that is to try the hosts the account has
+    /// actually been served from.
+    ///
+    /// A helper rather than a test inside `authenticate`, which sits one decision
+    /// below the complexity limit that already turned the lint job red once.
+    private static func authenticateURL(_ endpoint: String) -> String {
+        guard let override = DevState.endpointOverride else {
+            return endpoint.hasSuffix("/") ? endpoint : endpoint + "/"
+        }
+
+        AppLog.warn("authenticate endpoint overridden for development: " + override, .auth)
+
+        return override.hasSuffix("/") ? override : override + "/"
+    }
+
+    /// The `User-Agent` on authenticated store requests.
+    ///
+    /// Ours has always been a day newer than the reference client's literal
+    /// (`Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c)`), and an edge that
+    /// is deciding whether to hand this path to the application is exactly the
+    /// thing that might read it. The override makes that a test rather than a
+    /// theory; it costs a rebuild for the field, not for the value.
+    private static var authenticateUserAgent: String {
+        DevState.userAgentOverride ?? bagUserAgent
+    }
 
     /// 10s then 20s, capped at 30s the way ipatool caps it.
     private static let authenticationRetryDelays: [UInt64] = [10, 20]

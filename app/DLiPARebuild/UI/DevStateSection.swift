@@ -17,6 +17,8 @@ struct DevStateSection: View {
     @State private var email = ""
     @State private var secret = ""
     @State private var guid = ""
+    @State private var endpointOverride = ""
+    @State private var userAgentOverride = ""
 
     var body: some View {
         Section {
@@ -49,6 +51,8 @@ struct DevStateSection: View {
             passwordRow
 
             identityRow
+
+            overridesRow
 
             if listed {
                 if items.isEmpty {
@@ -132,6 +136,47 @@ struct DevStateSection: View {
                 }
             }
         }
+    }
+
+    /// The two fields that turn "where is this answered" into something that can
+    /// be tried in one launch instead of one build per guess.
+    ///
+    /// An empty value clears the override, so the built-in behaviour is always
+    /// one tap away and a capture never has to wonder which shape it was taken
+    /// in: whatever is in force is printed on the row and named in the log on
+    /// every request that uses it.
+    private var overridesRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("overrides in force: " + overrideSummary)
+                .font(.system(.caption2, design: .monospaced))
+
+            HStack {
+                TextField("authenticate endpoint", text: $endpointOverride)
+                    .font(.system(.caption2, design: .monospaced))
+                Button("Set") {
+                    let value = DevState.setOverride(endpointOverride, forKey: DevState.endpointKey)
+
+                    AppLog.warn("dev state: authenticate endpoint is now " + value, .auth)
+                }
+            }
+
+            HStack {
+                TextField("user agent", text: $userAgentOverride)
+                    .font(.system(.caption2, design: .monospaced))
+                Button("Set") {
+                    let value = DevState.setOverride(userAgentOverride, forKey: DevState.userAgentKey)
+
+                    AppLog.warn("dev state: authenticate user agent is now " + value, .auth)
+                }
+            }
+        }
+    }
+
+    private var overrideSummary: String {
+        let endpoint = DevState.endpointOverride ?? "from the bag"
+        let agent = DevState.userAgentOverride ?? "built-in"
+
+        return "endpoint " + endpoint + ", user-agent " + agent
     }
 
     /// One item, its stored value, and the two controls that make it a probe
