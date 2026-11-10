@@ -53,18 +53,19 @@ the instrument, and its header and byte counts as the answer.
 
 ## What the linux run named
 
-The three minutes are not Apple's arithmetic. Both arms below ran the same tree
-on the same network with the same asset cache, and the only difference is
-whether `Machine.invoke` recognises that the guest parked:
+The three minutes are not Apple's arithmetic. Both arms ran the same tree on the
+same network with the same asset cache, one commit apart, and the only
+difference is whether `Machine.invoke` recognises that the guest parked:
 
 | arm | `initializeDaemon` | `_CFRunLoopRun` entries | proof end to end | headers | state |
 | --- | --- | --- | --- | --- | --- |
-| before | 3m0.001s | 39,632,738 | 3m6.187s | 10 | 954 B |
-| after | 41ms | not in the top symbols | 5.506s | 10 | 970 B |
+| before | 3m0.001s | 39,675,417 | 3m5.712s | 10 | 954 B |
+| after | 42ms | not in the top symbols | 4.838s | 10 | 954 B |
 
-The output is the same in both arms, so this is a cost removed rather than a
+The output is byte-for-byte the same class of answer in both arms -- ten
+headers, the same state length -- so this is a cost removed rather than a
 behaviour changed, and it brings the proof back to the reference client's warm
-figure (6s) instead of thirty times it.
+figure (6s to 7s) instead of thirty times it.
 
 adid installs its XPC event handler and then calls `CFRunLoopRun`, which is the
 guest saying "park me". Our shim does stop the engine, but Unicorn reports a
@@ -103,15 +104,15 @@ Both are settled without the blocked URL: `gsa.apple.com` itself serves Apple
 Root CA as the third element of its chain, so appending that certificate to the
 bundle makes the same request verify (`verify=0`, HTTP 401 on the un-signed
 lookup) and the proof then completes. `SSL_CERT_FILE` was pointed at that
-bundle for the runs above; nothing in the repository depends on it. On the
-phone the condition does not arise at all, because iOS ships the Apple roots,
-so `installAppleRoot` is never reached.
+bundle for the runs above; nothing in the repository depends on it. The
+reference client on the phone never meets this, because iOS ships the Apple
+roots and `installAppleRoot` is only reached on a verification failure.
 
 Neither condition explains a device failure, and neither is evidence about the
 `authenticate` refusals. They are reasons a linux result here can come back as
 `download Apple root: HTTP 403` while meaning nothing about the emulator.
 
-## What is still owed after a green run
+## What is still owed
 
 * **Timing on the phone.** The device runs the no-JIT TCI build (iOS refuses
   executable anonymous memory for an un-jailbroken app), so its emulator cost
