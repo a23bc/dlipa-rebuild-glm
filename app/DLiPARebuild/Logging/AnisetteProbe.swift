@@ -91,7 +91,8 @@ enum AnisetteProbe {
     /// or provision the proof. Printing the encoding is what makes the next
     /// package's call written from evidence rather than guessed -- a block
     /// argument of the wrong arity is a crash, not a failed request.
-    private static let interesting = ["anisette", "otp", "mitm", "provision", "routinginfo"]
+    private static let interesting = ["anisette", "otp", "mitm", "provision", "routinginfo",
+                                      "password", "machineid", "targetdevice", "provider"]
 
     static func run() {
         emit("===== ANISETTE PROBE =====")

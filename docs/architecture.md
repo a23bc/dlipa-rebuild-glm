@@ -152,13 +152,64 @@ The header is required; the open question is where the two values come from. The
 
 **Route 1 -- the device's own identity framework.** iOS ships `AppleDeviceIdentity`/`CoreADI`, and `AppleMediaServices` carries the anisette classes. If this process can load them and reach an entry point that returns the proof, the work is: provision (two HTTP calls to `gsa.apple.com`), request the pair, persist the state, attach the headers -- a few hundred lines, mostly Swift, no new emulated code, and no extra Apple binaries. What has to be measured first, and cannot be measured from the macOS side, is whether the sandbox lets those images load at all and whether the framework's service answers to a third-party app. The Diagnostics button *Probe the anisette entry points* prints exactly that: `dlopen=`, the C entry points found by `dlsym`, the classes whose names mention anisette/OTP/ADI and the selectors each one implements.
 
-**Route 2 -- emulate the identity service**, the way the store framework is already emulated. The reference client took this route, and its scale is now measured rather than guessed: the adaptation is roughly **1,900 lines across four files**, of which `modern_adi.go` alone is 662, plus 1,274 lines of platform shims. It opens **four concurrent emulated runtimes** -- the commerce image with pinned entry points at `+0x1b4400`, `+0x1d5124` and `+0x1dab04`; `adid` at base `0x200000000000`; `fairplayd` at `0x600000000000`; and `FairPlayIOKit` as a *kernel* image at `0x700000000510` with its own `kernelBase` -- and it stages **three more Apple binaries** from the same restore image: `adid` 9,797,952 bytes, `fairplayd` 37,689,264, `FairPlayIOKit` 2,132,320. That is 49.6 MB on top of the 212 MB already downloaded, each with a pinned digest.
+**Route 2 -- emulate the identity service**, the way the store framework is already emulated. The reference client took this route, and the size of it is measured, not estimated -- an earlier paragraph here said "roughly 1,900 lines across four files", which was a guess read off two file names and is wrong by more than a factor of two:
+
+| Commit (2026-11-08) | Files | Added, excluding tests |
+| --- | --- | --- |
+| `fix: restore app store authentication locally` | 40 | **3,834** |
+| `feat: discover storefronts dynamically` | 22 | 327 |
+| `fix: handle authentication server dialogs` | 4 | 132 |
+| `fix: support percent-encoded url component queries` | 2 | 5 |
+| `fix: use current store request user agents` | 4 | 2 |
+
+The largest single pieces are `modern_adi.go` at 662 lines and the platform shims at 1,274 added lines; `storeauth` itself is about 650. It opens **four concurrent emulated runtimes** -- the commerce image with pinned entry points at `+0x1b4400`, `+0x1d5124` and `+0x1dab04`; `adid` at base `0x200000000000`; `fairplayd` at `0x600000000000`; and `FairPlayIOKit` as a *kernel* image at `0x700000000510` with its own `kernelBase` -- and it stages **three more Apple binaries** from the same restore image: `adid` 9,797,952 bytes, `fairplayd` 37,689,264, `FairPlayIOKit` 2,132,320. That is 49.6 MB on top of the 212 MB already downloaded, each with a pinned digest.
 
 Route 2 is the only option if Route 1 measures negative, and it carries a second cost this project has already argued about: four concurrent guests on a phone, where one runtime open measures 1.2 s, a generation step 32 s of full-core work, and the process reaches about 560 MB RSS today with a single runtime. If it comes to this, the memory and concurrency of the runtime pool get measured before the emulation is written, not after.
+
+What makes Route 2 survivable rather than merely large: the reference client builds and runs on Windows as well, with its own Unicorn runtime fetched on demand (`internal/sap/unicorn/library_windows.go` and its `library_prepare_windows_*` siblings). So the same flow -- machine provisioning against `gsa.apple.com` and an OTP request, which involves **no Apple ID and no password at all** -- can be executed on this PC as a reference oracle: a known-correct header pair per identity, reproducible in seconds, against which the ported code can be tested before anything reaches the device. Without that, every question about the emulation costs a build and an install; with it, most of them cost a command.
 
 **Common to both routes.** Whatever produces the pair, the rest does not depend on the answer: the machine-provisioning exchange with `gsa.apple.com` (`startMachineProvisioning` → `spim` → `finishMachineProvisioning` with `cpim` → `ptm`, `tk` and `X-Apple-I-MD-RINFO`), the plist envelope of an empty `Header` dict and a `Request` dict, the `akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0` user agent with the `<MacBookPro13,3> …` client-info header, the state that has to survive restarts, and the header set itself -- `X-Apple-I-MD`, `X-Apple-I-MD-M`, `X-Apple-I-MD-RINFO`, `X-Apple-I-MD-LU`, `X-Apple-I-SRL-NO`, `X-Apple-I-Client-Time`, `X-Apple-I-TimeZone`, `X-Apple-Locale`, `X-Mme-Device-Id`, `X-MMe-Client-Info` -- with the first two additionally mapped onto `X-Apple-AMD` / `X-Apple-AMD-M` for store requests.
 
 And one requirement both routes inherit from the failure that produced this whole investigation: the identity state is per device, so it belongs in the keychain beside the password, not in the preferences file that an uninstall takes with it. The identifier that goes into the provisioning exchange is the device's; getting it wrong does not fail loudly, it yields a proof Apple refuses -- which is exactly the class of failure that cost four days here.
+
+## The failure was never ours, and that is now on the record elsewhere
+
+Two independent confirmations, found after the readings in this file were written.
+
+The first is the version we depend on. `sapbridge/go.mod` requires `github.com/majd/ipatool/v2 v2.7.0` -- the release whose sign-in broke, and the same release the reference client fixed with the 3,834-line adaptation above. Our bridge is a trimmed copy of that lineage, so it inherited the breakage rather than causing it.
+
+The second is upstream's own issue tracker, which reported our exact symptom on our exact date. Issue #642, opened 2026-11-06 against ipatool 2.7.0:
+
+```
+sign-in request failed: authentication request failed after 3 attempts (HTTP 204, 404, 204):
+apple returned no usable authentication response; try again later or from another network:
+unexpected response from Apple (HTTP 204): empty or non-plist authentication response
+(body length=0, content type="")
+```
+
+`HTTP 204, 404, 204` in one session, empty body, no `Location` -- the same rotating edge answers that package 497 captured here and that the unsigned probe reproduced eighteen times on two networks. A second issue, #650 (2026-11-09), records the other half of the same change: the restore-image range requests began answering HTTP 403 to Go's default `User-Agent`, fixed by sending a real one -- which is why the User-Agent override on the diagnostics tab was worth keeping.
+
+Two conclusions follow, and they are the reason the remaining work is a port rather than a hunt. The endpoint requirement changed server-side, so no amount of waiting, reinstalling, identity resetting, or reverting our binaries restores the old behaviour; and the fix is client-side emulation of the identity service, which the reference client has already written and shipped.
+
+## Reading, 2026-11-10: route 1 measured negative on the device
+
+Package 505 on the failing device, and the shape of the answer is worth writing down because it is not the shape people expect from a "framework not found":
+
+| Image | mapped | dlopen | what is in it |
+| --- | --- | --- | --- |
+| `AppleDeviceIdentity` | NO | **FAIL, no such file at both dyld paths** | -- |
+| `CoreADI` | NO | **FAIL, same** | -- |
+| `AppleMediaServices` | **YES** (already in the process) | OK | 419 classes; `AMSAnisetteProvisionTask` with `performProvisioning :: @16@0:8`, `_startProvisioningWithOutputSessionID:error: :: @32@0:8^I16^@24` |
+| `AuthKit` | **YES** | OK | `AKAnisetteData` with `routingInfo :: Q16@0:8`; `AKAnisetteProvisioningController` with `anisetteDataWithCompletion: :: v24@0:8@?16` and `fetchAnisetteDataAndProvisionIfNecessary:error: :: @28@0:8B16^@20` |
+| `AOSKit` | NO | OK | **3 classes, none matching** |
+| `StoreServices` | NO | OK | 385 classes, **0 matching** |
+| `AppleIDAuthSupport` | YES | OK | 2 classes, 0 matching |
+| every `adi_*` / `aos_anisette_*` C name | -- | -- | **0/11 in all four loadable images** |
+
+The classes that do exist are the *client* half: `AKAnisetteProvisioningClientInterface` and `AKAnisetteProvisioningDaemonInterface` both report `methods=none`, because an XPC protocol stub has no implementations -- they describe a daemon, they do not run one. So the proof would have to come from a system service holding the device key, and the library that computes it is not present at any path. That closes route 1 in practice.
+
+One measurement was deliberately not taken. The obvious next probe was to open an `NSXPCConnection` to the candidate services and report what came back -- but a key-value send to an unknown remote can raise an exception *on the remote*, and NSXPC delivers that back into the calling process, where Swift cannot catch it. A crash is not a price worth paying for one log line, and the two facts above (no identity library, stub interfaces only) already decide the route. If the port ever needs the daemon question re-asked, it has to be asked from a place that can survive a remote throw.
+
 
 ---
 
