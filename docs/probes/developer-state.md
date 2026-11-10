@@ -25,7 +25,8 @@ With the Diagnostics row **Developer state** on, and only then:
 * **Dump persisted state to the log** writes one block covering all four stores: every keychain item this app can reach in *both* shapes, every cookie in the shared jar with its value, every `com.a23bc.dliparebuild*` preference with its value, and the cache files with their sizes;
 * **List keychain items** turns the same rows into controls: `Set` overwrites (or creates) a value, `Delete` removes an item, and both report the OSStatus;
 * **write the password slot** creates the keychain row a successful sign-in would create, through the same call and with the same accessibility attribute;
-* **hardware identity stored now** prints the six bytes under `hardwareIdentity` and writes chosen hex back into that key, refused unless it is a whole number of bytes.
+* **hardware identity stored now** prints the six bytes under `hardwareIdentity` and writes chosen hex back into that key, refused unless it is a whole number of bytes;
+* **overrides in force** sets the authenticate endpoint and the `User-Agent` from typed text -- the request itself, not only what is stored -- and clearing a field restores the built-in value.
 
 ## What reading the code already settled
 
@@ -54,6 +55,20 @@ Why that matters more than it looks: the guid is a **request field**, not an int
 
 What is not measured is whether a fresh guid is itself refused, or whether it only looks that way because the pod was never discovered. The first test is to write the old value back and sign in, which is what *hardware identity stored now / Set* is for: the write goes through this process rather than a file edit, because `cfprefsd` can answer a hand-edited preferences file from its cache, and reinstalling -- the other way to change it -- replaces the value with a new one.
 
+## Result, 2026-11-09: the identity is not the variable
+
+The test ran, and it came back negative in the useful direction. Package 497, `build/dl-ipa/497.txt`: the bag was fetched with `?guid=34EEF9D75FC4`, the signer reported `hardware 34EEF9D75FC4`, and every authenticate carried that guid in its body -- the identity from the run that signed in on 2026-11-06. It still failed, and the wire log said why in a way no status line could:
+
+| | |
+| --- | --- |
+| request | `POST https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate/` -- `appleId`, `attempt=1`, `guid`, `password`, `rmp=0`, `why=signIn`, Content-Type urlencoded, the Configurator UA, `X-Apple-ActionSignature` over exactly those 461 bytes, and no cookie. Every field the reference client sends, and nothing it does not. |
+| answers, 11 requests | HTTP 204 with `Server: Apple` and no body at all; HTTP 404 `text/html` "Not Found"; HTTP **301 `text/html` "Moved Permanently" with no `Location` header**; no `Retry-After` in any of them. |
+| what that rules out | a credential or payload fault -- Apple says those with HTTP 200 and a `failureType`, which is what 2034/2002/2083/9610 look like; a signature fault, which is a 401 or 403 with a body; the hardware identity; a missing trailing slash; the cookie jar; and the account (the QQ address is an email, not a phone number, so the storefront header the reference client adds for telephone IDs does not apply here). |
+
+Three front-end answers in one minute to byte-identical requests is not an application refusing a credential. It is the path to the application. And the case that upstream documents in one line -- *"the bare path can return unusable responses, including a 301 without Location"* -- is exactly what arrived, which means there is no redirect to follow and therefore no way to learn the pod from this exchange. The account was served from `p47-buy.itunes.apple.com/…?Pod=47&PRH=47` on 2026-11-06; today nothing tells us that host exists.
+
+So the surface grew the last control it needs: **overrides in force**, a typed authenticate endpoint and a typed `User-Agent`, both cleared by leaving the field empty, both named in the log on every request that uses them and printed by a dump. Each host worth trying is then one request rather than one build.
+
 ## Reading it
 
 In order, on the failing device:
@@ -64,7 +79,16 @@ In order, on the failing device:
 4. dump again, then **Share log**;
 5. if the dumps and the `wire out` lines agree and the answer is still a bare 301 or 204, write the identity from the working capture back into `hardwareIdentity` (`34EEF9D75FC4` at the time of writing), restart the app, and sign in once more.
 
-Step 5 is the one that can end the investigation: it changes exactly one persisted field, the one that reaches the request body, and leaves the binary alone.
+Step 5 is the one that can end the investigation: it changes exactly one persisted field, the one that reaches the request body, and leaves the binary alone. **It ran on 2026-11-09 and the identity was not the variable** -- see the result section below.
+
+What replaced it, from the same capture: try the hosts, not the fields. With the endpoint override set, in this order, one sign-in each --
+
+1. `https://p47-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate/?Pod=47&PRH=47` (where this account was served from on 2026-11-06);
+2. `https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate/?Pod=47&PRH=47` (generic host, routing query added -- upstream keeps a query if the bag carries one, and this bag carries none);
+3. `https://p47-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate/` (pod host without the query, to separate host from hint);
+4. the override left clear with the `User-Agent` set to the reference client's literal, `Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6`.
+
+A 200 with a plist at any of them says where the endpoint lives now, and the fix is to route there rather than to discover it. Four failures with the same three HTML answers says the request never reaches the application from this device and this network at all, which makes the remaining differences -- login connections sharing a pool with other store traffic, which the reference client refuses to let happen, and HTTP/2 coalescing across `*-buy` hosts -- the things to attack, in that order.
 
 The first dump is the one that matters and it is easy to skip: after a sign-in attempt the interesting stores have been written by the attempt.
 
@@ -92,7 +116,7 @@ The exposure is real and bounded: the device is the person's own, the log goes w
 This comes out, entirely, before the first build that could plausibly be handed to somebody else. Concretely, all of:
 
 1. `DevState.swift` and `DevStateSection.swift` deleted, not disabled;
-2. the `logWireExchange` call and its helpers out of `AppStoreClient`;
+2. the `logWireExchange` call in `AppStoreClient.signedRequest` and `AppStoreClient+WireLog.swift`, which holds the three helpers, deleted; the two override reads in `authenticateURL` and `authenticateUserAgent` back to the plain values;
 3. the Diagnostics row and the `Developer state` section of `docs/diagnostics.md` gone, so a switch nobody can audit does not sit on the tab;
 4. the four stores migrated to where they belong — which is the standing plan this note is filed alongside: tokens, the cookie jar, the device identity and the blob into the keychain, and the log redaction rules applied to whatever remains.
 

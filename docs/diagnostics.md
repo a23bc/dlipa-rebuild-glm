@@ -169,6 +169,8 @@ preferences: 8 key(s)
 
 *Delete every cookie* clears the shared jar — the one store this app does not own and cannot show in a preference row.
 
+**Overrides in force** reaches past the stores and changes the request itself: a typed authenticate endpoint and a typed `User-Agent`, each restored to the built-in value by setting it with an empty field. This exists because of what the wire log showed — a well-formed request answered by an HTML 404, an empty 204 and a 301 that carries **no `Location` at all**. With no redirect to follow there is nothing to discover the pod from, so the remaining questions are about where the request lands, and every host is then one sign-in rather than one build. Whatever is in force is printed on the row, named in the log on the request that uses it (`authenticate endpoint overridden for development: …`), and included in a dump, so a capture always says which shape produced it.
+
 Two more controls exist for the case where the row to be changed does not exist yet. Turning the switch on logs a warning first — *developer state on: the log now carries credentials in clear text, including the sign-in password* — because what it unlocks is a log that holds the Apple ID password, and the share button sits two rows below it. And *write the password slot* creates the keychain item a successful sign-in would create, through the same call and with the same accessibility attribute: without it, the 2034 refresh path cannot be driven at all while sign-in itself is broken, since a sign-in is the only thing that ever writes that row.
 
 ### An upgrade no longer discards the blobs
