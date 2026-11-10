@@ -100,43 +100,27 @@ enum AnisetteProbe {
             probe(image)
         }
 
-        mappedImages()
-
         emit("===== END ANISETTE PROBE =====")
     }
 
-    private static let imageNeedles = ["anisette", "deviceidentity", "aoskit", "adi.framework",
-                                       "storeservices", "authkit", "appleidauth"]
+    /// Whether the image is already in this process, asked without loading it:
+    /// `RTLD_NOLOAD` returns a handle only for something dyld has already taken
+    /// in. This is the question that matters for the missing identity library --
+    /// if the anisette code is on this system at all, it is either already
+    /// mapped by the app or in one of the frameworks below, and a load that
+    /// succeeds only now would tell us nothing about either.
+    private static func isMapped(_ path: String) -> Bool {
+        guard let handle = dlopen(path, RTLD_NOW | RTLD_NOLOAD) else { return false }
 
-    /// What this process already has mapped. A path in this list is reachable
-    /// without a dlopen guess, which matters because the identity library turned
-    /// out to be on neither of the paths dyld tried -- so if the proof exists on
-    /// iOS at all, it lives in an image that is already loaded or in one of the
-    /// frameworks above.
-    private static func mappedImages() {
-        var hits: [String] = []
-        let total = _dyld_image_count()
+        dlclose(handle)
 
-        for index in 0 ..< total {
-            guard let raw = _dyld_get_image_name(index) else { continue }
-
-            let path = String(cString: raw)
-
-            if imageNeedles.contains(where: { path.lowercased().contains($0) }) {
-                hits.append(path)
-            }
-        }
-
-        emit("[ANISETTE] mapped images matching needles=\(hits.count)/\(total)")
-
-        for path in hits.prefix(12) {
-            emit("[ANISETTE]   mapped: " + path)
-        }
+        return true
     }
 
     private static func probe(_ image: Image) {
         let exists = FileManager.default.fileExists(atPath: image.path)
         var line = "[ANISETTE] \(image.label) | exists=\(exists ? "YES" : "NO")"
+            + " mapped=\(isMapped(image.path) ? "YES" : "NO")"
         var handle: UnsafeMutableRawPointer?
 
         if let loaded = dlopen(image.path, RTLD_NOW) {
@@ -214,7 +198,18 @@ enum AnisetteProbe {
             plain.append(name)
 
             if interesting.contains(where: { name.lowercased().contains($0) }) {
-                shaped.append(name + " :: " + String(cString: method_getTypeEncoding(method)))
+                // The encoding is what the next package's call is written from,
+                // so it is printed even when it is missing -- an empty field
+                // would otherwise read as "no arguments". Assembled from locals:
+                // a `map` on an optional inside a `+` chain inside a closure is
+                // the shape this file has already been caught out by twice.
+                var encoding = "none"
+
+                if let raw = method_getTypeEncoding(method) {
+                    encoding = String(cString: raw)
+                }
+
+                shaped.append(name + " :: " + encoding)
             }
         }
 
