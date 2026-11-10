@@ -19,6 +19,7 @@ struct DevStateSection: View {
     @State private var guid = ""
     @State private var endpointOverride = ""
     @State private var userAgentOverride = ""
+    @State private var authAttemptsOverride = ""
 
     var body: some View {
         Section {
@@ -138,13 +139,19 @@ struct DevStateSection: View {
         }
     }
 
-    /// The two fields that turn "where is this answered" into something that can
-    /// be tried in one launch instead of one build per guess.
+    /// The fields that turn "where is this answered" into something that can be
+    /// tried in one launch instead of one build per guess.
     ///
     /// An empty value clears the override, so the built-in behaviour is always
     /// one tap away and a capture never has to wonder which shape it was taken
     /// in: whatever is in force is printed on the row and named in the log on
     /// every request that uses it.
+    ///
+    /// The attempts field is the third one because the question moved again:
+    /// after hosts, headers, content types, the action signature and cookies
+    /// were all measured off a machine (docs/probes/auth-attempts.md), what is
+    /// left unknown is how many tries a real account spends in front-end noise
+    /// before a pod answers it -- and that is only countable on a device.
     private var overridesRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("overrides in force: " + overrideSummary)
@@ -169,6 +176,22 @@ struct DevStateSection: View {
                     AppLog.warn("dev state: authenticate user agent is now " + value, .auth)
                 }
             }
+
+            HStack {
+                TextField("authentication attempts", text: $authAttemptsOverride)
+                    .font(.system(.caption2, design: .monospaced))
+                Button("Set") {
+                    let stored = DevState.setOverride(authAttemptsOverride, forKey: DevState.authAttemptsKey)
+                    let inForce = AppStoreClient.authenticationRequestAttempts
+
+                    // Both numbers, because they can disagree: anything outside
+                    // one to twenty is refused and the default stays in force,
+                    // and a log line naming only the typed value would read as
+                    // if the probe had run with it.
+                    AppLog.warn("dev state: authentication attempts stored " + stored
+                                + ", in force " + String(inForce), .auth)
+                }
+            }
         }
     }
 
@@ -177,6 +200,7 @@ struct DevStateSection: View {
         let agent = DevState.userAgentOverride ?? "built-in"
 
         return "endpoint " + endpoint + ", user-agent " + agent
+            + ", attempts " + String(AppStoreClient.authenticationRequestAttempts)
     }
 
     /// One item, its stored value, and the two controls that make it a probe

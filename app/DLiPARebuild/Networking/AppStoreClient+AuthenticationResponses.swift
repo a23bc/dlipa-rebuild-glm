@@ -11,12 +11,20 @@ import Foundation
 /// the measurements beside each other makes that visible instead of scattering
 /// it through 2,400 lines.
 extension AppStoreClient {
-    /// How many times a single authentication request is sent. ipatool uses
-    /// three, with the delays below between them.
-    static let authenticationRequestAttempts = 3
+    /// How many times a single authentication request is sent. Three is what
+    /// ipatool does, with the delays below between the tries; a probe can ask
+    /// for more, and the number it is asking for is the one this file cannot
+    /// produce from a machine: how many tries a real account needs before a
+    /// Store pod answers as an application rather than as front-end noise.
+    static var authenticationRequestAttempts: Int {
+        DevState.authAttemptsOverride ?? 3
+    }
 
-    /// 10s then 20s, capped at 30s the way ipatool caps it.
-    static let authenticationRetryDelays: [UInt64] = [10, 20]
+    /// 10s, then 20s, then 30s -- the doubling the reference client does,
+    /// capped at the 30s it caps at. The list is indexed with a clamp, so a
+    /// probe asking for twelve tries waits thirty seconds between the later
+    /// ones instead of running off the end.
+    static let authenticationRetryDelays: [UInt64] = [10, 20, 30]
 
     /// Statuses a Store pod returns when it is not ready to answer. Treating
     /// these as final is what surfaced a 404 to the user on the 2FA attempt.

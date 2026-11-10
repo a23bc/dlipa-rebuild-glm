@@ -262,6 +262,7 @@ enum DevState {
 
     static let endpointKey = "com.a23bc.dliparebuild.devAuthEndpoint"
     static let userAgentKey = "com.a23bc.dliparebuild.devUserAgent"
+    static let authAttemptsKey = "com.a23bc.dliparebuild.devAuthAttempts"
 
     /// A typed replacement for the authenticate endpoint, and for the
     /// `User-Agent` that goes with it.
@@ -290,6 +291,33 @@ enum DevState {
 
     static var userAgentOverride: String? {
         nonempty(UserDefaults.standard.string(forKey: DevState.userAgentKey))
+    }
+
+    /// How many times one authentication request is sent, when a measurement
+    /// asks for more than the shipping default.
+    ///
+    /// The default stays what the reference client does -- three, with 10s then
+    /// 20s between them -- because that is the only comparison that means
+    /// anything when the probe is read. What the probe is for is the size of
+    /// the instability. On 2026-11-11, from one machine, about ninety signed
+    /// and well-formed posts to the authentication path answered as an
+    /// application exactly once, and those posts varied every candidate at
+    /// once: three hosts, both content types, with and without the action
+    /// signature, the test hardware identity and the device's own, with and
+    /// without cookies -- and no response carried a `Set-Cookie` at all, so
+    /// there was no session to be missing. The account in those posts did not
+    /// exist, which is precisely why the same measurement has to be taken
+    /// against one that does: three tries against a floor like that is not a
+    /// policy, it is a coin flip, and a sign-in that gives up inside three
+    /// tries cannot say whether a fourth would have been answered.
+    ///
+    /// Capped at twenty so a mistyped value cannot turn one sign-in into
+    /// several minutes of traffic to Apple.
+    static var authAttemptsOverride: Int? {
+        guard let raw = UserDefaults.standard.string(forKey: DevState.authAttemptsKey),
+              let value = Int(raw), value > 0, value <= 20 else { return nil }
+
+        return value
     }
 
     /// An empty field means "no override", not "send an empty header".
