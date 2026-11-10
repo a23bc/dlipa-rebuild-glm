@@ -138,12 +138,13 @@ type storeAgentEntries struct {
 }
 
 type imageSpec struct {
-	name      string
-	data      []byte
-	base      uint64
-	prelinked map[uint64]string
-	slots     map[uint64]string
-	functions map[uint64]string
+	name       string
+	data       []byte
+	base       uint64
+	prelinked  map[uint64]string
+	slots      map[uint64]string
+	functions  map[uint64]string
+	kernelBase uint64
 }
 
 type runtimeOptions struct {
@@ -352,6 +353,16 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 
 		if err != nil {
 			return nil, nil, fmt.Errorf("relocate SAP guest image: %w", err)
+		}
+
+		// The kernel client image is mapped at its prelinked address with the
+		// original page offset kept, so a second base is needed to relocate its
+		// kernel-cache pointers without breaking the ADRP relationships inside
+		// its own data segments.
+		if spec.kernelBase != 0 {
+			if err := image.RelocateKernelCachePointers(spec.base, spec.kernelBase, resolver); err != nil {
+				return nil, nil, fmt.Errorf("relocate %s kernel-cache pointers: %w", spec.name, err)
+			}
 		}
 
 		if err := image.Load(engine); err != nil {
