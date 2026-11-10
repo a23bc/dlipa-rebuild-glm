@@ -153,6 +153,9 @@ struct DiagnosticsScreen: View {
                         Button("Open Store runtime (E1-a)") { runStoreSmoke() }
                             .disabled(running)
 
+                        Button("Probe the authentication endpoint") { probeEndpoint() }
+                            .disabled(running)
+
                         // Measurement, not a feature: the same extraction CI runs, on
                         // this device. It asks go-macho for about 1.6 GB in one
                         // allocation during the export step, which is enough to end the
@@ -367,6 +370,21 @@ struct DiagnosticsScreen: View {
     }
 
     
+
+    /// Five unsigned requests, no password and no signature. It exists because
+    /// "is this Apple's side right now" had become the only open question about
+    /// sign-in, and answering it from a real sign-in means sending the real
+    /// password through a path that may not be there.
+    private func probeEndpoint() {
+        running = true
+        started = Date()
+
+        Task {
+            await AuthEndpointProbe.run()
+            AppLog.info("endpoint probe finished", .app)
+            running = false
+        }
+    }
 
     private func shareLog() {
         let text = AppLog.exportText()

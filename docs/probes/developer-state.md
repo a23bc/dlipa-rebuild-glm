@@ -55,6 +55,24 @@ Why that matters more than it looks: the guid is a **request field**, not an int
 
 What is not measured is whether a fresh guid is itself refused, or whether it only looks that way because the pod was never discovered. The first test is to write the old value back and sign in, which is what *hardware identity stored now / Set* is for: the write goes through this process rather than a file edit, because `cfprefsd` can answer a hand-edited preferences file from its cache, and reinstalling -- the other way to change it -- replaces the value with a new one.
 
+## Result, 2026-11-10: the pod hypothesis closed, and the test that closed it was mine
+
+The override field got its first use and the reading was invalid for a reason that belongs to this surface: `authenticateURL` appended the trailing slash to the **end of the string**, so a typed pod URL became `…/authenticate/?Pod=47&PRH=47/`. The query is the routing hint, and a slash after it is a different request from the one the reference client sends. Package 498 therefore tested a URL nobody sends; the slash now goes on the path and the query stays at the end (`withSlashOnPathOnly`), which is what the next run will use.
+
+The question did not need a device to answer, though. Repeating the request from this machine with an unsigned body -- probe address, probe password, no signature -- returned **404, then 204, then 301** to the *same bytes* seconds apart, and the neighbours told the rest:
+
+| | same host, same minute |
+| --- | --- |
+| `wa/authenticate/` | 404 / 204 / 301, never a `Location`, HTML from `Server: Apple`; 504 in the pod form |
+| `wa/logout`, `wa/authorizeMachine`, `wa/deauthorizeMachine`, `wa/accountSummary` | **200 with XML**, every time |
+| `MZBuy.woa/wa/buyProduct` | **200 with XML**, every time |
+| `DownloadDispatch…/wa/ent/download` | 500 with XML, every time |
+| 16 pods sampled | 404 / 204 / 301 / connect failure -- no XML from any |
+
+So MZFinance is up and serving four of its selectors while `authenticate` returns a different edge code on each try, from every host that could plausibly be routed to. That closes the last hypothesis this surface was built to test -- there was no pod waiting behind the missing `Location` -- and it moves the fault to Apple's side of the wire, with two honest limits: the probe is unsigned, so it does not show what a signed request would get from a healthy backend, and it ran from one network, so it cannot separate a global change from a regional one. The second limit is testable on the device: the same probe button over mobile data.
+
+The one change to our behaviour that the instability justifies: a redirect that names no destination is now transient, retried alongside 204/403/404/429/5xx, where it used to end the sign-in.
+
 ## Result, 2026-11-09: the identity is not the variable
 
 The test ran, and it came back negative in the useful direction. Package 497, `build/dl-ipa/497.txt`: the bag was fetched with `?guid=34EEF9D75FC4`, the signer reported `hardware 34EEF9D75FC4`, and every authenticate carried that guid in its body -- the identity from the run that signed in on 2026-11-06. It still failed, and the wire log said why in a way no status line could:

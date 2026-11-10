@@ -308,7 +308,7 @@ final class AppStoreClient {
                 // A Store pod answers 204, 403, 404, 429 or 5xx transiently.
                 // ipatool retries those three times with a 10s / 20s backoff
                 // instead of failing the sign-in.
-                guard Self.isTransientAuthenticationStatus(result.1.statusCode),
+                guard Self.isTransientAuthentication(result.1),
                       networkTry < Self.authenticationRequestAttempts - 1 else { break }
 
                 let delay = Self.authenticationRetryDelays[
@@ -2314,13 +2314,32 @@ final class AppStoreClient {
     /// A helper rather than a test inside `authenticate`, which sits one decision
     /// below the complexity limit that already turned the lint job red once.
     private static func authenticateURL(_ endpoint: String) -> String {
-        guard let override = DevState.endpointOverride else {
-            return endpoint.hasSuffix("/") ? endpoint : endpoint + "/"
+        let value = DevState.endpointOverride ?? endpoint
+        let normalized = Self.withSlashOnPathOnly(value)
+
+        if DevState.endpointOverride != nil {
+            AppLog.warn("authenticate endpoint overridden for development: " + normalized, .auth)
         }
 
-        AppLog.warn("authenticate endpoint overridden for development: " + override, .auth)
+        return normalized
+    }
 
-        return override.hasSuffix("/") ? override : override + "/"
+    /// Adds the trailing slash to the **path**, never to the end of the string.
+    ///
+    /// The first version appended to the whole URL, so an endpoint carrying the
+    /// pod routing query came back as `…/authenticate/?Pod=47&PRH=47/` -- a
+    /// different request from the one the reference client sends, and the one
+    /// the pod test on 2026-11-10 was actually run with. The query is part of
+    /// the routing hint, so a slash after it changes the hint.
+    static func withSlashOnPathOnly(_ url: String) -> String {
+        guard let cut = url.firstIndex(of: "?") else {
+            return url.hasSuffix("/") ? url : url + "/"
+        }
+
+        let path = String(url[..<cut])
+        let query = String(url[cut...])
+
+        return (path.hasSuffix("/") ? path : path + "/") + query
     }
 
     /// The `User-Agent` on authenticated store requests.
@@ -2346,6 +2365,30 @@ final class AppStoreClient {
         default:
             return statusCode / 100 == 5
         }
+    }
+
+    /// Whether this answer says the endpoint is not there, rather than the
+    /// credentials not being accepted.
+    ///
+    /// A 3xx joins the transient set only when it carries no `Location`. On
+    /// 2026-11-10 an identical unsigned POST to that path, retried three times
+    /// from the same machine seconds apart, came back 404, then 204, then a 301
+    /// with no `Location` at all -- the same unstable answer arriving in three
+    /// different shapes. Treating the third one as final turned a bad second
+    /// into a failed sign-in, and there is nothing to follow when the redirect
+    /// names no destination.
+    ///
+    /// Credentials never look like this. Those are refused with HTTP 200 and a
+    /// `failureType`, which is how 2034, 2002, 2083 and 9610 have always
+    /// arrived, and a bad signature is a 401 or 403 with a body to read.
+    private static func isTransientAuthentication(_ http: HTTPURLResponse) -> Bool {
+        if isTransientAuthenticationStatus(http.statusCode) {
+            return true
+        }
+
+        guard (300..<400).contains(http.statusCode) else { return false }
+
+        return (http.value(forHTTPHeaderField: "Location") ?? "").isEmpty
     }
 
     /// Redirect codes whose body must be replayed at the destination.
