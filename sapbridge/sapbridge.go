@@ -492,7 +492,8 @@ func FetchSapAssets() (string, error) {
 	}
 
 	total := len(bundle.AppleMediaServices) + len(bundle.Commerce) +
-		len(bundle.CoreFP) + len(bundle.CoreFPICXS)
+		len(bundle.ADID) + len(bundle.CoreFP) + len(bundle.CoreFPICXS) +
+		len(bundle.FairPlayD) + len(bundle.FairPlayKext)
 
 	return fmt.Sprintf("%s produced in %s",
 		cost.Finish(), measure.Bytes(uint64(total))), nil

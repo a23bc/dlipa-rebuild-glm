@@ -16,14 +16,17 @@ const (
 	macOSVersion        = "27.0.1"
 	macOSBuild          = "26A434"
 	macOSRestoreURL     = "https://updates.cdn-apple.com/2026FallFCS/59241290-5d51-4ca8-9df4-31624b9a4eac/UniversalMac_27.0.1_26A434_Restore.ipsw"
-	assetCacheDirectory = "apple-assets-macos-27-26A434-arm64-v1"
+	assetCacheDirectory = "apple-assets-macos-27-26A434-arm64-v4"
 )
 
 type Bundle struct {
 	AppleMediaServices []byte
 	Commerce           []byte
+	ADID               []byte
 	CoreFP             []byte
 	CoreFPICXS         []byte
+	FairPlayD          []byte
+	FairPlayKext       []byte
 }
 
 type fileSpec struct {
@@ -42,6 +45,21 @@ var requiredFiles = []fileSpec{
 		name:   "commerce",
 		size:   8092640,
 		digest: mustDigest("76de40a4a32f691947cb926ce3b128d2fc446f7cac9755f831c406cf5a316ac9"),
+	},
+	{
+		name:   "adid",
+		size:   9797952,
+		digest: mustDigest("1fec225b6917206e3d9b00fe636c04878f82bfd06a87a4b6941711de60efab5b"),
+	},
+	{
+		name:   "fairplayd",
+		size:   37689264,
+		digest: mustDigest("28b4c7b2a5a0409c5020da55fc3984713a8e2b0eec8557076c8717f7166d003e"),
+	},
+	{
+		name:   "FairPlayIOKit",
+		size:   2132320,
+		digest: mustDigest("47452960ec010d3a80b02cceec73a65f8a9758850fd0fb7b2fdac7a5d1b81025"),
 	},
 	{
 		name:   "CoreFP",
@@ -231,8 +249,11 @@ func bundleFrom(files map[string][]byte) Bundle {
 	return Bundle{
 		AppleMediaServices: files["AppleMediaServices"],
 		Commerce:           files["commerce"],
+		ADID:               files["adid"],
 		CoreFP:             files["CoreFP"],
 		CoreFPICXS:         files["CoreFP.icxs"],
+		FairPlayD:          files["fairplayd"],
+		FairPlayKext:       files["FairPlayIOKit"],
 	}
 }
 
@@ -240,8 +261,11 @@ func bundleFiles(bundle Bundle) map[string][]byte {
 	return map[string][]byte{
 		"AppleMediaServices": bundle.AppleMediaServices,
 		"commerce":           bundle.Commerce,
+		"adid":               bundle.ADID,
 		"CoreFP":             bundle.CoreFP,
 		"CoreFP.icxs":        bundle.CoreFPICXS,
+		"fairplayd":          bundle.FairPlayD,
+		"FairPlayIOKit":      bundle.FairPlayKext,
 	}
 }
 
