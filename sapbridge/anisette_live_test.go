@@ -46,10 +46,17 @@ func TestLiveAnisetteProof(t *testing.T) {
 
 	t.Logf("assets: %s", cost)
 
+	proofStarted := time.Now()
+
 	headers, state, err := storeauth.AnisetteHeaders(ctx, storeauth.NewHTTPClient(nil), nil)
 	if err != nil {
 		t.Fatalf("anisette proof: %v", err)
 	}
+
+	// Staged, because the whole run is the number nobody can act on: upstream
+	// proved this same proof in six seconds on this same host and library, so
+	// where our minutes go has to be named before a device run is proposed.
+	first := time.Since(proofStarted).Round(time.Millisecond)
 
 	// Every one of these has to arrive: the login request that Apple answers
 	// with 204 and then 404 is missing them, so a partial set would read as a
@@ -72,6 +79,9 @@ func TestLiveAnisetteProof(t *testing.T) {
 		t.Fatalf("replay persisted anisette state: %v", err)
 	}
 
+	t.Logf("timing: first proof %s, replay from state %s, state %d -> %d bytes",
+		first, (time.Since(proofStarted) - first).Round(time.Millisecond), len(state), len(provisioned))
+
 	if got, want := replayed.Get("X-Mme-Device-Id"), headers.Get("X-Mme-Device-Id"); got != want {
 		t.Errorf("identity changed across a state round trip: %q then %q", want, got)
 	}
@@ -82,10 +92,15 @@ func TestLiveAnisetteProof(t *testing.T) {
 
 	hardware := []byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
 
+	amdStarted := time.Now()
+
 	amd, next, err := storeauth.StoreAMDHeaders(ctx, provisioned,
 		"https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate", hardware)
 	if err != nil {
-		t.Fatalf("Store AMD proof: %v", err)
+		// The timing travels with the failure on purpose: this axis fails for
+		// upstream too, and the minutes it costs are still the number that
+		// decides whether an emulator open belongs on the sign-in path at all.
+		t.Fatalf("Store AMD proof after %s: %v", time.Since(amdStarted).Round(time.Millisecond), err)
 	}
 
 	for _, name := range []string{"X-Apple-AMD", "X-Apple-AMD-M"} {
