@@ -145,8 +145,12 @@ func TestLiveAnisetteProof(t *testing.T) {
 		t.Fatalf("signature is not valid base64: %v", err)
 	}
 
-	// Device run 497 measured this at 668 bytes for a 461-byte body. The count
-	// is the criterion, not the value: an SAP session is stateful, so two
-	// signatures over the same body are expected to differ.
-	t.Logf("signature %d bytes from a %d byte body (device baseline 668)", len(decoded), len(body))
+	// Device run 497 reported `sign: returned header=668`, and this host now
+	// measures 668 for the same header: that number is the length of the header
+	// value, the base64 characters, not the decoded bytes. The first version of
+	// this line compared the decoded length against 668, which would have failed
+	// a healthy signature -- a unit error, and the kind that only shows up when
+	// the baseline is quoted without its unit.
+	t.Logf("signature %d chars / %d bytes from a %d byte body (device baseline 668 chars)",
+		len(value), len(decoded), len(body))
 }
