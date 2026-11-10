@@ -53,13 +53,18 @@ the instrument, and its header and byte counts as the answer.
 
 ## What the linux run named
 
-The cost behind the three minutes is not Apple's arithmetic. Counting every
-host service the guest entered while the modern ADI daemon initialised:
+The three minutes are not Apple's arithmetic. Both arms below ran the same tree
+on the same network with the same asset cache, and the only difference is
+whether `Machine.invoke` recognises that the guest parked:
 
-| `initializeDaemon` | wall | busiest symbol |
-| --- | --- | --- |
-| before | 3m0.001s | `_CFRunLoopRun`, 39,645,456 entries of 40,141,810 starts |
-| after | 44ms | `_arc4random`, 5 entries |
+| arm | `initializeDaemon` | `_CFRunLoopRun` entries | proof end to end | headers | state |
+| --- | --- | --- | --- | --- | --- |
+| before | 3m0.001s | 39,632,738 | 3m6.187s | 10 | 954 B |
+| after | 41ms | not in the top symbols | 5.506s | 10 | 970 B |
+
+The output is the same in both arms, so this is a cost removed rather than a
+behaviour changed, and it brings the proof back to the reference client's warm
+figure (6s) instead of thirty times it.
 
 adid installs its XPC event handler and then calls `CFRunLoopRun`, which is the
 guest saying "park me". Our shim does stop the engine, but Unicorn reports a
@@ -68,29 +73,43 @@ queryable reason only for timeouts -- so `invoke` read the park as "chunk ran
 out", resumed at the same address, and re-fired the same shim forever until
 `sapGuestTimeout` (3m) ended it. The deadline error never surfaced, because
 `initializeDaemon` reports one only when no handler was installed, so the whole
-loop presented as a slow daemon. `Machine.invoke` now checks the park flag
-before restarting.
+loop presented as a slow daemon.
+
+Only the two machines opened with `pauseRunLoop` can park, which is why the
+store runtime and kbsync are untouched by this: their shim table answers
+`CFRunLoopRun` with zero exactly as before.
 
 Why this matters more on the phone than here: the spin was 4.5 microseconds per
 entry with JIT acceleration, it is dead time in either mode, and the TCI build
 pays more per restart, not less.
 
-Two network conditions, both host-side, stop that run from reaching the headers
-here -- neither is the emulation:
+## The two host conditions that hid the headers
+
+Getting to that comparison needed two host facts, neither of them the
+emulation:
 
 * `https://www.apple.com/appleca/AppleIncRootCertificate.cer`, which the
   provisioning fallback downloads, answers **403 to every client from this
-  network** -- `curl` on Windows and in WSL alike, while `https://www.apple.com/`
-  itself gives 200. This is the CN-facing edge refusing the certificate paths.
+  network** -- `curl` on Windows and in WSL alike -- while `https://www.apple.com/`
+  itself gives 200. Its chain runs to DigiCert Global Root G2, so the site is
+  reachable; the certificate paths are what the CN-facing edge refuses.
 * This WSL distribution's trust store contains **no Apple certificate at all**
   (`openssl crl2pkcs7` over `/etc/ssl/certs/ca-certificates.crt` prints zero),
-  so `gsa.apple.com`'s chain, which is rooted at Apple Root CA, fails
-  verification first and is what sends the code to that 403 download.
+  so `gsa.apple.com`'s chain fails verification first -- `curl` reports
+  `verify=19`, self-signed certificate in chain -- and that failure is what
+  sends the code to the 403 download above.
 
-Earlier warm runs of the same proof printed all ten headers, so at least one of
-those two conditions changed since; which one is not established here. A GitHub
-runner has both a complete `ca-certificates` bundle and non-CN egress, so the
-header-level proof of this fix belongs in this job's log, not on this machine.
+Both are settled without the blocked URL: `gsa.apple.com` itself serves Apple
+Root CA as the third element of its chain, so appending that certificate to the
+bundle makes the same request verify (`verify=0`, HTTP 401 on the un-signed
+lookup) and the proof then completes. `SSL_CERT_FILE` was pointed at that
+bundle for the runs above; nothing in the repository depends on it. On the
+phone the condition does not arise at all, because iOS ships the Apple roots,
+so `installAppleRoot` is never reached.
+
+Neither condition explains a device failure, and neither is evidence about the
+`authenticate` refusals. They are reasons a linux result here can come back as
+`download Apple root: HTTP 403` while meaning nothing about the emulator.
 
 ## What is still owed after a green run
 
