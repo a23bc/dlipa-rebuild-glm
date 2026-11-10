@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import ObjectiveC.runtime
 
@@ -95,13 +96,19 @@ enum AnisetteProbe {
 
         emit(line)
 
-        let found = symbols.filter { dlsym(handle, $0) != nil }
+        // A symbol search is only meaningful on a loaded image: reporting 0/7
+        // after a dlopen failure would read as "the entry points are missing"
+        // when what is missing is the image.
+        if let handle {
+            let found = symbols.filter { dlsym(handle, $0) != nil }
 
-        if !symbols.isEmpty {
-            emit("[ANISETTE]   \(image.label) symbols=\(found.count)/\(symbols.count) " + found.joined(separator: " "))
+            emit("[ANISETTE]   \(image.label) symbols=\(found.count)/\(symbols.count) "
+                 + found.joined(separator: " "))
+            classes(from: image)
+        } else {
+            emit("[ANISETTE]   \(image.label) symbols=not-looked-up (image not loaded)")
+            emit("[ANISETTE]   \(image.label) classes=not-looked-up (image not loaded)")
         }
-
-        classes(from: image)
     }
 
     /// The classes the loaded image exports, filtered, and the selectors of the
@@ -120,9 +127,7 @@ enum AnisetteProbe {
         var matches: [String] = []
 
         for index in 0 ..< Int(count) {
-            guard let pointer = names[index] else { continue }
-
-            let name = String(cString: pointer)
+            let name = String(cString: names[index])
 
             if needles.contains(where: { name.lowercased().contains($0) }) {
                 matches.append(name)
@@ -149,11 +154,16 @@ enum AnisetteProbe {
         var names: [String] = []
 
         for index in 0 ..< Int(count) {
-            guard let method = methods[index] else { continue }
-
-            names.append(NSStringFromSelector(method_getName(method)))
+            names.append(NSStringFromSelector(method_getName(methods[index])))
         }
 
         return names.prefix(10).joined(separator: ", ") + (count > 10 ? " … (\(count))" : "")
+    }
+
+    /// Written to both sinks, like the framework probe: AppLog so it reaches
+    /// Share log, stderr so the flight recorder keeps it if this launch dies.
+    private static func emit(_ message: String) {
+        AppLog.error(message, .app)
+        fputs("[DLiPA] \(message)\n", stderr)
     }
 }
