@@ -50,6 +50,7 @@ func OpenModernADI(ctx context.Context, bundle assets.Bundle, identifier, state 
 	runtime, _, err := openRuntime(ctx, bundle, runtimeOptions{
 		extraImages: []imageSpec{{name: "commerce", data: bundle.Commerce, base: storeAgentBase}},
 		shims:       shimOptions{zeroReturnAliases: storeAgentZeroReturnAliases},
+		ownEngine:   true,
 	})
 	if err != nil {
 		return nil, err
@@ -66,6 +67,7 @@ func OpenModernADI(ctx context.Context, bundle assets.Bundle, identifier, state 
 	daemon, _, err := openRuntime(ctx, bundle, runtimeOptions{
 		extraImages: []imageSpec{{name: "adid", data: bundle.ADID, base: modernADIDBase}},
 		shims:       shimOptions{pauseRunLoop: true},
+		ownEngine:   true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open modern ADI daemon: %w", err)
@@ -80,6 +82,7 @@ func OpenModernADI(ctx context.Context, bundle assets.Bundle, identifier, state 
 	fairplay, _, err := openRuntime(ctx, bundle, runtimeOptions{
 		extraImages: []imageSpec{{name: "fairplayd", data: bundle.FairPlayD, base: modernFairPlayDBase}},
 		shims:       shimOptions{pauseRunLoop: true},
+		ownEngine:   true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open modern FairPlay daemon: %w", err)
@@ -102,6 +105,7 @@ func OpenModernADI(ctx context.Context, bundle assets.Bundle, identifier, state 
 	if len(bundle.FairPlayKext) != 0 {
 		kernel, _, err = openRuntime(ctx, bundle, runtimeOptions{
 			extraImages: []imageSpec{{name: "FairPlayIOKit", data: bundle.FairPlayKext, base: modernFairPlayKextBase, kernelBase: 0xfffffe0007004000}},
+			ownEngine:   true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("open modern FairPlay kernel client: %w", err)

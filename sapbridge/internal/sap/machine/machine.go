@@ -61,7 +61,13 @@ const (
 	// checking it first. Nothing in the SAP assets installs one, so it is mapped
 	// here: zeroed, and pointed at from the middle so the small negative offsets
 	// Darwin uses for pthread fields stay inside the block.
-	tlsBase    = uint64(0x0000600000000000)
+	//
+	// The address is not 0x600000000000, which is where the FairPlay daemon
+	// loads (modernFairPlayDBase): upstream maps no TLS block at all, so that
+	// slot was free in its layout, and only the ADI proof ever loads a second
+	// image there. Sharing one address between the TLS page and a 17 MB daemon
+	// turned the proof into "map fairplayd: UC_ERR_MAP".
+	tlsBase    = uint64(0x0000800000000000)
 	tlsSize    = uint64(0x2000)
 	tlsPointer = tlsBase + tlsSize/2
 	// The comm page. libsystem reads the kernel's time data from a fixed address
@@ -150,6 +156,15 @@ type imageSpec struct {
 type runtimeOptions struct {
 	extraImages []imageSpec
 	shims       shimOptions
+
+	// ownEngine asks for a Unicorn instance of this machine's own rather than
+	// the process singleton. The modern ADI proof keeps three or four machines
+	// alive at once, and every machine maps its guest at the same fixed
+	// addresses -- so the second one on one address space fails at the first
+	// region, `map SAP guest memory at 0x100000000: UC_ERR_MAP`. Measured here:
+	// that is what the shared engine costs us, and it is why the store path
+	// keeps sharing while only the ADI machines ask for their own.
+	ownEngine bool
 }
 
 // Open starts the emulated runtime a session uses for everything.
@@ -260,7 +275,19 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 		return nil, nil, fmt.Errorf("open SAP runtime: %w", err)
 	}
 
-	engine, err := sharedEngine(ctx)
+	// A machine that owns its engine also owns its address space: nothing else
+	// is mapped at those addresses, which is the whole point of owning it.
+	var (
+		engine *unicorn.Engine
+		err    error
+	)
+
+	if options.ownEngine {
+		engine, err = unicorn.New(ctx)
+	} else {
+		engine, err = sharedEngine(ctx)
+	}
+
 	if err != nil {
 		return nil, nil, fmt.Errorf("create Unicorn engine: %w", err)
 	}
