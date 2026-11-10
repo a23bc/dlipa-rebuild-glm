@@ -774,6 +774,7 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 	}
 
 	m.services.resetFault()
+	m.services.runLoopParked = false
 
 	// SAP's cryptographic routines have input- and host-dependent instruction
 	// counts. Bound execution by wall time without rejecting legitimate work on
@@ -800,6 +801,18 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 
 			if pc == returnAddress {
 				break
+			}
+
+			// A guest that parked itself inside a host service is done as far as
+			// this call is concerned. Restarting at the same instruction -- the
+			// only other reading of "stopped short of the return address" --
+			// re-fires that one service forever: adid entered `_CFRunLoopRun`
+			// 39,645,456 times in the 3m0.001s it took to reach the deadline
+			// below, and the deadline error it produced was thrown away because
+			// the event handler had already been installed. So the cost looked
+			// like a slow daemon, not a loop that could never end.
+			if m.services.runLoopParked {
+				return 0, nil
 			}
 
 			// The chunk ran out rather than the function returning.

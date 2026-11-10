@@ -231,6 +231,12 @@ func (s *shims) cfRunLoopRun() error {
 	if !s.pauseRunLoop {
 		return s.returnZero()
 	}
+
+	// Recorded before the stop so the caller can tell "the guest parked here"
+	// from "the instruction chunk ran out"; the two are indistinguishable from
+	// Unicorn, which ends a stopped run without an error.
+	s.runLoopParked = true
+
 	if err := s.engine.Stop(); err != nil {
 		return fmt.Errorf("pause guest run loop: %w", err)
 	}

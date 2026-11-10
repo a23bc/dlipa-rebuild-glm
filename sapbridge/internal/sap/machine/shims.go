@@ -81,6 +81,7 @@ type shims struct {
 	adiOffset        int
 	hostUUID         [16]byte
 	pauseRunLoop     bool
+	runLoopParked    bool
 	aesVtable        uint64
 	aesService       uint64
 	bufferVtable     uint64

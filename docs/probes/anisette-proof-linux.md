@@ -51,6 +51,47 @@ its byte counts stand and its seconds do not compare with anything unmeasured.
 Read the probe the same way: treat its timing as an upper bound that includes
 the instrument, and its header and byte counts as the answer.
 
+## What the linux run named
+
+The cost behind the three minutes is not Apple's arithmetic. Counting every
+host service the guest entered while the modern ADI daemon initialised:
+
+| `initializeDaemon` | wall | busiest symbol |
+| --- | --- | --- |
+| before | 3m0.001s | `_CFRunLoopRun`, 39,645,456 entries of 40,141,810 starts |
+| after | 44ms | `_arc4random`, 5 entries |
+
+adid installs its XPC event handler and then calls `CFRunLoopRun`, which is the
+guest saying "park me". Our shim does stop the engine, but Unicorn reports a
+stopped run and an exhausted instruction chunk the same way -- no error, and a
+queryable reason only for timeouts -- so `invoke` read the park as "chunk ran
+out", resumed at the same address, and re-fired the same shim forever until
+`sapGuestTimeout` (3m) ended it. The deadline error never surfaced, because
+`initializeDaemon` reports one only when no handler was installed, so the whole
+loop presented as a slow daemon. `Machine.invoke` now checks the park flag
+before restarting.
+
+Why this matters more on the phone than here: the spin was 4.5 microseconds per
+entry with JIT acceleration, it is dead time in either mode, and the TCI build
+pays more per restart, not less.
+
+Two network conditions, both host-side, stop that run from reaching the headers
+here -- neither is the emulation:
+
+* `https://www.apple.com/appleca/AppleIncRootCertificate.cer`, which the
+  provisioning fallback downloads, answers **403 to every client from this
+  network** -- `curl` on Windows and in WSL alike, while `https://www.apple.com/`
+  itself gives 200. This is the CN-facing edge refusing the certificate paths.
+* This WSL distribution's trust store contains **no Apple certificate at all**
+  (`openssl crl2pkcs7` over `/etc/ssl/certs/ca-certificates.crt` prints zero),
+  so `gsa.apple.com`'s chain, which is rooted at Apple Root CA, fails
+  verification first and is what sends the code to that 403 download.
+
+Earlier warm runs of the same proof printed all ten headers, so at least one of
+those two conditions changed since; which one is not established here. A GitHub
+runner has both a complete `ca-certificates` bundle and non-CN egress, so the
+header-level proof of this fix belongs in this job's log, not on this machine.
+
 ## What is still owed after a green run
 
 * **Timing on the phone.** The device runs the no-JIT TCI build (iOS refuses
