@@ -55,6 +55,8 @@ struct DevStateSection: View {
 
             overridesRow
 
+            networkProbeRow
+
             if listed {
                 if items.isEmpty {
                     Text("no keychain items visible to this app")
@@ -191,6 +193,27 @@ struct DevStateSection: View {
                     AppLog.warn("dev state: authentication attempts stored " + stored
                                 + ", in force " + String(inForce), .auth)
                 }
+            }
+        }
+    }
+
+    /// One tap for the thing no log on this device has ever stated, though two
+    /// failures depend on it: whether this network lets the phone reach Apple's
+    /// provisioning host with a chain the phone trusts.
+    ///
+    /// It asks two hosts because they fail separately. The development machine
+    /// talks to the store CDN all day and cannot verify `gsa.apple.com` at all
+    /// -- ProvisioningProbe names what was measured there -- and a phone can sit
+    /// the other way round. The answer goes to the log rather than to a dialog,
+    /// because the certificate chain is the finding and a dialog would truncate
+    /// it, and because this row is meant to be captured and compared, not
+    /// dismissed.
+    private var networkProbeRow: some View {
+        Button("Check gsa and buy reachability (to the log, ~40s)") {
+            AppLog.info("dev state: provisioning reachability probe requested", .network)
+
+            Task {
+                await ProvisioningProbe.run()
             }
         }
     }

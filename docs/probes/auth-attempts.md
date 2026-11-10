@@ -77,10 +77,36 @@ disagree: a typed `100` is refused and the default stays.
 | all twelve tries are noise, and the reference client succeeds from the same machine | something in the request still differs, and the next comparison is header-by-header against a known-good capture, not more retries |
 | noise at first, then an application answer naming a `failureType` | the sign-in was reaching the application all along and the earlier failures were credential-shaped; this branch's error text needs to stop calling that "no content" |
 
+## The third thing this build answers
+
+Runs 506 to 508 never reached the application for a real account after 17:30Z,
+and the control run on the development machine said why it cannot even try:
+`gsa.apple.com` does not verify there.
+
+```
+curl: (60) SSL certificate problem: self-signed certificate in certificate chain
+subject=CN = gsa.apple.com   issuer=CN = Apple Server Authentication CA
+ipatool: prepare Apple authentication: install Apple provisioning root: download Apple root: HTTP 403
+```
+
+That is the machine-provisioning host the anisette proof needs, so on that path
+the reference client never sends a sign-in at all. Whether a phone on the same
+network sees Apple's own chain or a proxy's is not knowable from the machine,
+and the answer decides whether anisette can ship on this network regardless of
+how the emulator behaves -- so the build carries one more row, "Check gsa and
+buy reachability", and it asks both hosts because they fail separately.
+
+Read the two `probe gsa:` and `probe buy:` lines. The trust challenge is
+answered with `.performDefaultHandling`, never by accepting anything, which is
+what makes the certificate list meaningful: a subject that is not Apple's is a
+proxy saying so out loud, and error code -1202 against -1200 is the difference
+between "this chain was refused" and "something else in TLS broke".
+
 ## What this probe does not do
 
 It changes nothing about what ships: three tries is still the default. It does
 not touch anisette (that line lives on `feat/anisette-login`, where the proof
 now runs in this repository's own code) and it does not log credentials: the
-typed value, the status numbers and the counts are the whole record, and the
-password still only leaves through `trustedEndpoint`.
+typed value, the status numbers, the counts and the certificate subjects are the
+whole record, and the password still only leaves through `trustedEndpoint`.
+
