@@ -1,0 +1,79 @@
+name: Probe anisette proof (Linux)
+
+# Answers whether the merged anisette line actually produces Apple's headers.
+#
+# Why Linux and not the iOS build job: the emulator is loaded through purego,
+# and the bridge refuses Windows outright
+# (sapbridge/internal/sap/unicorn/library_windows.go: "unicorn is not available
+# on windows"). So the shim merge can be *compiled* here, there, and on the
+# phone, but only a host with a libunicorn 2.x can run it. iOS can -- with the
+# no-JIT TCI build -- but a device answers one question at a time and costs a
+# manual run, while this job needs nobody: no Apple ID, no password, no cookie.
+# The identity is a fresh random sixteen bytes handed to gsa's public
+# machine-provisioning endpoints.
+#
+# What it proves, in one test (sapbridge/anisette_live_test.go):
+#   * the v4 seven-piece profile resolves from Apple's restore image through
+#     our own extractor, and reports what it cost;
+#   * storeauth.AnisetteHeaders returns all ten headers, and the state it
+#     hands back is enough to prove again without re-provisioning;
+#   * storeauth.StoreAMDHeaders returns X-Apple-AMD and X-Apple-AMD-M, which is
+#     the newly merged delegate adapter and the com.apple.adid XPC round trip;
+#   * the store runtime still signs, because the hook table this merge changed
+#     (_IOServiceGetMatchingService now answers 1 rather than MaxUint32) serves
+#     that path too. Its signature is compared by length against the 668 bytes
+#     a device measured in run 497, not by value: SAP sessions are stateful.
+#
+# Timing here is TCG with JIT, so it is a floor, never a device prediction.
+# The device number comes from a phone run under the TCI build.
+#
+# Manual only, like the other probes:
+#   gh workflow run "Probe anisette proof (Linux)"
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proof:
+    name: Anisette proof against Apple
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: sapbridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sapbridge/go.mod
+
+      - name: Install libunicorn 2.1.4
+        run: |
+          # The same pinned build upstream's extractor uses for linux/amd64:
+          # the 2.1.4 wheel, its published digest, and one member out of it.
+          # Checked before dlopen, because a library that is merely present is
+          # not a library that is the right one.
+          url="https://files.pythonhosted.org/packages/e7/df/ded5e3684c2d7600b30cc8a7530277b8cb36644a1a9d34cade7ebb45604c/unicorn-2.1.4-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+          want="9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239"
+          curl -fL --retry 3 -o /tmp/unicorn.whl "$url"
+          got=$(sha256sum /tmp/unicorn.whl | cut -d" " -f1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::unicorn wheel digest mismatch: expected $want, got $got"
+            exit 1
+          fi
+          unzip -p /tmp/unicorn.whl unicorn/lib/libunicorn.so.2 > /tmp/libunicorn.so.2
+          ls -la /tmp/libunicorn.so.2
+          echo "DLIPA_UNICORN_PATH=/tmp/libunicorn.so.2" >> "$GITHUB_ENV"
+
+      - name: Run the proof
+        env:
+          # Required, not informative: without the assets and the library the
+          # test would skip, and a skip in this job would be read as a pass by
+          # anyone who does not open the log.
+          DSH_SAP_REQUIRE_LIVE: "1"
+        run: go test -count=1 -v -timeout 40m -run TestLiveAnisetteProof ./
