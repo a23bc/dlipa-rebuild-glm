@@ -107,9 +107,15 @@ extension AppStoreClient {
 
         let size = data.isEmpty ? "no body" : String(data.count) + " bytes"
 
-        return "the request was answered by Apple's front end, not by the store "
-            + "(HTTP " + String(http.statusCode) + ", " + type + ", " + size
-            + "). This is not your password: a credential problem arrives as "
-            + "HTTP 200 with a failureType."
+        // The order of these sentences is the point. This is what a person
+        // reads under a red alert, and the old wording led with the diagnosis
+        // and put "This is not your password" second -- which on 2026-11-10
+        // (run 507) was skimmed as a complaint about the password, and cost a
+        // round trip arguing with a log line that said the opposite.
+        return "Apple's edge refused the request before the store saw it (HTTP "
+            + String(http.statusCode) + ", " + type + ", " + size
+            + "). Nothing you typed was checked, and nothing you typed was wrong:"
+            + " a real credential problem arrives as HTTP 200 with a failureType."
+            + " Wait a few minutes, or change the network this device leaves from."
     }
 }
