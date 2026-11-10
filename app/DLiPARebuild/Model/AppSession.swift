@@ -156,12 +156,19 @@ final class AppSession: ObservableObject {
         // The signature is computed inside this call and it is the first time
         // the guest runs since the handshake. Log around it so a crash here
         // says which half of the request it died in.
-        // A request carrying a verification code is Apple's second attempt:
-        // the counter must advance with it.
+        // Every login call starts at attempt 1, including the one that carries
+        // a verification code: the reference client's login() builds its first
+        // request with 1 and only advances after an answer says the credentials
+        // were refused (pkg/appstore/appstore_login.go:147 and :193 in v2.7.0,
+        // and the same shape at head), which is the request this branch repeats
+        // below. Starting the code pass at 2 skipped the request the reference
+        // client actually sends first, and on device that request went out at
+        // 17:30:41 on 2026-11-10 and came back 301 with no Location, then 204
+        // twice (run 506).
         let result = try await client.authenticate(
             email: email, password: password, authCode: authCode,
             guid: hardware.guid, endpoint: endpoint, signer: signer,
-            attempt: (authCode?.isEmpty == false) ? 2 : 1)
+            attempt: 1)
         // Signing in again with the same Apple ID refreshes its stored copy
         // rather than adding a duplicate row: the DSID identifies the account,
         // and the token and storefront can change between sign-ins.
