@@ -73,6 +73,17 @@ So MZFinance is up and serving four of its selectors while `authenticate` return
 
 The one change to our behaviour that the instability justifies: a redirect that names no destination is now transient, retried alongside 204/403/404/429/5xx, where it used to end the sign-in.
 
+The last open variable was closed the same day, by the person holding the device. Running the probe over Wi-Fi and over cellular, nine authenticate attempts each:
+
+| Network | The nine answers at `wa/authenticate/` | `wa/logout` | `ent/download` |
+| --- | --- | --- | --- |
+| Wi-Fi | 204, 301, 204, 503, 403, 500, 500, 403, 204 | 200 XML, all three presses | 500 XML, all three |
+| Cellular | 204, 404, 204, 403, 301, 204, 204, 301, 204 | 200 XML, all three presses | 500 XML, all three |
+
+Two networks, eighteen attempts, no answer from the application in any of them, and the sibling selector of the same web application answering with a plist every single time on both paths. So the fault is neither the route nor the request nor the credentials: this selector is simply not being handed to the application from here, on either network.
+
+That is where this surface's job ends. Nothing in the app can make `authenticate` be served; the remaining question is *when it is served again*, and the probe button answers it in five requests without touching an account. What the surface leaves behind, once the readings are filed: the message that names a front-end answer instead of pasting its HTML, the classification of a destination-less redirect as transient, and the note in `docs/architecture.md` that the endpoint -- not the code -- was the fault.
+
 ## Result, 2026-11-09: the identity is not the variable
 
 The test ran, and it came back negative in the useful direction. Package 497, `build/dl-ipa/497.txt`: the bag was fetched with `?guid=34EEF9D75FC4`, the signer reported `hardware 34EEF9D75FC4`, and every authenticate carried that guid in its body -- the identity from the run that signed in on 2026-11-06. It still failed, and the wire log said why in a way no status line could:

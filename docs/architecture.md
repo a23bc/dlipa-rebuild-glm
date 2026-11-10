@@ -127,7 +127,16 @@ The web application is up. The other selectors of the very same application answ
 
 The one behaviour change that follows from the instability: **a redirect that names no destination is now treated as transient**, alongside 204/403/404/429/5xx. It used to be a hard failure, and a hard failure on a request that had already returned three different codes in three seconds made a bad second into a failed sign-in.
 
-Two things this does not explain, kept honest: the probe is unsigned, so it cannot show what a *signed* request gets from a healthy backend -- the device capture covers that, and it gets the same family; and the probe runs from one network, so it cannot tell a global change from a regional one. Only a second network can, and the device test that distinguishes them is the same probe run over mobile data.
+Two things this does not explain, kept honest: the probe is unsigned, so it cannot show what a *signed* request gets from a healthy backend -- the device capture covers that, and it gets the same family; and the probe ran from one network, so it could not separate a global change from a regional one.
+
+The second limit closed the same day, from the device itself. The probe was run three times over Wi-Fi and three times over cellular, nine authenticate attempts on each path, and the two lists are the same list:
+
+| Network | Nine unsigned POSTs to `wa/authenticate/` | Sibling `wa/logout` | `ent/download` |
+| --- | --- | --- | --- |
+| Wi-Fi | 204, 301, 204, 503, 403, 500, 500, 403, 204 | **200 XML**, every press | 500 XML, every press |
+| Cellular | 204, 404, 204, 403, 301, 204, 204, 301, 204 | **200 XML**, every press | 500 XML, every press |
+
+Eighteen attempts, eighteen edge answers, no `Location` in any of them, no XML from that path once -- and the two networks disagree only about which edge codes appeared in the rotation, not about whether any of them reached the application. So the fault is neither the region, the route, nor the request: it is that this selector is not being handed to the application from anywhere we can reach, while its neighbours on the same host and in the same web application are. Nothing further in the app can change that, which is why the work stopped at the message that says so, and why the probe button is the instrument for the only remaining question -- whether and when it comes back.
 
 No credential fault looks like any of this, and that is the sentence to keep in front of the next investigation: Apple states credential problems with HTTP 200 and a `failureType`, which is how 2034, 2002, 2083 and 9610 have always arrived here, and a signature problem is a 401 or 403 with a body to read. A 301 with no `Location` is upstream's own documented shape for a path that is no longer answered where it was asked -- and with nothing to follow, the pod that used to be discovered from the redirect cannot be discovered from this exchange at all. The endpoint and User-Agent overrides on the diagnostics tab stay, because they are how a future answer to "where did it go" gets tested without a build; the readings and the order they are worth trying in are in [`probes/developer-state.md`](probes/developer-state.md).
 
