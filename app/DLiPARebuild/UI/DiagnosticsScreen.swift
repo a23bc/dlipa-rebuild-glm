@@ -156,6 +156,13 @@ struct DiagnosticsScreen: View {
                         Button("Probe the authentication endpoint") { probeEndpoint() }
                             .disabled(running)
 
+                        // Which route the anisette proof can come from: the device's
+                        // own identity framework, or emulation. The answer decides the
+                        // cost of the sign-in fix by a factor of twenty, so it is asked
+                        // before anything is implemented.
+                        Button("Probe the anisette entry points") { probeAnisette() }
+                            .disabled(running)
+
                         // Measurement, not a feature: the same extraction CI runs, on
                         // this device. It asks go-macho for about 1.6 GB in one
                         // allocation during the export step, which is enough to end the
@@ -370,6 +377,19 @@ struct DiagnosticsScreen: View {
     }
 
     
+
+    /// Which images and entry points the device actually exposes for the anisette
+    /// proof, because the answer decides whether generating it is a few hundred
+    /// lines or a port of the emulated identity service.
+    private func probeAnisette() {
+        running = true
+        started = Date()
+        DispatchQueue.main.async {
+            AnisetteProbe.run()
+            AppLog.info("anisette probe finished", .app)
+            running = false
+        }
+    }
 
     /// Five unsigned requests, no password and no signature. It exists because
     /// "is this Apple's side right now" had become the only open question about
