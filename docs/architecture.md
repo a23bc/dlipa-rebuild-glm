@@ -146,6 +146,22 @@ No credential fault looks like any of this, and that is the sentence to keep in 
 
 ---
 
+## Producing the anisette proof
+
+The header is required; the open question is where the two values come from. There are two routes and they are not close in cost, so the choice is made by measurement rather than preference.
+
+**Route 1 -- the device's own identity framework.** iOS ships `AppleDeviceIdentity`/`CoreADI`, and `AppleMediaServices` carries the anisette classes. If this process can load them and reach an entry point that returns the proof, the work is: provision (two HTTP calls to `gsa.apple.com`), request the pair, persist the state, attach the headers -- a few hundred lines, mostly Swift, no new emulated code, and no extra Apple binaries. What has to be measured first, and cannot be measured from the macOS side, is whether the sandbox lets those images load at all and whether the framework's service answers to a third-party app. The Diagnostics button *Probe the anisette entry points* prints exactly that: `dlopen=`, the C entry points found by `dlsym`, the classes whose names mention anisette/OTP/ADI and the selectors each one implements.
+
+**Route 2 -- emulate the identity service**, the way the store framework is already emulated. The reference client took this route, and its scale is now measured rather than guessed: the adaptation is roughly **1,900 lines across four files**, of which `modern_adi.go` alone is 662, plus 1,274 lines of platform shims. It opens **four concurrent emulated runtimes** -- the commerce image with pinned entry points at `+0x1b4400`, `+0x1d5124` and `+0x1dab04`; `adid` at base `0x200000000000`; `fairplayd` at `0x600000000000`; and `FairPlayIOKit` as a *kernel* image at `0x700000000510` with its own `kernelBase` -- and it stages **three more Apple binaries** from the same restore image: `adid` 9,797,952 bytes, `fairplayd` 37,689,264, `FairPlayIOKit` 2,132,320. That is 49.6 MB on top of the 212 MB already downloaded, each with a pinned digest.
+
+Route 2 is the only option if Route 1 measures negative, and it carries a second cost this project has already argued about: four concurrent guests on a phone, where one runtime open measures 1.2 s, a generation step 32 s of full-core work, and the process reaches about 560 MB RSS today with a single runtime. If it comes to this, the memory and concurrency of the runtime pool get measured before the emulation is written, not after.
+
+**Common to both routes.** Whatever produces the pair, the rest does not depend on the answer: the machine-provisioning exchange with `gsa.apple.com` (`startMachineProvisioning` → `spim` → `finishMachineProvisioning` with `cpim` → `ptm`, `tk` and `X-Apple-I-MD-RINFO`), the plist envelope of an empty `Header` dict and a `Request` dict, the `akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0` user agent with the `<MacBookPro13,3> …` client-info header, the state that has to survive restarts, and the header set itself -- `X-Apple-I-MD`, `X-Apple-I-MD-M`, `X-Apple-I-MD-RINFO`, `X-Apple-I-MD-LU`, `X-Apple-I-SRL-NO`, `X-Apple-I-Client-Time`, `X-Apple-I-TimeZone`, `X-Apple-Locale`, `X-Mme-Device-Id`, `X-MMe-Client-Info` -- with the first two additionally mapped onto `X-Apple-AMD` / `X-Apple-AMD-M` for store requests.
+
+And one requirement both routes inherit from the failure that produced this whole investigation: the identity state is per device, so it belongs in the keychain beside the password, not in the preferences file that an uninstall takes with it. The identifier that goes into the provisioning exchange is the device's; getting it wrong does not fail loudly, it yields a proof Apple refuses -- which is exactly the class of failure that cost four days here.
+
+---
+
 ## Decisions that were forced, not chosen
 
 | Decision | The failure that forced it |
