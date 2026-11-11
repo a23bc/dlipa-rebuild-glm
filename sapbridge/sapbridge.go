@@ -23,6 +23,7 @@ import (
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/storeauth"
 )
 
 // Signer holds a live SAP session. One instance covers a whole app session:
@@ -497,6 +498,45 @@ func FetchSapAssets() (string, error) {
 
 	return fmt.Sprintf("%s produced in %s",
 		cost.Finish(), measure.Bytes(uint64(total))), nil
+}
+
+// AnisetteHeaders produces the identity headers the store's authenticate
+// endpoint is built to receive, and returns the state that has to come back on
+// the next call.
+//
+// The state travels in both directions because the bridge owns no storage: it
+// is a few hundred opaque bytes that the app keeps in the keychain, and it is
+// the identity -- handing back the state from before the call means starting
+// general machine provisioning again rather than reusing a provisioned
+// identity.
+//
+// The bound is the measured shape of the work, not a guess. Provisioning once
+// costs a handful of seconds warm, and the identity stage inside it is 42 ms
+// since the run loop was stopped from being re-entered 40 million times; five
+// minutes leaves room for an asset resolution from a cold cache without letting
+// a sign-in hang on a guest that has parked.
+func AnisetteHeaders(state []byte) (map[string]string, []byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	found, next, err := storeauth.AnisetteHeaders(ctx, storeauth.NewHTTPClient(nil), state)
+	if err != nil {
+		return nil, nil, fmt.Errorf("anisette headers: %w", err)
+	}
+
+	// One value per name. The header map is an http.Header because that is what
+	// the reference client builds against, but no header in this set repeats,
+	// and gomobile hands back a dictionary rather than a multimap.
+	flat := make(map[string]string, len(found))
+	for name, values := range found {
+		if len(values) == 0 {
+			continue
+		}
+
+		flat[name] = values[0]
+	}
+
+	return flat, next, nil
 }
 
 // ClearCachedKBSync drops the per-account kbsync blobs left by a previous build.
