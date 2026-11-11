@@ -125,13 +125,15 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 			continue
 		}
 
+		// The authenticate request carries exactly two identity headers. The
+		// rest of the anisette set (client time, locale, routing info, Mme)
+		// belongs to other Apple endpoints; sending it here is what separated
+		// this request from the reference, whose dump shows only these two.
 		switch {
 		case strings.EqualFold(name, "X-Apple-I-MD"):
 			headers.Set("X-Apple-AMD", value)
 		case strings.EqualFold(name, "X-Apple-I-MD-M"):
 			headers.Set("X-Apple-AMD-M", value)
-		default:
-			headers.Set(name, value)
 		}
 	}
 
