@@ -281,6 +281,56 @@ code-bearing ladder that ends without an application answer should ask for a
 fresh code and post it on the session it already holds, instead of re-sending
 the same stale one six times.
 
+## The bench result: our own shape reached the application in one try
+
+Run on 2026-11-11 from the linux bench (`WSL Ubuntu 24.04`, stock libunicorn
+2.1.4, the anchored trust bundle through `SSL_CERT_FILE`), against the live
+endpoint, with the person's real account, and four request shapes built out of
+*this repository's* signer and body:
+
+| shape | answer |
+| --- | --- |
+| the app's own today -- urlencoded name, no anisette, our signature | **HTTP 200, plist, the 2FA challenge, first try** |
+| same plus `Content-Type: application/x-apple-plist` | 204 |
+| same plus the ten anisette headers renamed as the reference renames them | 503 |
+| both together | 204 |
+
+and the control beside it: the reference client itself, from the same machine,
+same network, same account, finished the whole sign-in including the code in
+`six seconds` (`name=... success=true`), after first reporting
+`enter 2FA code:` -- which is the challenge answer.
+
+Three things follow, and they undo three earlier claims in this file.
+
+* **The request shape is not why the phone is refused.** Our exact bytes,
+  signature and all, get the challenge on the first attempt from this network.
+  So "attach the anisette headers to authenticate" is not a fix for the
+  refusal -- it is parity work, and the claim that the refusal is shape-driven
+  is dead.
+* **"This machine's authenticate path never reaches the application" was
+  wrong as a standing statement.** It reaches it, repeatedly, within seconds,
+  for a real account. What was measured before was a *burst*: fifteen
+  real-account requests inside twelve minutes, after which the same shape that
+  had been answered fell to 403/404/301/204 for three straight minutes --
+  eight ladder tries, no application answer at all. The dummy body, the
+  unsigned body and the real body under load all behave the same way, which is
+  why the earlier probe read it as a property of the route rather than of the
+  rate.
+* **The refusals are time-shaped, not client-shaped.** Same client, same bytes:
+  answered at 07:47, refused from 07:48 to 07:53. That is the phone's
+  experience -- refusals for the first three to six requests, then a real
+  answer -- reproduced on a machine with no iOS, no jetsam and no device
+  identity in it.
+
+What that leaves standing is the smaller, uglier conclusion: the ladder is not
+the cure either, because when the route is in a refusing phase the code ages
+out inside it, and when the route is answering the phone does not need more
+than one or two tries. The next bench run is therefore deliberately narrow:
+one codeless probe to establish that the route is currently answering, and only
+then one code-bearing request, so a code is never spent into a refusal. It also
+means the honest advice for the device right now is the opposite of what the
+twelve-try knob invites: stop retrying a real account in bursts.
+
 ## What this probe does not do
 
 It changes nothing about what ships: three tries is still the default. It does
