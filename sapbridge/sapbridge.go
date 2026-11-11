@@ -297,6 +297,31 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 	})
 }
 
+// WarmStoreRuntime opens the Store runtime without sending a request.
+func (s *Signer) WarmStoreRuntime() (result string, err error) {
+	if s == nil {
+		return "", fmt.Errorf("sapbridge: signer is closed")
+	}
+
+	image, err := appleMediaServicesImage()
+	if err != nil {
+		return "", err
+	}
+
+	warm, ok := s.inner.(interface {
+		WarmStore(context.Context, []byte) error
+	})
+	if !ok {
+		return "", fmt.Errorf("sapbridge: this build cannot warm the store runtime")
+	}
+
+	if err := warm.WarmStore(context.Background(), image); err != nil {
+		return "", err
+	}
+
+	return "ok", nil
+}
+
 // AuthenticateOnce performs one authenticate exchange through the Store
 // runtime and returns a JSON result. It never retries and never follows
 // redirects: the Swift side owns both decisions.
@@ -311,13 +336,15 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 	}
 
 	var input struct {
-		Endpoint  string `json:"endpoint"`
-		AppleID   string `json:"appleId"`
-		Password  string `json:"password"`
-		GUID      string `json:"guid"`
-		Cookie    string `json:"cookie"`
-		UserAgent string `json:"userAgent"`
-		TimeoutMS int    `json:"timeoutMs"`
+		Endpoint     string            `json:"endpoint"`
+		AppleID      string            `json:"appleId"`
+		Password     string            `json:"password"`
+		GUID         string            `json:"guid"`
+		Cookie       string            `json:"cookie"`
+		UserAgent    string            `json:"userAgent"`
+		ExtraHeaders map[string]string `json:"extraHeaders"`
+		Bag          map[string]any    `json:"bag"`
+		TimeoutMS    int               `json:"timeoutMs"`
 	}
 
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
@@ -346,13 +373,15 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 	}
 
 	response, err := exchange.AuthenticateOnce(context.Background(), image, sap.AuthenticateInput{
-		Endpoint:  input.Endpoint,
-		AppleID:   input.AppleID,
-		Password:  input.Password,
-		GUID:      input.GUID,
-		Cookie:    input.Cookie,
-		UserAgent: input.UserAgent,
-		Timeout:   timeout,
+		Endpoint:     input.Endpoint,
+		AppleID:      input.AppleID,
+		Password:     input.Password,
+		GUID:         input.GUID,
+		Cookie:       input.Cookie,
+		UserAgent:    input.UserAgent,
+		ExtraHeaders: input.ExtraHeaders,
+		Bag:          input.Bag,
+		Timeout:      timeout,
 	})
 	if err != nil {
 		return "", err
@@ -574,7 +603,8 @@ func FetchSapAssets() (string, error) {
 	}
 
 	total := len(bundle.AppleMediaServices) + len(bundle.Commerce) +
-		len(bundle.CoreFP) + len(bundle.CoreFPICXS)
+		len(bundle.ADID) + len(bundle.CoreFP) + len(bundle.CoreFPICXS) +
+		len(bundle.FairPlayD) + len(bundle.FairPlayKext)
 
 	return fmt.Sprintf("%s produced in %s",
 		cost.Finish(), measure.Bytes(uint64(total))), nil
