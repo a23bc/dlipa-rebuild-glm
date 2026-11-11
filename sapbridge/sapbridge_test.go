@@ -184,7 +184,7 @@ func TestKBSyncReturnsErrorWithoutAssets(t *testing.T) {
 func TestBundleDirValidationRejectsTruncatedFiles(t *testing.T) {
         dir := t.TempDir()
         // Right names, wrong contents: CoreFP must be 94842464 bytes.
-        for _, name := range []string{"AppleMediaServices", "commerce", "CoreFP", "CoreFP.icxs"} {
+        for _, name := range []string{"AppleMediaServices", "commerce", "adid", "fairplayd", "FairPlayIOKit", "CoreFP", "CoreFP.icxs"} {
                 if err := os.WriteFile(dir+"/"+name, []byte("truncated"), 0o600); err != nil {
                         t.Fatal(err)
                 }
