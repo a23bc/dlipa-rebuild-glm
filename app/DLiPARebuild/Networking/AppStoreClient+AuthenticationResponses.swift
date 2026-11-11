@@ -20,6 +20,23 @@ extension AppStoreClient {
         DevState.authAttemptsOverride ?? 3
     }
 
+    /// How many times a request that already carries a verification code is
+    /// sent. One.
+    ///
+    /// The challenge arrives out of a window that is answering, and the code is
+    /// typed seconds after it. Spending that window on a ladder is what the
+    /// captures show: run 511 asked, was answered on the fifth try, and then put
+    /// the fresh code through six requests over 126 seconds -- 403, 204, 204,
+    /// 204, 404, and only then the application, which replied with the body it
+    /// uses for a code it will not accept. Run 513 did the same with the session
+    /// cookies carried, and got the same answer from the same instance.
+    ///
+    /// A refusal on the first try is not a reason to re-send a code: it means
+    /// the front end is closed again, and the fix is a newer code, not a longer
+    /// wait. The bench made that concrete -- the same bytes are answered in one
+    /// try or refused for minutes, with nothing in between to retry toward.
+    static let authenticationCodeAttempts = 1
+
     /// 10s, then 20s, then 30s -- the doubling the reference client does,
     /// capped at the 30s it caps at. The list is indexed with a clamp, so a
     /// probe asking for twelve tries waits thirty seconds between the later

@@ -241,6 +241,11 @@ enum StoreError: LocalizedError {
     case httpError(Int, String)
     case failureType(String, String)
     case twoFactorRequired
+    /// A verification code was sent and the front end never handed the request
+    /// to the store, so nothing was checked -- not the code, not the password.
+    /// The distinction is the whole point of the message the person sees: a
+    /// refusal of this kind needs a *newer* code, not a corrected one.
+    case codeUnseen(Int)
     /// The bag, or a redirect, pointed at somewhere credentials may not go.
     case untrustedEndpoint(String)
     /// Signing needs the four Apple binaries, this build carries none, and
@@ -271,6 +276,8 @@ enum StoreError: LocalizedError {
             return NSLocalizedString(key, value: message, comment: "Apple failure type with message")
         case .twoFactorRequired:
             return NSLocalizedString("alert_2f_auth_message", comment: "2FA required")
+        case .codeUnseen:
+            return "Apple never saw that code. Enter the newest one and try again."
         }
     }
 
@@ -305,6 +312,8 @@ enum StoreError: LocalizedError {
             return type + (message.isEmpty ? "" : ": \(message)")
         case .twoFactorRequired:
             return "Apple requires 2FA verification code"
+        case .codeUnseen(let status):
+            return "the verification code was refused by the edge at HTTP \(status)"
         case .untrustedEndpoint(let url):
             return "refusing a request to " + url
         case .assetsNotFetched:

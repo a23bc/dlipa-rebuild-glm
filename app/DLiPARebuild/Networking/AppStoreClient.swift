@@ -319,7 +319,14 @@ final class AppStoreClient {
                 fromPropertyList: payload, format: .xml, options: 0)
 
             var outcome: (Data, HTTPURLResponse)?
-            for networkTry in 0..<Self.authenticationRequestAttempts {
+
+            // A request that already carries a code is not retried: see
+            // authenticationCodeAttempts. The count is taken per pass, because
+            // this same loop runs once with no code and once with it.
+            let tries = code.isEmpty ? Self.authenticationRequestAttempts
+                                     : Self.authenticationCodeAttempts
+
+            for networkTry in 0..<tries {
                 // Rebuilt on every try, and checked because this request carries
                 // the Apple ID password. Hoisting it out of the loop (which a
                 // previous change did) pinned every retry to the generic endpoint
@@ -341,7 +348,7 @@ final class AppStoreClient {
                 // ipatool retries those three times with a 10s / 20s backoff
                 // instead of failing the sign-in.
                 guard Self.isTransientAuthentication(result.1),
-                      networkTry < Self.authenticationRequestAttempts - 1 else { break }
+                      networkTry < tries - 1 else { break }
 
                 let delay = Self.authenticationRetryDelays[
                     min(networkTry, Self.authenticationRetryDelays.count - 1)]
@@ -379,6 +386,21 @@ final class AppStoreClient {
         guard let http else {
             throw StoreError.httpError(-1, "no response")
         }
+
+        // The code is sent once, so a front end that answers 204, 301 or 404
+        // here is not refusing the code -- it never passed it on. Saying which
+        // of the two happened is the difference between "that code was wrong"
+        // and "type the newest one", and the captures show both readings being
+        // needed: run 511 got six requests of refusal before the store answered,
+        // run 517 got none at all in three tries.
+        if !code.isEmpty, Self.isTransientAuthentication(http) {
+            AppLog.warn("verification code never reached the store: HTTP "
+                        + String(http.statusCode) + ", response "
+                        + String(data.count) + " bytes", .auth)
+
+            throw StoreError.codeUnseen(http.statusCode)
+        }
+
         try Self.rejectEmptyAnswer(http: http, data: data)
         try validate(http, data: data)
 

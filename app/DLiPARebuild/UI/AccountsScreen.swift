@@ -375,6 +375,13 @@ struct TwoFactorView: View {
                                        password: challenge.password,
                                        authCode: code)
                 dismiss()
+            } catch StoreError.codeUnseen {
+                // The edge refused before the store saw anything, so this code
+                // is not what failed and re-typing the same digits is not the
+                // remedy. The newest code is, because the front end that
+                // swallowed this one will answer again on its own schedule.
+                errorText = "Apple never saw that code -- the network refused it, "
+                            + "not the store. Enter the newest code and try again."
             } catch StoreError.twoFactorRequired {
                 // Apple asked again: the code was wrong or had expired.
                 errorText = "Apple did not accept that code. Try the newest one."
