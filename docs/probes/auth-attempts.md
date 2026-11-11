@@ -139,6 +139,11 @@ went. The answer that asked for the code came from instance 9807024, the answer
 that refused it from 9170017, and every line between them says `authenticate
 carries cookies: none`.
 
+`mzf_in` is written here as a number because it is not a credential: Apple
+echoes the same value in the `x-apple-application-instance` response header, and
+it names which WebObjects instance answered, not who is asking. The cookie
+*values* still stay out of the log; only the names are printed.
+
 Three defects, all on the code-bearing call, all mine, and each visible in the
 capture:
 
