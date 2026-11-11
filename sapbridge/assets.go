@@ -211,7 +211,12 @@ func appleMediaServicesPath() (string, error) {
 	return filepath.Join(cache, "AppleMediaServices"), nil
 }
 
-// readBundleDir loads the four pinned binaries from an explicit directory.
+// readBundleDir loads the seven pinned binaries from an explicit directory.
+//
+// Seven, not four: the loader validates seven, and this reader was left on the
+// four-piece profile when the identity service joined it. A staged directory
+// therefore failed with "adid is empty or missing" -- a message that reads like
+// a corrupt download and is really this function not looking.
 func readBundleDir(dir string) (assets.Bundle, error) {
 	read := func(name string) ([]byte, error) {
 		return readFile(dir + "/" + name)
@@ -227,6 +232,11 @@ func readBundleDir(dir string) (assets.Bundle, error) {
 		return assets.Bundle{}, fmt.Errorf("read commerce: %w", err)
 	}
 
+	adid, err := read("adid")
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("read adid: %w", err)
+	}
+
 	coreFP, err := read("CoreFP")
 	if err != nil {
 		return assets.Bundle{}, fmt.Errorf("read CoreFP: %w", err)
@@ -237,11 +247,24 @@ func readBundleDir(dir string) (assets.Bundle, error) {
 		return assets.Bundle{}, fmt.Errorf("read CoreFP.icxs: %w", err)
 	}
 
+	fairplayd, err := read("fairplayd")
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("read fairplayd: %w", err)
+	}
+
+	kext, err := read("FairPlayIOKit")
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("read FairPlayIOKit: %w", err)
+	}
+
 	bundle := assets.Bundle{
 		AppleMediaServices: appleMediaServices,
 		Commerce:           commerce,
+		ADID:               adid,
 		CoreFP:             coreFP,
 		CoreFPICXS:         coreFPICXS,
+		FairPlayD:          fairplayd,
+		FairPlayKext:       kext,
 	}
 
 	// Reuse the upstream validator so a truncated or tampered file is caught
@@ -271,7 +294,10 @@ func readBundleDir(dir string) (assets.Bundle, error) {
 	return assets.Bundle{
 		AppleMediaServices: appleMediaServices,
 		Commerce:           commerce,
+		ADID:               adid,
 		CoreFP:             coreFP,
 		CoreFPICXS:         coreFPICXS,
+		FairPlayD:          fairplayd,
+		FairPlayKext:       kext,
 	}, nil
 }

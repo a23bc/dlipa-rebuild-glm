@@ -3,27 +3,35 @@ import Foundation
 /// Copies the bundled Apple SAP binaries into the caches directory and
 /// points the Go bridge at them.
 ///
-/// The four binaries are about 119 MB, so staging happens off the main
-/// thread and reports progress. The Go loader validates size and SHA-256,
-/// so a truncated or corrupt copy is rejected here rather than surfacing
-/// later as an opaque SAP handshake error.
+/// Seven files, about 167 MB once they are on disk. The count and the size
+/// both grew when the identity service joined the profile -- four pieces used
+/// to be the whole of it -- and the Go loader validates all seven by size and
+/// SHA-256, so a truncated or corrupt copy is rejected here rather than
+/// surfacing later as an opaque SAP handshake error.
+///
+/// The number a person is asked to agree to is not this one: reaching these
+/// bytes through Apple's restore image costs about 300 MB of transfer, because
+/// the range reads pull more out of the image than the files they produce.
 enum AssetStaging {
     private static let files = [
         "AppleMediaServices",
         "commerce",
+        "adid",
         "CoreFP",
         "CoreFP.icxs",
+        "fairplayd",
+        "FairPlayIOKit",
     ]
 
     /// Total bytes that have to be copied on a cold start (approximate, for
     /// progress display only).
-    static let totalBytes: Int = 125_000_000
+    static let totalBytes: Int = 175_000_000
 
     /// True once every file is staged and the bridge has been told where
     /// they live. Signing and downloading need this.
     static var isReady = false
 
-    /// True when this build ships without the four binaries. That is now a
+    /// True when this build ships without the seven binaries. That is now a
     /// normal build, not a broken one: the bridge resolves them from Apple's
     /// restore image the first time something needs them, so staging has
     /// nothing to copy and must not point the bridge at an empty directory --
@@ -54,7 +62,7 @@ enum AssetStaging {
             .appendingPathComponent("SapAssets", isDirectory: true)
     }
 
-    /// Whether signing anything right now would mean taking about 212 MB that
+    /// Whether signing anything right now would mean taking about 300 MB that
     /// is neither on the device nor agreed to.
     ///
     /// One answer for three screens -- the shell at launch, the account sheet
@@ -242,11 +250,20 @@ enum AssetStaging {
         }
     }
 
-    /// Fetches the four binaries from Apple through the bridge.
+    /// Fetches the seven binaries from Apple through the bridge.
     ///
     /// A build that ships no binaries needs this before it can sign anything,
-    /// and it costs about 212 MB of someone else's data, so callers ask first
+    /// and it costs about 300 MB of someone else's data, so callers ask first
     /// rather than running it from the launch path.
+    ///
+    /// The two figures the consent text carries are not equally solid. The
+    /// bytes and the request count come from running this repository's own
+    /// fetcher over the pinned image; the "couple of minutes on a phone" in
+    /// those alerts does not. The device measurement on record is 211.7 MiB in
+    /// 457 requests in 52 seconds, and that was the four-piece profile, so the
+    /// phone duration for seven pieces is an extrapolation from a ratio, not a
+    /// reading. A first seven-piece fetch on a device is what turns it into a
+    /// number.
     ///
     /// Calling this *is* that answer: it opens the bridge's permission on the
     /// way in, because every caller of it sits behind a button that says fetch.

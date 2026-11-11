@@ -483,7 +483,7 @@ final class AppSession: ObservableObject {
         }
         // Opening the signer is the first thing that loads the four Apple
         // binaries, so it is where an unbundled build would silently take
-        // 212 MB of someone's data. The bridge refuses while nobody has
+        // 300 MB of someone's data. The bridge refuses while nobody has
         // agreed; saying so here, before the Task exists, keeps a refused
         // handshake from being cached as a build that can never finish.
         if AssetStaging.needsConsent() {

@@ -18,7 +18,7 @@ enum SearchAlert: Identifiable {
     case licenceFailed(String)
     /// Permission to fetch the signing components. This build does not carry
     /// them, and the first signature needs them, so the alternative to asking
-    /// is a download that quietly spends 212 MB of someone else's data.
+    /// is a download that quietly spends 300 MB of someone else's data.
     case fetchAssets(StoreApp)
     /// Apple refused, or the phone did. The bridge's own words, which carry the
     /// cost it reached before stopping.
@@ -103,7 +103,7 @@ struct SearchScreen: View {
     // MARK: - The menu
 
     /// The questions this screen asks: permission before a licence is taken,
-    /// permission before 212 MB is fetched from Apple, and the store's or
+    /// permission before 300 MB is fetched from Apple, and the store's or
     /// Apple's own words when either refuses.
     ///
     /// Its own function for the same reason the action sheet is: the buttons'
@@ -129,12 +129,12 @@ struct SearchScreen: View {
                          dismissButton: .default(Text("OK")))
         case .fetchAssets(let app):
             return Alert(title: Text("Fetch the signing components?"),
-                         message: Text("This build does not carry the four Apple binaries. "
+                         message: Text("This build does not carry the seven Apple binaries. "
                                        + "Signing " + app.trackName + " needs them, so the app "
                                        + "takes them from Apple's macOS restore image: about "
-                                       + "212 MB over roughly 450 requests, around a minute on "
-                                       + "a phone. It happens once, and the download is queued "
-                                       + "after it."),
+                                       + "300 MB over roughly 6,200 requests, a couple of "
+                                       + "minutes on a phone. It happens once, and the "
+                                       + "download is queued after it."),
                          primaryButton: .default(Text("Fetch and download")) {
                              Task { await model.grantAssets() }
                          },
@@ -564,7 +564,7 @@ final class SearchModel: ObservableObject {
     }
 
     /// Queues a download -- or asks first, if signing it would mean fetching
-    /// 212 MB that is not on this device yet.
+    /// 300 MB that is not on this device yet.
     ///
     /// `download` asks before the licence check and this is the second line at
     /// the point of handover, because the two are reached from different places:

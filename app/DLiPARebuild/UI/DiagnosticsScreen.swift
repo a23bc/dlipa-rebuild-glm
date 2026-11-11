@@ -248,7 +248,7 @@ struct DiagnosticsScreen: View {
     ///
     /// Through AssetStaging rather than straight at the bridge, so that pressing
     /// this while a download is already waiting on the same fetch joins that run
-    /// instead of starting a second 212 MB download of the same restore image.
+    /// instead of starting a second 300 MB download of the same restore image.
     private func fetchAssets() {
         running = true
         started = Date()

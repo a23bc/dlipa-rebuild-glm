@@ -77,7 +77,7 @@ struct RootTabView: View {
             if let toast = downloads.toast {
                 ToastLine(text: toast)
             } else if fetchingAssets {
-                ToastLine(text: "Fetching the signing components from Apple (~212 MB, once)...")
+                ToastLine(text: "Fetching the signing components from Apple (~300 MB, once)...")
             }
         }
         .animation(.easeInOut(duration: 0.2), value: downloads.toast)
@@ -95,7 +95,7 @@ struct RootTabView: View {
     /// directory it is allowed to evict, or the folder was removed by hand, and
     /// the next signed request will fail without those bytes. Asking then is the
     /// whole point. Someone setting the app up for the first time is not: they
-    /// have not asked for anything yet, and a modal about 212 MB in the face of
+    /// have not asked for anything yet, and a modal about 300 MB in the face of
     /// a person who has not even chosen an account is how an app gets
     /// uninstalled. That one is asked where the need actually appears, in the
     /// account sheet before the handshake (AccountsScreen), which is the same
@@ -137,11 +137,11 @@ struct RootTabView: View {
         switch item {
         case .askAssets:
             return Alert(title: Text("Fetch the signing components?"),
-                         message: Text("This build does not carry the four Apple binaries, "
+                         message: Text("This build does not carry the seven Apple binaries, "
                                        + "and DLiPA needs them to sign anything. Taking them "
-                                       + "from Apple's macOS restore image costs about 212 MB "
-                                       + "over roughly 450 requests -- around a minute on a "
-                                       + "phone, and once. Choosing Later leaves the app unable "
+                                       + "from Apple's macOS restore image costs about 300 MB "
+                                       + "over roughly 6,200 requests -- a couple of minutes on "
+                                       + "a phone, and once. Choosing Later leaves the app unable "
                                        + "to sign until you agree."),
                          primaryButton: .default(Text("Fetch now")) {
                              fetchAssets()

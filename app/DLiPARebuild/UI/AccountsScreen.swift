@@ -197,7 +197,7 @@ struct SignInView: View {
     /// The notice that the handshake needs the signing components and nobody
     /// has agreed to fetch them. Shown instead of a refusal: this is the screen
     /// a first-time user reaches, and the launch question deliberately does not
-    /// ask them (RootTabView) because nobody wants a 212 MB modal before they
+    /// ask them (RootTabView) because nobody wants a 300 MB modal before they
     /// have chosen an account.
     @State private var needsAssetFetch = false
     @State private var fetchingAssets = false
@@ -224,9 +224,10 @@ struct SignInView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("DLiPA has to open the signing runtime before Apple "
                                  + "will look at these credentials, and this build does not "
-                                 + "carry the four components it runs. Taking them from "
-                                 + "Apple's restore image costs about 212 MB, once, and takes "
-                                 + "around a minute on a phone.")
+                                 + "carry the seven components it runs. Taking them from "
+                                 + "Apple's restore image costs about 300 MB over roughly "
+                                 + "6,200 requests, once, and takes a couple of minutes on "
+                                 + "a phone.")
                                 .font(.footnote)
                             Button(fetchingAssets ? "Fetching..." : "Fetch and sign in") {
                                 fetchAssets()

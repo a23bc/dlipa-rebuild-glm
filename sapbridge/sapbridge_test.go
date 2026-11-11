@@ -277,7 +277,7 @@ func TestAssetFetchNeedsPermission(t *testing.T) {
 
         _, err := appleMediaServicesPath()
         if err == nil {
-                t.Skip("this host already has the four binaries in its cache")
+                t.Skip("this host already has the seven binaries in its cache")
         }
         if !strings.Contains(err.Error(), "not allowed") {
                 t.Fatalf("the refusal does not name the missing permission: %v", err)
@@ -291,7 +291,7 @@ func TestAssetFetchNeedsPermission(t *testing.T) {
         AllowAssetFetch()
         _, err = appleMediaServicesPath()
         if err == nil {
-                t.Skip("this host already has the four binaries in its cache")
+                t.Skip("this host already has the seven binaries in its cache")
         }
         if !strings.Contains(err.Error(), "fetch Apple SAP assets") {
                 t.Fatalf("permission granted but no fetch attempted: %v", err)
