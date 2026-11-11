@@ -161,6 +161,31 @@ final class AppStoreClient {
 
     /// Signs in.
     ///
+    /// The switch chooses the Store-runtime exchange or the hand-built
+    /// request. Both return the same account; the hand-built one stays the
+    /// shipping path until the native one passes a device run.
+    func authenticate(email: String,
+                      password: String,
+                      authCode: String?,
+                      guid: String,
+                      endpoint: String,
+                      signer: SAPSigner,
+                      attempt: Int = 1) async throws -> Account {
+        if UserDefaults.standard.bool(forKey: Self.nativeAuthenticateKey) {
+            return try await authenticateNative(email: email, password: password,
+                                                authCode: authCode, guid: guid,
+                                                endpoint: endpoint, signer: signer)
+        }
+
+        return try await authenticateHandBuilt(email: email, password: password,
+                                               authCode: authCode, guid: guid,
+                                               endpoint: endpoint, signer: signer,
+                                               attempt: attempt)
+    }
+
+    /// The hand-built request: six plist fields, signed here, sent with
+    /// URLSession. Kept whole as the comparison arm and the fallback.
+    ///
     /// Two-factor runs over two requests, and the shape is not obvious:
     ///
     /// - The code is appended to the password, not sent in a field of its own.
@@ -172,22 +197,13 @@ final class AppStoreClient {
     ///   There is no failure code to match on, and a response shaped this way
     ///   otherwise looks like a success: it has no passwordToken and no
     ///   dsPersonId, which is why they are checked below.
-    func authenticate(email: String,
-                      password: String,
-                      authCode: String?,
-                      guid: String,
-                      endpoint: String,
-                      signer: SAPSigner,
-                      attempt: Int = 1) async throws -> Account {
-        // The native path owns one exchange and no retry. It ignores `attempt`:
-        // Apple wants 1 on the code request too, and AppSession still passes 2
-        // for the old path's benefit.
-        if UserDefaults.standard.bool(forKey: Self.nativeAuthenticateKey) {
-            return try await authenticateNative(email: email, password: password,
-                                                authCode: authCode, guid: guid,
-                                                endpoint: endpoint, signer: signer)
-        }
-
+    private func authenticateHandBuilt(email: String,
+                                       password: String,
+                                       authCode: String?,
+                                       guid: String,
+                                       endpoint: String,
+                                       signer: SAPSigner,
+                                       attempt: Int = 1) async throws -> Account {
         // A sign-in starts from an empty jar. The launch restores the previous
         // account's cookies, and signing in the second account on top of them left
         // that account's X-Token and DSID in the values this call captures -- the new
