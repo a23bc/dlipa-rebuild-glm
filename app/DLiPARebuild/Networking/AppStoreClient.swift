@@ -71,6 +71,14 @@ final class AppStoreClient {
     /// endpoint on the code attempt is what produced a 404.
     private var authenticationPod: String?
 
+    /// When Apple last asked for a verification code.
+    ///
+    /// The transient retry ladder can spend two minutes getting one answer
+    /// through a front end that keeps returning 204s, and a rotating code does
+    /// not wait for that. Nothing here decides what to do about it; the stamp is
+    /// what makes the question answerable from a log instead of from a guess.
+    private var twoFactorAskedAt: Date?
+
     /// The UA the original DLiPA shipped. Apple gates the private bag on the
     /// Configurator UA: with a generic UA the response contains none of the
     /// sign-sap-* keys at all. The 2.17 UA was found to return a generic
@@ -232,21 +240,18 @@ final class AppStoreClient {
         // session was minted against the old one and every download through it failed
         // in the guest's request setup.
         //
-        // Only the cookie state is dropped: the pod routing belongs to the 2FA retry,
-        // and resetSession() would clear it between the two attempts.
-        clearPersistedCookieJar()
-        capturedCookieHeader = ""
-        capturedCookieValues = [:]
-
-        // The pod belongs to the account that was signed in before. Carrying it into a
-        // different account's sign-in routes the request to that region's host: the
-        // second account's session then reports the first account's storefront, and
-        // every lookup for an app in the second account's own store comes back empty.
-        //
-        // Only on the first attempt: the 2FA retry has to reach the same pod the code
-        // was challenged from.
-        if attempt == 1 {
-            authenticationPod = nil
+        // Only on a call with no code, though. Asking for a code and then posting it
+        // are two calls to this function, and wiping the jar at the top of the second
+        // one deletes the four cookies the first one's answer had just set -- run 511
+        // shows the pair: `itspod=7` minted the challenge, `itspod=17` refused the
+        // code, and no `Cookie` was carried between them. A code call can only follow
+        // a password call inside one sign-in, so what it inherits is that same
+        // account's session.
+        if authCode == nil || authCode!.isEmpty {
+            clearPersistedCookieJar()
+            capturedCookieHeader = ""
+            capturedCookieValues = [:]
+            twoFactorAskedAt = nil
         }
 
         // Where this request goes. The reference client normalizes the bag's URL
@@ -258,10 +263,31 @@ final class AppStoreClient {
 
         let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
 
+        // How old the code is by the time it leaves. The ladder in front of the
+        // application is the reason this can be long: run 511 spent 125 seconds
+        // and six code requests -- 403, 204, 204, 204, 404, then a 200 from
+        // MZFinance -- starting 13 seconds after the challenge was minted. A
+        // rotating code does not survive that, and whether it did here is a
+        // number this line answers.
+        if !code.isEmpty, let askedAt = twoFactorAskedAt {
+            AppLog.info("code posted " + String(Int(Date().timeIntervalSince(askedAt)))
+                        + "s after apple asked for it", .auth)
+        }
+
         // Where this request starts. A code-carrying attempt goes straight to
         // the pod the password attempt was redirected to; a fresh attempt
         // starts from the generic endpoint and forgets any earlier pod, because
-        // the account may have changed.
+        // the account may have changed -- carrying one account's region into
+        // another's sign-in routes it to that region's host, and the second
+        // account then reports the first one's storefront with every app lookup
+        // coming back empty.
+        //
+        // This used to be keyed on `attempt == 1` beside the jar wipe above, and
+        // it went quietly wrong when the code call started being sent at attempt
+        // 1, which is what the reference client does (upstream
+        // appstore_login.go:187 builds every first request with attempt 1, code
+        // or none). Whether the call carries a code is the question; attempt was
+        // only ever standing in for it.
         if authCode == nil || authCode!.isEmpty {
             authenticationPod = nil
         }
@@ -300,6 +326,26 @@ final class AppStoreClient {
                                         forHTTPHeaderField: "User-Agent")
                 attemptRequest.httpBody = body
 
+                // A 2FA challenge belongs to a session, not to an account. The
+                // reference client builds the client that posts authenticate with
+                // a cookie jar (upstream pkg/appstore/appstore.go:101), so its
+                // code goes back with the `itspod` and `mzf_in` the answer asking
+                // for it just set, and Apple routes the verification to the
+                // instance that minted the challenge. We captured those cookies
+                // and never replayed them here, so run 511 posted the code with
+                // no `Cookie`, was served by a different pod -- `itspod=7` on the
+                // answer that asked, `itspod=17` on the one that refused -- and
+                // got `MZFinance.BadLogin.Configurator_message`, the same body
+                // Apple uses for a code it did not accept (upstream
+                // appstore_login.go:420).
+                //
+                // `resetSession` empties this jar before a sign-in, so what is
+                // attached can only be what this sign-in's own first answer set:
+                // no other account's region rides along.
+                if !capturedCookieHeader.isEmpty {
+                    attemptRequest.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
+                }
+
                 // What actually goes out, header by header. Apple routes a sign-in to
                 // a regional pod, and a value in here is the only thing that can carry
                 // the previous account's region into this one.
@@ -307,19 +353,19 @@ final class AppStoreClient {
                 AppLog.info("authenticate request to " + attemptRequest.url!.absoluteString
                             + " headers: " + described, .auth)
 
-                // The names only. `describeRequestHeaders` lists what this
-                // object carries, and URLSession adds its jar at dispatch time,
-                // so a request can be sent with `itspod` while the log above
-                // says nothing about it -- which is exactly the gap run 506 left
-                // open, because `itspod` and `mzf_in` are what route a request
-                // to the pod that minted the 2FA challenge.
-                //
-                // The values are session credentials, so they stay out of a log
-                // anyone can share; a name answers the question they were asked
-                // for.
-                let attached = HTTPCookieStorage.shared.cookies(for: attemptRequest.url!) ?? []
+                // The names only, read off the request itself. This session turns
+                // `httpShouldSetCookies` off on purpose, so `HTTPCookieStorage`
+                // stays empty and a line drawn from it reported "none" beside a
+                // request that did carry the session -- which is how run 511 read
+                // as no cookies at all. The values are session credentials, so
+                // they stay out of a log anyone can share; a name answers what the
+                // question was asked for.
+                let carried = attemptRequest.value(forHTTPHeaderField: "Cookie")?
+                    .split(separator: ";")
+                    .map { $0.trimmingCharacters(in: .whitespaces)
+                        .split(separator: "=").first.map(String.init) ?? "" } ?? []
                 AppLog.info("authenticate carries cookies: "
-                            + (attached.isEmpty ? "none" : attached.map { $0.name }.joined(separator: ",")),
+                            + (carried.isEmpty ? "none" : carried.joined(separator: ",")),
                             .auth)
 
                 let result = try await signedRequest(
@@ -386,6 +432,7 @@ final class AppStoreClient {
         // there is no code to match. ipatool calls this ErrAuthCodeRequired.
         if failure.isEmpty && message == "MZFinance.BadLogin.Configurator_message" {
             if authCode == nil || authCode!.isEmpty {
+                twoFactorAskedAt = Date()
                 AppLog.info("2FA required, asking for the code", .auth)
                 throw StoreError.twoFactorRequired
             }

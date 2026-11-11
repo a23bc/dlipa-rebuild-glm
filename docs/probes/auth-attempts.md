@@ -102,6 +102,75 @@ what makes the certificate list meaningful: a subject that is not Apple's is a
 proxy saying so out loud, and error code -1202 against -1200 is the difference
 between "this chain was refused" and "something else in TLS broke".
 
+Corrected on 2026-11-11, by the device run below and by a re-read of the same
+control: `gsa.apple.com` does verify from here. `curl` reports `verify=19`,
+self-signed certificate in chain, and the chain it prints ends at Apple Root
+CA -- the Windows `openssl` in the same house reports code 19 on the identical
+chain. Neither trust store on this machine holds an Apple anchor, and
+`www.apple.com/appleca/AppleIncRootCertificate.cer`, which is where the
+provisioning fallback goes to get one, answers 403 to every client from this
+network. Point `SSL_CERT_FILE` at the system bundle with that root -- which gsa
+itself serves as the third certificate in its chain -- and the same lookup
+returns HTTP 401, which is the application talking. So line 84's
+"does not verify there" described the anchor, not the path, and the phone's
+answer to that question was never in doubt: iOS ships the Apple roots, so the
+fallback that needs a blocked URL is never reached there.
+
+## Run 511: the code went to a different pod than the one that asked for it
+
+The first sign-in since the attempts knob, on the real account, `attempts 12`,
+code typed within seconds of the prompt. The ladder did its job: the password
+call needed five requests to reach the application, and the application
+answered it.
+
+| time (Z) | one call's requests, in order | what came back |
+| --- | --- | --- |
+| 04:22:41 – 04:24:17 | `attempt 1 (no 2FA)` | 302 no Location, 204, 301 no Location, 204, **200** |
+| | | empty `failureType` + `MZFinance.BadLogin.Configurator_message` = the 2FA challenge; `itspod=7`, `mzf_in=9807024` |
+| 04:24:29 – 04:26:35 | `attempt 1 (with 2FA)` | 403, 204, 204, 204, 404, **200** |
+| | | the same BadLogin body, from `itspod=17`, `mzf_in=9170017` |
+
+That is the reference client's own reading of that body: an empty `failureType`
+with `customerMessage == MZFinance.BadLogin.Configurator_message` means "code
+required" when no code was sent, and "apple did not complete verification; try
+a fresh 2FA code" when one was (upstream `appstore_login.go:420`). The shape
+matched, so this is not a parse gap -- the difference is where the two requests
+went. The answer that asked for the code came from instance 9807024, the answer
+that refused it from 9170017, and every line between them says `authenticate
+carries cookies: none`.
+
+Three defects, all on the code-bearing call, all mine, and each visible in the
+capture:
+
+* `AppSession.signIn` called `client.resetSession()` on entry, unconditionally,
+  and that wipes the pod and the jar. The verify step is the second half of one
+  sign-in, so it wiped the session whose answer had just asked for the code.
+* `authenticate` then wiped the hand-copied jar a second time at its own entry
+  (`capturedCookieHeader = ""`), for the same reason.
+* and the authenticate request never attached the jar even when it held
+  something: the reference client builds its login client with
+  `CookieJar: args.CookieJar` (`appstore.go:101`), so its code goes back with
+  the `itspod` and `mzf_in` that were set moments earlier. Our capture existed
+  and went out through no header at all.
+
+The last one also explains why the earlier log line read `none` while nobody
+questioned it: it was drawn from `HTTPCookieStorage.shared`, and this session
+sets `httpShouldSetCookies = false` on purpose -- the shared jar is *always*
+empty here, so that line could only ever have said `none`. It now reads the
+request's own `Cookie` header.
+
+What the build changes: the pod and jar are carried when -- and only when --
+the call carries a code, the code request replays the session cookies, and one
+more line reports how old the code is by then (`code posted Ns after apple
+asked for it`), because 125 seconds and six requests is also what stands
+between a typed code and an application that can check it.
+
+What this does not claim: that the account was ever unlocked by a code. It
+claims the code has never been presented to the instance that minted the
+challenge, and that is the thing the next capture can settle either way. If
+run 512 still ends in BadLogin with `itspod=` equal on both answers, the pod
+story is dead and the age line is the next suspect.
+
 ## What this probe does not do
 
 It changes nothing about what ships: three tries is still the default. It does

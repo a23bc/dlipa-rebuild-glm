@@ -114,7 +114,17 @@ final class AppSession: ObservableObject {
         // Drop the previous account's cookies here, where a sign-in actually
         // begins. beginNewSignIn runs when the sheet opens, and clearing there
         // meant cancelling the sheet left the current account with no session.
-        client.resetSession()
+        //
+        // Not when this call carries a verification code. That call is the second
+        // half of the same sign-in, and resetting here deleted the session whose
+        // answer asked for the code: run 511 minted the challenge on `itspod=7`,
+        // reset, and then posted the code to `itspod=17` with no cookie and no pod
+        // carried over. Apple's own answer to that is the BadLogin body it reads
+        // as "the code was not accepted", which is why the code looked wrong to
+        // the person who had just typed it correctly.
+        if authCode == nil || authCode!.isEmpty {
+            client.resetSession()
+        }
 
         // The bag carries the SAP endpoints and the protocol version. It needs
         // no signature, so it is fetched before any guest code runs.
