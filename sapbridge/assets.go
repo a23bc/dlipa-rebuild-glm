@@ -13,13 +13,13 @@ import (
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
 )
 
-// BundleDir is where the app looks for the four Apple binaries. The iOS app
+// BundleDir is where the app looks for the seven Apple binaries. The iOS app
 // copies them out of its own bundle into Library/Caches on first launch,
 // because the upstream loader uses os.UserCacheDir().
 var BundleDir string
 
-// allowedAssetFetch is the app's permission to spend about 212 MB of someone's
-// data plan on the four Apple binaries. It starts closed: the bridge never
+// allowedAssetFetch is the app's permission to spend about 300 MB of someone's
+// data plan on the seven Apple binaries. It starts closed: the bridge never
 // decides that on its own, and the app opens it the moment a person answers
 // yes -- which is the only moment anything here can claim they did.
 //
@@ -121,7 +121,7 @@ func loadBundle() (assets.Bundle, error) {
 	}
 
 	fmt.Fprintf(os.Stderr,
-		"sap assets: not cached (%v); resolving from Apple, about 212 MB\n", err)
+		"sap assets: not cached (%v); resolving from Apple, about 300 MB\n", err)
 
 	fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancelFetch()
@@ -148,11 +148,11 @@ func loadBundle() (assets.Bundle, error) {
 	return bundle, nil
 }
 
-// AssetsCached reports whether the four Apple binaries are already on this
+// AssetsCached reports whether the seven Apple binaries are already on this
 // device, in the cache the loader writes.
 //
 // The app asks before it offers to fetch them. It only needs to ask when there
-// is a fetch to make: the download costs about 212 MB once, and after that the
+// is a fetch to make: the download costs about 300 MB once, and after that the
 // answer is on disk, so asking again would be a false alarm about someone else
 // data plan.
 func AssetsCached() bool {
@@ -211,7 +211,7 @@ func appleMediaServicesPath() (string, error) {
 	return filepath.Join(cache, "AppleMediaServices"), nil
 }
 
-// readBundleDir loads the four pinned binaries from an explicit directory.
+// readBundleDir loads the seven pinned binaries from an explicit directory.
 func readBundleDir(dir string) (assets.Bundle, error) {
 	read := func(name string) ([]byte, error) {
 		return readFile(dir + "/" + name)
@@ -237,11 +237,29 @@ func readBundleDir(dir string) (assets.Bundle, error) {
 		return assets.Bundle{}, fmt.Errorf("read CoreFP.icxs: %w", err)
 	}
 
+	adid, err := read("adid")
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("read adid: %w", err)
+	}
+
+	fairplayd, err := read("fairplayd")
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("read fairplayd: %w", err)
+	}
+
+	fairPlayKext, err := read("FairPlayIOKit")
+	if err != nil {
+		return assets.Bundle{}, fmt.Errorf("read FairPlayIOKit: %w", err)
+	}
+
 	bundle := assets.Bundle{
 		AppleMediaServices: appleMediaServices,
 		Commerce:           commerce,
+		ADID:               adid,
 		CoreFP:             coreFP,
 		CoreFPICXS:         coreFPICXS,
+		FairPlayD:          fairplayd,
+		FairPlayKext:       fairPlayKext,
 	}
 
 	// Reuse the upstream validator so a truncated or tampered file is caught

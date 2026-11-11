@@ -3,7 +3,8 @@ import Foundation
 /// Copies the bundled Apple SAP binaries into the caches directory and
 /// points the Go bridge at them.
 ///
-/// The four binaries are about 119 MB, so staging happens off the main
+/// The seven binaries are about 167 MB on disk (about 300 MB of transfer), so
+/// staging happens off the main
 /// thread and reports progress. The Go loader validates size and SHA-256,
 /// so a truncated or corrupt copy is rejected here rather than surfacing
 /// later as an opaque SAP handshake error.
@@ -11,19 +12,22 @@ enum AssetStaging {
     private static let files = [
         "AppleMediaServices",
         "commerce",
+        "adid",
+        "fairplayd",
+        "FairPlayIOKit",
         "CoreFP",
         "CoreFP.icxs",
     ]
 
     /// Total bytes that have to be copied on a cold start (approximate, for
     /// progress display only).
-    static let totalBytes: Int = 125_000_000
+    static let totalBytes: Int = 174_733_872
 
     /// True once every file is staged and the bridge has been told where
     /// they live. Signing and downloading need this.
     static var isReady = false
 
-    /// True when this build ships without the four binaries. That is now a
+    /// True when this build ships without the seven binaries. That is now a
     /// normal build, not a broken one: the bridge resolves them from Apple's
     /// restore image the first time something needs them, so staging has
     /// nothing to copy and must not point the bridge at an empty directory --
@@ -54,13 +58,13 @@ enum AssetStaging {
             .appendingPathComponent("SapAssets", isDirectory: true)
     }
 
-    /// Whether signing anything right now would mean taking about 212 MB that
+    /// Whether signing anything right now would mean taking about 300 MB that
     /// is neither on the device nor agreed to.
     ///
     /// One answer for three screens -- the shell at launch, the account sheet
     /// before a handshake, the search screen before a download -- because they
     /// have to agree. It is false for a build that stages from its own bundle,
-    /// false once the four files are in the cache (SapbridgeAssetsCached stats
+    /// false once the seven files are in the cache (SapbridgeAssetsCached stats
     /// them and reads no byte, so a device that already paid is not asked
     /// again), and false for the rest of a session after someone has said yes,
     /// which is what keeps a fetch that was allowed and then failed from
@@ -242,10 +246,10 @@ enum AssetStaging {
         }
     }
 
-    /// Fetches the four binaries from Apple through the bridge.
+    /// Fetches the seven binaries from Apple through the bridge.
     ///
     /// A build that ships no binaries needs this before it can sign anything,
-    /// and it costs about 212 MB of someone else's data, so callers ask first
+    /// and it costs about 300 MB of someone else's data, so callers ask first
     /// rather than running it from the launch path.
     ///
     /// Calling this *is* that answer: it opens the bridge's permission on the
