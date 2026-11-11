@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
@@ -294,6 +295,87 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 		Purpose:           purpose,
 		ExternalVersionID: externalVersionID,
 	})
+}
+
+// AuthenticateOnce performs one authenticate exchange through the Store
+// runtime and returns a JSON result. It never retries and never follows
+// redirects: the Swift side owns both decisions.
+//
+// Input is JSON rather than a struct because gomobile maps exported method
+// parameters, not Go structs: {"endpoint","appleId","password","guid",
+// "cookie","userAgent","timeoutMs"}. Output is {"status","headers",
+// "bodyBase64","url"}.
+func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
+	if s == nil {
+		return "", fmt.Errorf("sapbridge: signer is closed")
+	}
+
+	var input struct {
+		Endpoint  string `json:"endpoint"`
+		AppleID   string `json:"appleId"`
+		Password  string `json:"password"`
+		GUID      string `json:"guid"`
+		Cookie    string `json:"cookie"`
+		UserAgent string `json:"userAgent"`
+		TimeoutMS int    `json:"timeoutMs"`
+	}
+
+	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
+		return "", fmt.Errorf("sapbridge: authenticate input: %w", err)
+	}
+
+	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	if timeout > 2*time.Minute {
+		timeout = 2 * time.Minute
+	}
+
+	image, err := appleMediaServicesImage()
+	if err != nil {
+		return "", err
+	}
+
+	exchange, ok := s.inner.(interface {
+		AuthenticateOnce(context.Context, []byte, sap.AuthenticateInput) (sap.AuthenticateResult, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("sapbridge: this build does not support authenticate")
+	}
+
+	response, err := exchange.AuthenticateOnce(context.Background(), image, sap.AuthenticateInput{
+		Endpoint:  input.Endpoint,
+		AppleID:   input.AppleID,
+		Password:  input.Password,
+		GUID:      input.GUID,
+		Cookie:    input.Cookie,
+		UserAgent: input.UserAgent,
+		Timeout:   timeout,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	output := struct {
+		Status     int                 `json:"status"`
+		Headers    map[string][]string `json:"headers"`
+		BodyBase64 string              `json:"bodyBase64"`
+		URL        string              `json:"url"`
+	}{
+		Status:     response.Status,
+		Headers:    response.Headers,
+		BodyBase64: base64.StdEncoding.EncodeToString(response.Body),
+		URL:        response.URL,
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: authenticate result: %w", err)
+	}
+
+	return string(data), nil
 }
 
 func (s *Signer) Hardware() []byte {

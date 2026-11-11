@@ -1,0 +1,231 @@
+package sap
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
+)
+
+// AuthenticateInput is one sign-in exchange. It carries no retry policy and no
+// redirect state: the caller sends again, or does not.
+type AuthenticateInput struct {
+	Endpoint  string
+	AppleID   string
+	Password  string // the verification code is already appended by the caller
+	GUID      string // 12 hex characters
+	Cookie    string
+	UserAgent string
+	Timeout   time.Duration
+}
+
+// AuthenticateResult is what the edge or the store answered, unread.
+type AuthenticateResult struct {
+	Status  int
+	Headers map[string][]string
+	Body    []byte
+	URL     string
+}
+
+const (
+	authenticatePath = "/WebObjects/MZFinance.woa/wa/authenticate"
+	maxAuthBody      = 1 << 20
+)
+
+// AuthenticateOnce sends exactly one authenticate request through the Store
+// runtime. Apple's AMSVerifyCredentialsTask builds the parameters; this
+// function builds nothing but the envelope.
+//
+// No retry, no redirect: a 3xx is returned with its Location so the caller can
+// decide, and a 204 is returned as a 204. That is a deliberate departure from
+// upstream's three-try ladder -- the device captures showed the ladder only
+// ages a fresh verification code.
+func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input AuthenticateInput) (AuthenticateResult, error) {
+	if s == nil || s.machine == nil {
+		return AuthenticateResult{}, errors.New("authenticate: no machine")
+	}
+
+	if len(image) < 4 {
+		return AuthenticateResult{}, fmt.Errorf("authenticate: got %d bytes for AppleMediaServices", len(image))
+	}
+
+	endpoint, err := validateAuthenticateEndpoint(input.Endpoint)
+	if err != nil {
+		return AuthenticateResult{}, err
+	}
+
+	hardware, err := parseHardwareGUID(input.GUID)
+	if err != nil {
+		return AuthenticateResult{}, err
+	}
+
+	if strings.TrimSpace(input.AppleID) == "" {
+		return AuthenticateResult{}, errors.New("authenticate: apple id is empty")
+	}
+
+	if input.Password == "" {
+		return AuthenticateResult{}, errors.New("authenticate: password is empty")
+	}
+
+	if strings.ContainsAny(input.Cookie, "\r\n") {
+		return AuthenticateResult{}, errors.New("authenticate: cookie contains a line break")
+	}
+
+	// The same lock the signer takes: a request must not land in the middle of
+	// another signature.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	engine := s.machine.Engine()
+	if engine == nil {
+		return AuthenticateResult{}, errors.New("authenticate: machine has no engine")
+	}
+
+	prepared, err := profile.Load(ctx)
+	if err != nil {
+		return AuthenticateResult{}, fmt.Errorf("authenticate: load profile: %w", err)
+	}
+
+	runtime := s.storeRuntime
+	if runtime == nil {
+		runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, prepared, s.machine.HeapUsed())
+		if err != nil {
+			return AuthenticateResult{}, fmt.Errorf("authenticate: open runtime: %w", err)
+		}
+
+		s.storeRuntime = runtime
+	}
+
+	headers := make(http.Header)
+	headers.Set("User-Agent", input.UserAgent)
+
+	if input.Cookie != "" {
+		headers.Set("Cookie", input.Cookie)
+	}
+
+	timeout := input.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: -1}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		DisableKeepAlives:     true,
+		ForceAttemptHTTP2:     false,
+	}
+	defer transport.CloseIdleConnections()
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	send := func(request *http.Request) (*http.Response, error) {
+		// Apple's task asks for br, gzip and deflate. Go has no brotli decoder,
+		// so drop the negotiation and let the transport pick gzip and decompress
+		// it itself. This is the one header this bridge does not preserve.
+		request.Header.Del("Accept-Encoding")
+
+		return client.Do(request)
+	}
+
+	response, err := runtime.Execute(emulator.Request{
+		URL:         endpoint,
+		Method:      http.MethodPost,
+		Operation:   "authenticate",
+		NoRedirects: true,
+		Headers:     headers,
+		Parameters: map[string]any{
+			"appleId":  input.AppleID,
+			"attempt":  "1",
+			"guid":     strings.ToLower(input.GUID),
+			"password": input.Password,
+			"rmp":      "0",
+			"why":      "signIn",
+		},
+		Sign:       s.signLocked,
+		HardwareID: hardware,
+		Timeout:    timeout,
+		Transport:  send,
+	})
+	if err != nil {
+		return AuthenticateResult{}, fmt.Errorf("authenticate: execute: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAuthBody+1))
+	if err != nil {
+		return AuthenticateResult{}, fmt.Errorf("authenticate: read body: %w", err)
+	}
+
+	if len(body) > maxAuthBody {
+		return AuthenticateResult{}, fmt.Errorf("authenticate: response exceeds %d bytes", maxAuthBody)
+	}
+
+	result := AuthenticateResult{
+		Status:  response.StatusCode,
+		Headers: response.Header,
+		Body:    body,
+	}
+
+	if response.Request != nil && response.Request.URL != nil {
+		result.URL = response.Request.URL.String()
+	}
+
+	return result, nil
+}
+
+// validateAuthenticateEndpoint keeps the Apple ID password on the one host and
+// the one selector the login exchange is allowed to use. Redirect handling is
+// the caller's job, and it uses the same rule.
+func validateAuthenticateEndpoint(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", errors.New("authenticate: invalid endpoint")
+	}
+
+	if parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" {
+		return "", fmt.Errorf("authenticate: refusing endpoint %q", parsed.Redacted())
+	}
+
+	if port := parsed.Port(); port != "" && port != "443" {
+		return "", fmt.Errorf("authenticate: refusing endpoint with port %q", port)
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	if host != "buy.itunes.apple.com" && !strings.HasSuffix(host, "-buy.itunes.apple.com") {
+		return "", fmt.Errorf("authenticate: refusing host %q", host)
+	}
+
+	if strings.TrimRight(parsed.Path, "/") != authenticatePath {
+		return "", fmt.Errorf("authenticate: refusing path %q", parsed.Path)
+	}
+
+	return parsed.String(), nil
+}
+
+func parseHardwareGUID(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+
+	hardware, err := hex.DecodeString(value)
+	if err != nil || len(hardware) != 6 {
+		return nil, fmt.Errorf("authenticate: guid %q is not 6 bytes of hex", value)
+	}
+
+	return hardware, nil
+}
