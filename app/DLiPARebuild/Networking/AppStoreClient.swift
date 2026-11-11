@@ -285,43 +285,47 @@ final class AppStoreClient {
     ///   There is no failure code to match on, and a response shaped this way
     ///   otherwise looks like a success: it has no passwordToken and no
     ///   dsPersonId, which is why they are checked below.
-    func authenticate(email: String,
-                      password: String,
-                      authCode: String?,
-                      guid: String,
-                      endpoint: String,
-                      signer: SAPSigner,
-                      attempt: Int = 1) async throws -> Account {
-        let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
-
+    /// Which session this call continues, and the address it starts from.
+    ///
+    /// Three decisions belong together and move as one: whether the jar and the
+    /// pod are dropped, what gets logged about the call, and -- when a
+    /// verification code is being posted -- how old that code already is. They
+    /// lived inline in `authenticate` until that method tripped the complexity
+    /// floor the lint job enforces; nothing about what they decide changed on
+    /// the way out.
+    private func beginAuthentication(authCode: String?, code: String,
+                                     endpoint: String, attempt: Int) -> String {
         // A sign-in starts from an empty jar. The launch restores the previous
         // account's cookies, and signing in the second account on top of them left
-        // that account's X-Token and DSID in the values this call captures -- the new
-        // session was minted against the old one and every download through it failed
-        // in the guest's request setup.
+        // that account's X-Token and DSID in the values this call captures -- the
+        // new session was minted against the old one and every download through
+        // it failed in the guest's request setup.
         //
-        // Only on a call with no code, though. Asking for a code and then posting it
-        // are two calls to this function, and wiping the jar at the top of the second
-        // one deletes the four cookies the first one's answer had just set -- run 511
-        // shows the pair: `itspod=7` minted the challenge, `itspod=17` refused the
-        // code, and no `Cookie` was carried between them.
+        // Not a call that continues a challenge, though. Asking for a code and
+        // posting it are two calls to `authenticate`, and wiping the jar at the
+        // top of the second one deletes the four cookies the first one's answer
+        // had just set -- run 511 shows the pair: `itspod=7` minted the
+        // challenge, `itspod=17` refused the code, and no `Cookie` was carried
+        // between them.
         //
-        // The stamp is the second half of the condition, and it is what makes
-        // inheriting safe rather than merely convenient: a code call can only
-        // continue a session this process asked for. A code arriving without one --
-        // a restored sheet, a future caller -- would otherwise be posted with the
-        // previous account's jar as the launch left it.
+        // The stamp is what makes inheriting safe rather than merely convenient:
+        // a code call can only continue a session this process asked for. A code
+        // arriving without one -- a restored sheet, a future caller -- would
+        // otherwise be posted with the previous account's jar as the launch left
+        // it.
         if code.isEmpty || twoFactorAskedAt == nil {
             clearPersistedCookieJar()
             capturedCookieHeader = ""
             capturedCookieValues = [:]
             twoFactorAskedAt = nil
+            authenticationPod = nil
         }
 
         // Where this request goes. The reference client normalizes the bag's URL
         // to a trailing slash because the bare path is refused, and a developer
         // override replaces the whole thing -- see authenticateURL below.
         let url = Self.authenticateURL(endpoint)
+
         AppLog.info("authenticating against " + url + " attempt " + String(attempt)
                     + (authCode == nil ? " (no 2FA)" : " (with 2FA)"), .auth)
 
@@ -331,33 +335,83 @@ final class AppStoreClient {
         // MZFinance -- starting 13 seconds after the challenge was minted. A
         // rotating code does not survive that, and whether it did here is a
         // number this line answers.
-        if !code.isEmpty, let askedAt = twoFactorAskedAt {
+        if let askedAt = twoFactorAskedAt {
             AppLog.info("code posted " + String(Int(Date().timeIntervalSince(askedAt)))
                         + "s after apple asked for it", .auth)
         }
 
-        // Where this request starts. A code-carrying attempt goes straight to
-        // the pod the password attempt was redirected to; a fresh attempt
-        // starts from the generic endpoint and forgets any earlier pod, because
-        // the account may have changed -- carrying one account's region into
-        // another's sign-in routes it to that region's host, and the second
-        // account then reports the first one's storefront with every app lookup
-        // coming back empty.
-        //
-        // This used to be keyed on `attempt == 1` beside the jar wipe above, and
-        // it went quietly wrong when the code call started being sent at attempt
-        // 1, which is what the reference client does (upstream
-        // appstore_login.go:187 builds every first request with attempt 1, code
-        // or none). Whether the call continues a challenge is the question;
-        // attempt was only ever standing in for it.
-        //
-        // It is keyed on the same stamp the wipe reads, so the two drops cannot
-        // disagree about which sign-in they belong to -- and in every case the
-        // wipe decides is "no session", it has already cleared the stamp here.
-        if code.isEmpty || twoFactorAskedAt == nil {
-            authenticationPod = nil
+        return authenticationPod ?? url
+    }
+
+    /// One authenticate request, built the way the reference client builds it:
+    /// the plist body under a urlencoded name, the Configurator user agent, the
+    /// session this sign-in already holds, and a log line naming what went on it.
+    ///
+    /// The signature is not here -- it is computed per dispatch inside
+    /// `signedRequest`, over exactly these bytes.
+    private func authenticationRequest(to address: String, body: Data) throws -> URLRequest {
+        var request = URLRequest(url: try Self.trustedEndpoint(address))
+        request.httpMethod = "POST"
+        // The reference client names this body `application/x-apple-plist`; we
+        // have always named it urlencoded, which Apple has answered with HTTP
+        // 200 often enough to keep. The difference is one field of the request
+        // the edge keeps refusing, so it is a typed field rather than a code
+        // change -- and the signature covers the bytes, not this header.
+        request.setValue(DevState.contentTypeOverride ?? Self.authenticateContentType,
+                         forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.authenticateUserAgent, forHTTPHeaderField: "User-Agent")
+        request.httpBody = body
+
+        // A 2FA challenge belongs to a session, not to an account. The reference
+        // client builds the client that posts authenticate with a cookie jar
+        // (upstream pkg/appstore/appstore.go:101), so its code goes back with the
+        // `itspod` and `mzf_in` the answer asking for it just set, and Apple
+        // routes the verification to the instance that minted the challenge. We
+        // captured those cookies and never replayed them, so run 511 posted the
+        // code with no `Cookie`, was served by a different pod, and got
+        // `MZFinance.BadLogin.Configurator_message` -- the same body Apple uses
+        // for a code it did not accept (upstream appstore_login.go:420).
+        if !capturedCookieHeader.isEmpty {
+            request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
         }
-        var endpointNow = authenticationPod ?? url
+
+        // What actually goes out, header by header. Apple routes a sign-in to a
+        // regional pod, and a value in here is the only thing that can carry the
+        // previous account's region into this one.
+        AppLog.info("authenticate request to " + (request.url?.absoluteString ?? "?")
+                    + " headers: " + Self.describeRequestHeaders(request), .auth)
+
+        // The names only, read off the request itself. This session turns
+        // `httpShouldSetCookies` off on purpose, so `HTTPCookieStorage` stays
+        // empty and a line drawn from it reported "none" beside a request that
+        // did carry the session -- which is how run 511 read as no cookies at
+        // all. The values are session credentials, so they stay out of a log
+        // anyone can share; a name answers what the question was asked for.
+        let carried = request.value(forHTTPHeaderField: "Cookie")?
+            .split(separator: ";")
+            .map { $0.trimmingCharacters(in: .whitespaces)
+                .split(separator: "=").first.map(String.init) ?? "" } ?? []
+        AppLog.info("authenticate carries cookies: "
+                    + (carried.isEmpty ? "none" : carried.joined(separator: ",")), .auth)
+
+        return request
+    }
+
+    func authenticate(email: String,
+                      password: String,
+                      authCode: String?,
+                      guid: String,
+                      endpoint: String,
+                      signer: SAPSigner,
+                      attempt: Int = 1) async throws -> Account {
+        let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
+
+        // Which session this call continues, and from where: the jar and the pod
+        // are kept only when this process minted the challenge, and the code's
+        // age is what the ladder in front of the application can cost it. The
+        // reasoning lives with the decisions, in beginAuthentication.
+        var endpointNow = beginAuthentication(authCode: authCode, code: code,
+                                             endpoint: endpoint, attempt: attempt)
         var sentAttempt = attempt
         var data = Data()
         var http: HTTPURLResponse?
@@ -378,67 +432,14 @@ final class AppStoreClient {
 
             var outcome: (Data, HTTPURLResponse)?
             for networkTry in 0..<Self.authenticationRequestAttempts {
-                // Recomputed on every try, and checked because this request
-                // carries the Apple ID password. Hoisting it out of the loop
-                // (which a previous change did) pinned every retry to the
-                // generic endpoint while endpointNow was following the pod the
-                // last attempt was redirected to -- turning a recoverable 403
-                // into a failed sign-in.
-                var attemptRequest = URLRequest(url: try Self.trustedEndpoint(endpointNow))
-                attemptRequest.httpMethod = "POST"
-                // The reference client names this body `application/x-apple-plist`;
-                // we have always named it urlencoded, which Apple has answered
-                // often enough to keep. The difference is one field of the request
-                // the edge keeps refusing, so it is a switch rather than a code
-                // change -- and the signature covers the bytes, not this header.
-                attemptRequest.setValue(DevState.contentTypeOverride
-                                        ?? Self.authenticateContentType,
-                                        forHTTPHeaderField: "Content-Type")
-                attemptRequest.setValue(Self.authenticateUserAgent,
-                                        forHTTPHeaderField: "User-Agent")
-                attemptRequest.httpBody = body
-
-                // A 2FA challenge belongs to a session, not to an account. The
-                // reference client builds the client that posts authenticate with
-                // a cookie jar (upstream pkg/appstore/appstore.go:101), so its
-                // code goes back with the `itspod` and `mzf_in` the answer asking
-                // for it just set, and Apple routes the verification to the
-                // instance that minted the challenge. We captured those cookies
-                // and never replayed them here, so run 511 posted the code with
-                // no `Cookie`, was served by a different pod -- `itspod=7` on the
-                // answer that asked, `itspod=17` on the one that refused -- and
-                // got `MZFinance.BadLogin.Configurator_message`, the same body
-                // Apple uses for a code it did not accept (upstream
-                // appstore_login.go:420).
-                //
-                // `resetSession` empties this jar before a sign-in, so what is
-                // attached can only be what this sign-in's own first answer set:
-                // no other account's region rides along.
-                if !capturedCookieHeader.isEmpty {
-                    attemptRequest.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
-                }
-
-                // What actually goes out, header by header. Apple routes a sign-in to
-                // a regional pod, and a value in here is the only thing that can carry
-                // the previous account's region into this one.
-                let described = Self.describeRequestHeaders(attemptRequest)
-                AppLog.info("authenticate request to " + attemptRequest.url!.absoluteString
-                            + " headers: " + described, .auth)
-
-                // The names only, read off the request itself. This session turns
-                // `httpShouldSetCookies` off on purpose, so `HTTPCookieStorage`
-                // stays empty and a line drawn from it reported "none" beside a
-                // request that did carry the session -- which is how run 511 read
-                // as no cookies at all. The values are session credentials, so
-                // they stay out of a log anyone can share; a name answers what the
-                // question was asked for.
-                let carried = attemptRequest.value(forHTTPHeaderField: "Cookie")?
-                    .split(separator: ";")
-                    .map { $0.trimmingCharacters(in: .whitespaces)
-                        .split(separator: "=").first.map(String.init) ?? "" } ?? []
-                AppLog.info("authenticate carries cookies: "
-                            + (carried.isEmpty ? "none" : carried.joined(separator: ",")),
-                            .auth)
+                // Rebuilt on every try, and checked because this request carries
+                // the Apple ID password. Hoisting it out of the loop (which a
+                // previous change did) pinned every retry to the generic endpoint
+                // while endpointNow was following the pod the last attempt was
+                // redirected to -- turning a recoverable 403 into a failed
+                // sign-in. What goes on it, and why, is in
+                // authenticationRequest.
+                let attemptRequest = try authenticationRequest(to: endpointNow, body: body)
 
                 let result = try await signedRequest(
                     attemptRequest, signer: signer, redirects: 4)
