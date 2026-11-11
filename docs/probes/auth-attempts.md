@@ -331,6 +331,34 @@ then one code-bearing request, so a code is never spent into a refusal. It also
 means the honest advice for the device right now is the opposite of what the
 twelve-try knob invites: stop retrying a real account in bursts.
 
+## The refusal windows, timed
+
+Bench observations from one machine, one client, one account, minutes apart.
+Each line is the answer to the first request of a run, with the same bytes and
+a valid signature; there is no other variable.
+
+| time (UTC) | what the first requests did |
+| --- | --- |
+| 07:41 | reference client: challenge on the first request, sign-in completed six seconds later |
+| 07:47 | our shape: challenge on the first request |
+| 07:48, 07:50 | 301; then eight ladder tries over three minutes with no answer at all |
+| 08:07 | challenge in one try, held, and the session stayed open |
+| 08:08 | recovery probe answered |
+| 08:44, 08:55 | nine and fourteen refusals -- 204, 301, 403, 404, 500 -- in about two and a half minutes each |
+
+So the endpoint is either answered immediately or refused for minutes, and the
+phase changes on the scale of a couple of minutes. Nothing in the request
+predicts which one it will be, which is why "send more times" and "send a
+different shape" both fail as explanations, and why the code is now sent once.
+
+Read with one limit stated plainly: the bench made roughly forty requests
+against a single real account in ninety minutes, each with a fresh machine
+identity. An edge that begins refusing on a schedule that looks like a cooldown
+is also what throttling looks like, and this table cannot tell the two apart.
+It is enough to say that more retries did not help and fewer requests might; it
+is not enough to say which of those is the cause. The next measurement is
+therefore a pause, not a probe.
+
 ## What this probe does not do
 
 It changes nothing about what ships: three tries is still the default. It does
