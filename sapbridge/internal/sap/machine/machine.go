@@ -61,7 +61,13 @@ const (
 	// checking it first. Nothing in the SAP assets installs one, so it is mapped
 	// here: zeroed, and pointed at from the middle so the small negative offsets
 	// Darwin uses for pthread fields stay inside the block.
-	tlsBase    = uint64(0x0000600000000000)
+	//
+	// The address is not 0x600000000000, which is where the FairPlay daemon
+	// loads (modernFairPlayDBase): upstream maps no TLS block at all, so that
+	// slot was free in its layout, and only the ADI proof ever loads a second
+	// image there. Sharing one address between the TLS page and a 17 MB daemon
+	// turned the proof into "map fairplayd: UC_ERR_MAP".
+	tlsBase    = uint64(0x0000800000000000)
 	tlsSize    = uint64(0x2000)
 	tlsPointer = tlsBase + tlsSize/2
 	// The comm page. libsystem reads the kernel's time data from a fixed address
@@ -107,6 +113,13 @@ type Machine struct {
 	scratchCursor  uint64
 	faultExplainer func()
 	closed         bool
+
+	// arm64Handled counts the instructions this process executed in Go instead
+	// of in the engine, for the life of the machine. kbsync stamps read it as a
+	// delta across one step; it is a counter rather than a timer because the
+	// question it answers is "how much of this call did we interpret ourselves",
+	// and that is a count of work, not of time.
+	arm64Handled uint64
 }
 
 // SetFaultExplainer installs a callback that describes a guest fault in more
@@ -131,17 +144,27 @@ type storeAgentEntries struct {
 }
 
 type imageSpec struct {
-	name      string
-	data      []byte
-	base      uint64
-	prelinked map[uint64]string
-	slots     map[uint64]string
-	functions map[uint64]string
+	name       string
+	data       []byte
+	base       uint64
+	prelinked  map[uint64]string
+	slots      map[uint64]string
+	functions  map[uint64]string
+	kernelBase uint64
 }
 
 type runtimeOptions struct {
 	extraImages []imageSpec
 	shims       shimOptions
+
+	// ownEngine asks for a Unicorn instance of this machine's own rather than
+	// the process singleton. The modern ADI proof keeps three or four machines
+	// alive at once, and every machine maps its guest at the same fixed
+	// addresses -- so the second one on one address space fails at the first
+	// region, `map SAP guest memory at 0x100000000: UC_ERR_MAP`. Measured here:
+	// that is what the shared engine costs us, and it is why the store path
+	// keeps sharing while only the ADI machines ask for their own.
+	ownEngine bool
 }
 
 // Open starts the emulated runtime a session uses for everything.
@@ -252,7 +275,19 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 		return nil, nil, fmt.Errorf("open SAP runtime: %w", err)
 	}
 
-	engine, err := sharedEngine(ctx)
+	// A machine that owns its engine also owns its address space: nothing else
+	// is mapped at those addresses, which is the whole point of owning it.
+	var (
+		engine *unicorn.Engine
+		err    error
+	)
+
+	if options.ownEngine {
+		engine, err = unicorn.New(ctx)
+	} else {
+		engine, err = sharedEngine(ctx)
+	}
+
 	if err != nil {
 		return nil, nil, fmt.Errorf("create Unicorn engine: %w", err)
 	}
@@ -345,6 +380,16 @@ func openRuntime(ctx context.Context, bundle assets.Bundle, options runtimeOptio
 
 		if err != nil {
 			return nil, nil, fmt.Errorf("relocate SAP guest image: %w", err)
+		}
+
+		// The kernel client image is mapped at its prelinked address with the
+		// original page offset kept, so a second base is needed to relocate its
+		// kernel-cache pointers without breaking the ADRP relationships inside
+		// its own data segments.
+		if spec.kernelBase != 0 {
+			if err := image.RelocateKernelCachePointers(spec.base, spec.kernelBase, resolver); err != nil {
+				return nil, nil, fmt.Errorf("relocate %s kernel-cache pointers: %w", spec.name, err)
+			}
 		}
 
 		if err := image.Load(engine); err != nil {
@@ -729,6 +774,7 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 	}
 
 	m.services.resetFault()
+	m.services.runLoopParked = false
 
 	// SAP's cryptographic routines have input- and host-dependent instruction
 	// counts. Bound execution by wall time without rejecting legitimate work on
@@ -757,6 +803,18 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 				break
 			}
 
+			// A guest that parked itself inside a host service is done as far as
+			// this call is concerned. Restarting at the same instruction -- the
+			// only other reading of "stopped short of the return address" --
+			// re-fires that one service forever: adid entered `_CFRunLoopRun`
+			// 39,645,456 times in the 3m0.001s it took to reach the deadline
+			// below, and the deadline error it produced was thrown away because
+			// the event handler had already been installed. So the cost looked
+			// like a slow daemon, not a loop that could never end.
+			if m.services.runLoopParked {
+				return 0, nil
+			}
+
 			// The chunk ran out rather than the function returning.
 			if time.Now().After(deadline) {
 				return 0, fmt.Errorf("SAP guest exceeded %s at %#x", sapGuestTimeout, pc)
@@ -781,6 +839,8 @@ func (m *Machine) invoke(function uint64, arguments ...uint64) (uint64, error) {
 				return 0, compatibilityErr
 			}
 			if handled {
+				m.arm64Handled++
+
 				next, compatibilityErr = m.engine.RegRead(unicorn.RegPC)
 				if compatibilityErr != nil {
 					return 0, fmt.Errorf("resume SAP guest function: %w", compatibilityErr)
