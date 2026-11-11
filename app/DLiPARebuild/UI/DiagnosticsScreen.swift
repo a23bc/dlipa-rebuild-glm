@@ -130,6 +130,7 @@ struct DiagnosticsScreen: View {
                             .disabled(running)
                         Button("Run framework probe") { runFrameworkProbe() }
                             .disabled(running)
+                        Button("Probe anisette daemon") { probeAnisetteDaemon() }
                         Button("Generate kbsync (Gate 0)") { runKBSync() }
                             .disabled(running)
                         Button("Open Store runtime (E1-a)") { runStoreSmoke() }
@@ -296,6 +297,15 @@ struct DiagnosticsScreen: View {
             FrameworkProbe.run()
             AppLog.info("framework probe finished", .app)
             running = false
+        }
+    }
+
+    /// Asks AuthKit's daemon for anisette data. This is the route the earlier
+    /// probe left untested: the classes were enumerated, never called.
+    private func probeAnisetteDaemon() {
+        AppLog.info("anisette daemon probe: start", .sap)
+        DLPAProbeAnisetteDaemon { message in
+            AppLog.info("anisette daemon probe: " + message, .sap)
         }
     }
 

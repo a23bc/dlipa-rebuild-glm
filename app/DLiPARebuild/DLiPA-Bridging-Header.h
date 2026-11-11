@@ -39,6 +39,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)close:(NSError **)error;
 @end
 
+/// Probes whether AuthKit's anisette daemon answers this process. The callback
+/// runs on the main queue and fires at most once.
+FOUNDATION_EXPORT void DLPAProbeAnisetteDaemon(void (^ _Nonnull callback)(NSString * _Nonnull message));
+
 FOUNDATION_EXPORT NSString * _Nonnull SapbridgeBundleDirValue(void);
 FOUNDATION_EXPORT NSString * _Nonnull SapbridgeGuidFromHardware(NSData * _Nullable hardwareID);
 FOUNDATION_EXPORT NSData * _Nullable SapbridgeKBSync(NSData * _Nullable hardwareID, NSString * _Nullable dsid, NSError * _Nullable * _Nullable error);
