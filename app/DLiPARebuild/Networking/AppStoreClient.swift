@@ -79,6 +79,15 @@ final class AppStoreClient {
     /// what makes the question answerable from a log instead of from a guess.
     private var twoFactorAskedAt: Date?
 
+    /// True between the answer that asked for a verification code and the next
+    /// sign-in without one.
+    ///
+    /// The caller needs this rather than a look at `authCode`, because inheriting
+    /// a session is only safe when this process minted the challenge: a code
+    /// arriving without one would otherwise be posted with whatever the launch
+    /// restored for the previous account.
+    var awaitsVerificationCode: Bool { twoFactorAskedAt != nil }
+
     /// The UA the original DLiPA shipped. Apple gates the private bag on the
     /// Configurator UA: with a generic UA the response contains none of the
     /// sign-sap-* keys at all. The 2.17 UA was found to return a generic
@@ -140,6 +149,7 @@ final class AppStoreClient {
     /// failed immediately after the first one had signed in.
     func resetSession() {
         authenticationPod = nil
+        twoFactorAskedAt = nil
         // The hand-copied jar is a second cookie store, and it outlived this
         // reset: switching accounts kept the previous one's mz_at_ssl-* and
         // X-Token and replayed them with the new account's DSID.
@@ -234,6 +244,8 @@ final class AppStoreClient {
                       endpoint: String,
                       signer: SAPSigner,
                       attempt: Int = 1) async throws -> Account {
+        let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
+
         // A sign-in starts from an empty jar. The launch restores the previous
         // account's cookies, and signing in the second account on top of them left
         // that account's X-Token and DSID in the values this call captures -- the new
@@ -244,10 +256,14 @@ final class AppStoreClient {
         // are two calls to this function, and wiping the jar at the top of the second
         // one deletes the four cookies the first one's answer had just set -- run 511
         // shows the pair: `itspod=7` minted the challenge, `itspod=17` refused the
-        // code, and no `Cookie` was carried between them. A code call can only follow
-        // a password call inside one sign-in, so what it inherits is that same
-        // account's session.
-        if authCode == nil || authCode!.isEmpty {
+        // code, and no `Cookie` was carried between them.
+        //
+        // The stamp is the second half of the condition, and it is what makes
+        // inheriting safe rather than merely convenient: a code call can only
+        // continue a session this process asked for. A code arriving without one --
+        // a restored sheet, a future caller -- would otherwise be posted with the
+        // previous account's jar as the launch left it.
+        if code.isEmpty || twoFactorAskedAt == nil {
             clearPersistedCookieJar()
             capturedCookieHeader = ""
             capturedCookieValues = [:]
@@ -260,8 +276,6 @@ final class AppStoreClient {
         let url = Self.authenticateURL(endpoint)
         AppLog.info("authenticating against " + url + " attempt " + String(attempt)
                     + (authCode == nil ? " (no 2FA)" : " (with 2FA)"), .auth)
-
-        let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
 
         // How old the code is by the time it leaves. The ladder in front of the
         // application is the reason this can be long: run 511 spent 125 seconds
@@ -286,9 +300,13 @@ final class AppStoreClient {
         // it went quietly wrong when the code call started being sent at attempt
         // 1, which is what the reference client does (upstream
         // appstore_login.go:187 builds every first request with attempt 1, code
-        // or none). Whether the call carries a code is the question; attempt was
-        // only ever standing in for it.
-        if authCode == nil || authCode!.isEmpty {
+        // or none). Whether the call continues a challenge is the question;
+        // attempt was only ever standing in for it.
+        //
+        // It is keyed on the same stamp the wipe reads, so the two drops cannot
+        // disagree about which sign-in they belong to -- and in every case the
+        // wipe decides is "no session", it has already cleared the stamp here.
+        if code.isEmpty || twoFactorAskedAt == nil {
             authenticationPod = nil
         }
         var endpointNow = authenticationPod ?? url

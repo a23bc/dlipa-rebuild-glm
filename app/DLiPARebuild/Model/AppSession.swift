@@ -115,14 +115,18 @@ final class AppSession: ObservableObject {
         // begins. beginNewSignIn runs when the sheet opens, and clearing there
         // meant cancelling the sheet left the current account with no session.
         //
-        // Not when this call carries a verification code. That call is the second
-        // half of the same sign-in, and resetting here deleted the session whose
-        // answer asked for the code: run 511 minted the challenge on `itspod=7`,
-        // reset, and then posted the code to `itspod=17` with no cookie and no pod
-        // carried over. Apple's own answer to that is the BadLogin body it reads
-        // as "the code was not accepted", which is why the code looked wrong to
-        // the person who had just typed it correctly.
-        if authCode == nil || authCode!.isEmpty {
+        // Not when this call continues a challenge the client actually asked for.
+        // That call is the second half of one sign-in, and resetting here deleted
+        // the session whose answer had just asked for the code: run 511 minted the
+        // challenge on `itspod=7`, reset, and then posted the code to `itspod=17`
+        // with no cookie and no pod carried over. Apple's own answer to that is the
+        // BadLogin body it reads as "the code was not accepted", which is why the
+        // code looked wrong to the person who had just typed it correctly.
+        //
+        // The client's stamp, not merely the presence of a code, is what makes
+        // inheriting safe: a code with no challenge behind it belongs to no session
+        // this process owns, and must not be posted on whatever the launch restored.
+        if (authCode ?? "").isEmpty || !client.awaitsVerificationCode {
             client.resetSession()
         }
 
