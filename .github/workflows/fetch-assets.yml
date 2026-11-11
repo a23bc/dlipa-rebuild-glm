@@ -1,18 +1,26 @@
 name: Fetch SAP assets
 
-# Produces the four Apple SAP binaries for the arm64 route (plan B).
+# Produces the seven Apple SAP binaries for the arm64 route (plan B).
 #
 # Source of truth is Apple, not a checked-in copy: the pinned macOS 27.0.1
-# (26A434) restore image. Upstream ipatool already implements the hard part --
-# zip-range reads over HTTP, AEA decryption, APFS, and dyld shared cache
-# extraction -- inside internal/sap/assets, where Load() falls back to
-# resolveRemoteImage() when its cache is empty. scripts/export-sap-assets.go
-# just calls Load() and copies the four files back out.
+# (26A434) restore image, read over HTTP in ranges, AEA-decrypted, APFS-walked
+# and pulled out of the dyld shared cache. That work is implemented here, in
+# internal/sap/assetsremote, and this job runs exactly the code a device runs:
+# `go run ./cmd/exportassets`.
 #
-# This replaces the old job, which fetched the OS X 10.9 set used by route A.
-# Those two sets are not interchangeable: 10.9 CoreFP is 29,014,912 bytes and
-# 27 CoreFP is 94,842,464, and only the 27 set has the arm64
-# AppleMediaServices that kbsync needs.
+# It used to run upstream ipatool's extractor instead, by copying
+# scripts/export-sap-assets.go into a pinned ipatool checkout and aligning
+# that checkout's go-macho with ours. That produced a four-file profile,
+# because that is all upstream's loader knows: the three identity binaries the
+# seven-piece profile needs came out of nothing, and the four that did get
+# written were verified against digests this repository also pins. One job,
+# two profiles -- which is how a green upload becomes "adid is empty or
+# missing" at the first reader that trusts the artifact.
+#
+# The device does not use this artifact today: builds ship without the
+# binaries and the bridge resolves them on first use (see AssetStaging's
+# resolvesOnDemand). This job is the offline fallback for that route, so the
+# extraction it performs has to be the same one, byte for byte.
 
 on:
   workflow_dispatch:
@@ -27,95 +35,40 @@ on:
 permissions:
   contents: read
 
-env:
-  # Pinned so the extraction logic cannot drift under us.
-  #
-  # This must be a commit that carries internal/sap/assets/remote.go. The
-  # v2.7.0 tag does not: its assets.go has Load() but no macOSRestoreURL, and
-  # the whole remote extraction set (remote.go, aea.go, apfs.go, dyld.go,
-  # http_range.go) is main-only. Pinning the tag made the job fail in its first
-  # step with nothing but a detached-HEAD notice, because the grep that follows
-  # found no macOSRestoreURL and exited 1.
-  #
-  # The sha is the main commit the extraction was verified against; the grep
-  # below still guards against a stale pin.
-  IPATOOL_REPO: https://github.com/majd/ipatool
-  IPATOOL_REF: 5dc4c8058db3a23e9de081ac766cc917713a65cf
-
 jobs:
   fetch:
     # The extraction needs neither macOS nor iOS; it needs disk and bandwidth.
-    # The image set is ~14 GB compressed, so this is a long job on purpose.
+    # The image set is ~14 GB compressed and the profile is ~300 MB of range
+    # reads out of it, so this is a long job on purpose.
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: sapbridge
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          # The module's own pin, rather than a version written down here too:
+          # a CI-only Go that disagrees with the one the device build uses is
+          # how an artifact gets produced by code nothing ships.
+          go-version-file: sapbridge/go.mod
 
-      - name: Check out the pinned ipatool
-        run: |
-          # No --branch: IPATOOL_REF is a sha, and --branch only takes a ref
-          # name. Fetch the single commit instead.
-          git init -q /tmp/ipatool
-          cd /tmp/ipatool
-          git remote add origin "$IPATOOL_REPO"
-          git fetch -q --depth 1 origin "$IPATOOL_REF"
-          git checkout -q FETCH_HEAD
-          cd - >/dev/null
-          # The exporter imports internal/sap/assets, which Go only allows from
-          # inside the same module, so it is copied in rather than run from here.
-          mkdir -p /tmp/ipatool/cmd/export-sap-assets
-          cp scripts/export-sap-assets.go /tmp/ipatool/cmd/export-sap-assets/main.go
-          # Fail loudly and early if the pin drifted to a tree without the
-          # remote extractor. The old failure was silent: grep exited 1 and the
-          # log only showed a detached-HEAD notice.
-          if ! grep -q "macOSRestoreURL" /tmp/ipatool/internal/sap/assets/assets.go; then
-            echo "::error::pinned ipatool commit has no macOSRestoreURL in assets.go;"
-            echo "::error::it predates the remote extractor (remote.go). Update IPATOOL_REF."
-            exit 1
-          fi
-          if [ ! -f /tmp/ipatool/internal/sap/assets/remote.go ]; then
-            echo "::error::pinned ipatool commit has no internal/sap/assets/remote.go"
-            exit 1
-          fi
-          grep -n "macOSRestoreURL" /tmp/ipatool/internal/sap/assets/assets.go
-
-      - name: Match the go-macho the device builds with
-        run: |
-          # ipatool pins its own go-macho, but the app extracts through sapbridge,
-          # which pins a different one. Measuring or producing assets on a version
-          # the device never runs is how a CI-green artifact turns into a device
-          # failure, so take the version from sapbridge's own go.mod rather than
-          # writing it down twice here.
-          version=$(awk '/github\.com\/blacktop\/go-macho /{print $2; exit}' sapbridge/go.mod)
-          if [ -z "$version" ]; then
-            echo "::error::no go-macho requirement found in sapbridge/go.mod"
-            exit 1
-          fi
-          echo "==> sapbridge pins go-macho $version; aligning the extractor"
-          cd /tmp/ipatool
-          GOFLAGS=-mod=mod go get "github.com/blacktop/go-macho@$version"
-          # Compile before spending the download: a version that does not build
-          # should fail here, not 300 MB into the extraction.
-          GOFLAGS=-mod=mod go build -o /tmp/export-sap-assets ./cmd/export-sap-assets
-          grep "go-macho" go.mod
+      - name: Compile the exporter before spending the bandwidth
+        run: go build ./cmd/exportassets
 
       - name: Fetch and extract the macOS 27 assets
-        run: |
-          cd /tmp/ipatool
-          go run ./cmd/export-sap-assets -out "$GITHUB_WORKSPACE/VendorAssets"
-          ls -la "$GITHUB_WORKSPACE/VendorAssets"
+        run: go run ./cmd/exportassets -out "$GITHUB_WORKSPACE/VendorAssets"
 
       - name: Verify against the pinned digests
         run: |
           cd "$GITHUB_WORKSPACE/VendorAssets"
-          # These are the same four values sapbridge/internal/sap/assets/assets.go
-          # checks at load time. A mismatch here means the extraction picked up a
-          # different build, and failing now is far cheaper than failing on device.
+          # The same seven values
+          # sapbridge/internal/sap/assetsremote/assets.go checks at load time,
+          # and Load() has already enforced them -- this list exists so a run
+          # says out loud which build it produced, and so a drift in the pins
+          # fails here rather than at the first device that downloads.
           check() {
             got=$(sha256sum "$1" | cut -d" " -f1)
             if [ "$got" != "$2" ]; then
@@ -126,8 +79,20 @@ jobs:
           }
           check AppleMediaServices 95f4558aa2c0ccd9f96ed479e336b630b46bf4b4e0baabc1c1ac8c7d55e21ab4
           check commerce           76de40a4a32f691947cb926ce3b128d2fc446f7cac9755f831c406cf5a316ac9
+          check adid               1fec225b6917206e3d9b00fe636c04878f82bfd06a87a4b6941711de60efab5b
+          check fairplayd          28b4c7b2a5a0409c5020da55fc3984713a8e2b0eec8557076c8717f7166d003e
+          check FairPlayIOKit      47452960ec010d3a80b02cceec73a65f8a9758850fd0fb7b2fdac7a5d1b81025
           check CoreFP             2c30fa2b5f695fd66c0360dce72f54757d03ddb7107549715c12cb359a003b46
           check CoreFP.icxs        cb8f55330ec567da3e692dab5f5388bed0312dd9093340477c5759078cc2aa7b
+
+          # Seven names is the profile. A count that drifts from the list above
+          # means the artifact and the loader are no longer describing the same
+          # thing, and no digest check below catches a file nobody asked for.
+          count=$(ls -1 | wc -l)
+          if [ "$count" -ne 7 ]; then
+            echo "::error::expected 7 staged files, found $count"
+            exit 1
+          fi
 
       - name: Record digests
         run: |

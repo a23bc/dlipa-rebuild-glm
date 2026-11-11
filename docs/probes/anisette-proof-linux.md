@@ -121,9 +121,15 @@ Neither condition explains a device failure, and neither is evidence about the
   `Machine.TraceCalls`) rather than new instrumentation.
 * **Peak heap for the fetch.** 721.6 MiB here, against a process that jetsams
   near 215 MB resident today. Tracked as "v4 抓取上设备前先降峰值堆与请求数".
-* **The staged four-file route.** `readBundleDir` still reads four binaries and
-  `scripts/export-sap-assets.go` still exports four, while the loader validates
-  seven. Builds that stage assets fail validation with `adid is empty or
-  missing`; the normal build, which stages nothing, is unaffected. Also
-  `AssetStaging.totalBytes = 125_000_000` and the consent wording still describe
-  the four-piece profile.
+* **The staged route, now seven files end to end.** `readBundleDir` read four
+  while the loader validated seven, which is where `adid is empty or missing`
+  came from; `fetch-assets.yml` produced its artifact by running *upstream's*
+  four-file extractor and checked four digests. Both halves now describe one
+  profile: the reader takes seven, and the job runs this repository's own
+  `go run ./cmd/exportassets` and checks seven digests, so the artifact and
+  the device are produced by the same code. The consent text and
+  `AssetStaging.totalBytes` moved to the measured shape -- about 167 MB on
+  disk, about 300 MB transferred over roughly 6,200 range requests -- with the
+  phone duration left labelled as an extrapolation rather than a reading.
+  Unmeasured still: a device run against the seven-piece artifact, and the
+  peak heap above.

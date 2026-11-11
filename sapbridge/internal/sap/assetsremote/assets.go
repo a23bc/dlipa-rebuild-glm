@@ -269,6 +269,27 @@ func bundleFiles(bundle Bundle) map[string][]byte {
 	}
 }
 
+// WriteBundle puts the seven validated files into destination in the shape
+// the staged reader takes back.
+//
+// The names come from bundleFiles, the same map the cache writer uses, so the
+// two cannot disagree about what a complete profile is: writing them out
+// twice, once per consumer, is exactly how the staged reader ended up reading
+// four files while the loader validated seven.
+func WriteBundle(bundle Bundle, destination string) error {
+	for name, data := range bundleFiles(bundle) {
+		if len(data) == 0 {
+			return fmt.Errorf("write %s: nothing to write", name)
+		}
+
+		if err := os.WriteFile(filepath.Join(destination, name), data, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
 func mustDigest(value string) [32]byte {
 	var digest [32]byte
 
