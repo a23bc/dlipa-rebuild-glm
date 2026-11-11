@@ -131,6 +131,8 @@ struct DiagnosticsScreen: View {
                         Button("Run framework probe") { runFrameworkProbe() }
                             .disabled(running)
                         Button("Probe anisette daemon") { probeAnisetteDaemon() }
+                        Button("Probe anisette identity") { probeAnisetteIdentity() }
+                            .disabled(running)
                         Button("Generate kbsync (Gate 0)") { runKBSync() }
                             .disabled(running)
                         Button("Open Store runtime (E1-a)") { runStoreSmoke() }
@@ -297,6 +299,24 @@ struct DiagnosticsScreen: View {
             FrameworkProbe.run()
             AppLog.info("framework probe finished", .app)
             running = false
+        }
+    }
+
+    /// Provisions and proves a machine identity through the ported runtime.
+    /// This is the device gate before any sign-in is attempted.
+    private func probeAnisetteIdentity() {
+        running = true
+        started = Date()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let headers = try AnisetteIdentity.headers()
+                AppLog.info("anisette identity probe finished: "
+                            + String(headers.count) + " headers", .sap)
+            } catch {
+                AppLog.error("anisette identity probe failed: "
+                             + error.localizedDescription, .sap)
+            }
+            DispatchQueue.main.async { running = false }
         }
     }
 

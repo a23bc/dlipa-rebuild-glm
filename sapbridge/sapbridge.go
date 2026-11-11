@@ -24,6 +24,7 @@ import (
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/storeauth"
 )
 
 // Signer holds a live SAP session. One instance covers a whole app session:
@@ -295,6 +296,69 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 		Purpose:           purpose,
 		ExternalVersionID: externalVersionID,
 	})
+}
+
+// Anisette provisions and proves a machine identity.
+//
+// It owns no SAP session: the runtimes it opens are its own and are closed
+// before Headers returns. That is what lets Swift ask for identity headers
+// before it has a signer, which is the order a sign-in needs.
+type Anisette struct{}
+
+// NewAnisette returns a handle for the identity calls.
+func NewAnisette() *Anisette {
+	return &Anisette{}
+}
+
+// Headers takes the state from the previous call (base64, empty on first use)
+// and returns JSON {"headers":{...},"state":"base64"}.
+//
+// The state is opaque and belongs in the app's keychain: handing back the
+// state from before the call would provision a new machine instead of reusing
+// the one the store already knows.
+func (a *Anisette) Headers(stateBase64 string) (string, error) {
+	var state []byte
+
+	if stateBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(stateBase64)
+		if err != nil {
+			return "", fmt.Errorf("sapbridge: anisette state: %w", err)
+		}
+
+		state = decoded
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	found, next, err := storeauth.AnisetteHeaders(ctx, storeauth.NewHTTPClient(nil), state)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: anisette headers: %w", err)
+	}
+
+	flat := make(map[string]string, len(found))
+	for name, values := range found {
+		if len(values) == 0 {
+			continue
+		}
+
+		flat[name] = values[0]
+	}
+
+	output := struct {
+		Headers map[string]string `json:"headers"`
+		State   string            `json:"state"`
+	}{
+		Headers: flat,
+		State:   base64.StdEncoding.EncodeToString(next),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: anisette result: %w", err)
+	}
+
+	return string(data), nil
 }
 
 // WarmStoreRuntime opens the Store runtime without sending a request.

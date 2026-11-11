@@ -40,6 +40,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)close:(NSError **)error;
 @end
 
+@interface SapbridgeAnisette : NSObject
+- (nullable NSString *)headers:(NSString *)stateBase64 error:(NSError **)error;
+@end
+
+FOUNDATION_EXPORT SapbridgeAnisette * _Nullable SapbridgeNewAnisette(void);
+
 /// Probes whether AuthKit's anisette daemon answers this process. The callback
 /// runs on the main queue and fires at most once.
 FOUNDATION_EXPORT void DLPAProbeAnisetteDaemon(void (^ _Nonnull callback)(NSString * _Nonnull message));

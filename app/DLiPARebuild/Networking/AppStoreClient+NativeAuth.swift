@@ -54,6 +54,17 @@ extension AppStoreClient {
         var hops = 0
         var last: NativeAnswer?
 
+        // The store's authenticate task is built to receive an AMD pair. It is
+        // fetched once per call: the proof is time-sensitive, and the code
+        // request comes through this same function with the state advanced.
+        let identity: [String: String]
+
+        do {
+            identity = try AnisetteIdentity.headers()
+        } catch {
+            throw StoreError.failureType("anisette", error.localizedDescription)
+        }
+
         while true {
             let request: [String: Any] = [
                 "endpoint": target,
@@ -62,6 +73,7 @@ extension AppStoreClient {
                 "guid": guid,
                 "cookie": cookie,
                 "userAgent": Self.nativeUserAgent,
+                "extraHeaders": identity,
                 "timeoutMs": 90_000,
             ]
 
