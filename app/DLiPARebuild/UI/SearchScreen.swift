@@ -588,8 +588,9 @@ final class SearchModel: ObservableObject {
         guard let pending = pendingAssets else { return }
         pendingAssets = nil
 
-        // A minute of nothing happening on screen reads as a hung app, so the
-        // wait uses the card the licence wait already uses.
+        // Minutes of nothing happening on screen read as a hung app -- what
+        // the phone spends on the seven-piece fetch is not measured yet -- so
+        // the wait uses the card the licence wait already uses.
         workingStatus = "Fetching the signing components from Apple..."
         workingDone = false
         defer { workingStatus = nil }

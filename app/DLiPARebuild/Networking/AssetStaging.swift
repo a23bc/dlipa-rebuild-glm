@@ -68,7 +68,7 @@ enum AssetStaging {
     /// One answer for three screens -- the shell at launch, the account sheet
     /// before a handshake, the search screen before a download -- because they
     /// have to agree. It is false for a build that stages from its own bundle,
-    /// false once the four files are in the cache (SapbridgeAssetsCached stats
+    /// false once the seven files are in the cache (SapbridgeAssetsCached stats
     /// them and reads no byte, so a device that already paid is not asked
     /// again), and false for the rest of a session after someone has said yes,
     /// which is what keeps a fetch that was allowed and then failed from
@@ -147,7 +147,7 @@ enum AssetStaging {
                 // Always copy from the bundle. The Go bridge validates
                 // SHA-256, and a stale file from a previous install (with a
                 // different macOS version's binaries) would fail that check.
-                // Copying every time is ~125 MB but only on cold start.
+                // Copying every time is ~167 MB but only on cold start.
 
                 let source = bundledSource(for: name)
                 guard let source else {

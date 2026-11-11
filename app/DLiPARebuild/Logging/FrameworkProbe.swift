@@ -7,7 +7,8 @@ import Darwin
 /// ## Why this is the first thing to check
 ///
 /// Everything in this project starts from seven binaries extracted out of
-/// macOS 27.0.1 (CoreFP, AppleMediaServices, commerce, CoreFP.icxs). Every
+/// macOS 27.0.1 -- CoreFP, AppleMediaServices, commerce, CoreFP.icxs, adid,
+/// fairplayd and FairPlayIOKit. Every
 /// problem we have been fighting is a *consequence of them belonging to
 /// another platform*:
 ///

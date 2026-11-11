@@ -39,8 +39,9 @@ struct RootTabView: View {
 
     @State private var alert: RootAlert?
 
-    /// True while the launch fetch runs. The fetch is a minute of work with no
-    /// other surface at this level, so it says so rather than looking frozen.
+    /// True while the launch fetch runs. It is minutes of work -- the device
+    /// figure has not been measured for seven pieces -- and this level has no
+    /// other surface, so it says so rather than looking frozen.
     @State private var fetchingAssets = false
 
     private enum Tab: Int {
