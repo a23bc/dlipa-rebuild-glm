@@ -183,8 +183,14 @@ func TestKBSyncReturnsErrorWithoutAssets(t *testing.T) {
 // reported as an integrity failure rather than an opaque handshake error.
 func TestBundleDirValidationRejectsTruncatedFiles(t *testing.T) {
         dir := t.TempDir()
-        // Right names, wrong contents: CoreFP must be 94842464 bytes.
-        for _, name := range []string{"AppleMediaServices", "commerce", "CoreFP", "CoreFP.icxs"} {
+        // Right names, wrong contents: CoreFP must be 94842464 bytes. All seven,
+        // because the staged reader takes the identity service's three as well,
+        // and a four-name list makes it fail on a missing file -- "read adid:
+        // no such file" -- which is not the lesson this test teaches: that a
+        // corrupt asset is reported as corrupt.
+        names := []string{"AppleMediaServices", "commerce", "adid", "CoreFP",
+                "CoreFP.icxs", "fairplayd", "FairPlayIOKit"}
+        for _, name := range names {
                 if err := os.WriteFile(dir+"/"+name, []byte("truncated"), 0o600); err != nil {
                         t.Fatal(err)
                 }
