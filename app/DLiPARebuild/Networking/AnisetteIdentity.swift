@@ -18,13 +18,15 @@ enum AnisetteIdentity {
         let previous = Keychain.anisetteState()
         let encoded = previous?.base64EncodedString() ?? ""
 
-        var error: NSError?
-        guard let raw = bridge?.headers(encoded, error: &error) else {
+        guard let bridge else {
             throw NSError(domain: "AnisetteIdentity", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: error?.localizedDescription
-                    ?? "the bridge returned no anisette response",
+                NSLocalizedDescriptionKey: "the anisette bridge is unavailable",
             ])
         }
+
+        // Nullable return plus NSError** imports as a throwing, non-optional
+        // call: the nil case is folded into the error.
+        let raw = try bridge.headers(encoded)
 
         guard let data = raw.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
