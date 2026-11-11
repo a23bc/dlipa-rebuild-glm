@@ -25,7 +25,15 @@ type AuthenticateInput struct {
 	GUID      string // 12 hex characters
 	Cookie    string
 	UserAgent string
-	Timeout   time.Duration
+	// ExtraHeaders carries the provisioned identity. The store names the pair
+	// X-Apple-AMD / X-Apple-AMD-M; the anisette headers arrive as
+	// X-Apple-I-MD / X-Apple-I-MD-M, so those two are renamed here rather than
+	// at every caller.
+	ExtraHeaders map[string]string
+	// Bag is the urlBag dictionary. Apple's task reads routing and storefront
+	// values from it; without it the request is built against an empty bag.
+	Bag     map[string]any
+	Timeout time.Duration
 }
 
 // AuthenticateResult is what the edge or the store answered, unread.
@@ -112,6 +120,21 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 		headers.Set("Cookie", input.Cookie)
 	}
 
+	for name, value := range input.ExtraHeaders {
+		if value == "" || strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+			continue
+		}
+
+		switch {
+		case strings.EqualFold(name, "X-Apple-I-MD"):
+			headers.Set("X-Apple-AMD", value)
+		case strings.EqualFold(name, "X-Apple-I-MD-M"):
+			headers.Set("X-Apple-AMD-M", value)
+		default:
+			headers.Set(name, value)
+		}
+	}
+
 	timeout := input.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -158,6 +181,7 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 			"rmp":      "0",
 			"why":      "signIn",
 		},
+		Bag:        input.Bag,
 		Sign:       s.signLocked,
 		HardwareID: hardware,
 		Timeout:    timeout,
@@ -188,6 +212,45 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	}
 
 	return result, nil
+}
+
+// WarmStore opens the Store runtime and leaves it open, so a caller can
+// generate time-sensitive identity headers after the cold start instead of
+// before it. No request is sent.
+func (s *Signer) WarmStore(ctx context.Context, image []byte) error {
+	if s == nil || s.machine == nil {
+		return errors.New("warm store: no machine")
+	}
+
+	if len(image) < 4 {
+		return fmt.Errorf("warm store: got %d bytes for AppleMediaServices", len(image))
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.storeRuntime != nil {
+		return nil
+	}
+
+	engine := s.machine.Engine()
+	if engine == nil {
+		return errors.New("warm store: machine has no engine")
+	}
+
+	prepared, err := profile.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("warm store: load profile: %w", err)
+	}
+
+	runtime, err := emulator.OpenWithEngineAt(ctx, engine, image, prepared, s.machine.HeapUsed())
+	if err != nil {
+		return fmt.Errorf("warm store: open runtime: %w", err)
+	}
+
+	s.storeRuntime = runtime
+
+	return nil
 }
 
 // validateAuthenticateEndpoint keeps the Apple ID password on the one host and
