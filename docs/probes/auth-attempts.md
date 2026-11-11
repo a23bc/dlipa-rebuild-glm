@@ -231,6 +231,56 @@ URLSession surfaces it. Three outcomes, all decisive:
 No claim is made here that the redirect is the cause. It is the last unmeasured
 one, and this build measures it.
 
+## Run 517: the redirect question answered itself, and so did the content type
+
+Build `371db9a` (run `42966145125`, artifact `DLiPA-ipa` id 13831466882), three
+sign-ins, `attempts 3` -- the reference client's own number, set from the
+device this time rather than left at the twelve used in 511 and 513.
+
+| run | the three answers | reached the application? |
+| --- | --- | --- |
+| 06:35:41 | 301 no Location, 204, 404 | no |
+| 06:37:07, with `Content-Type: application/x-apple-plist` | 503, 301 no Location, 500 | no |
+| 06:37:52 | 404, 404, 204 | no |
+
+Three readings, in order of what they settle.
+
+**The recorder printed nothing, and that is the answer to the redirect
+question.** There were two 301s in the run and not one `redirect at the
+delegate` line. URLSession consults `willPerformHTTPRedirection` only when it
+has something to redirect *to*, so a hop with no `Location` never reaches a
+delegate at all -- the silence is the observation, not a missing log.
+
+Read on its own that is still not proof, and it deserves saying so: a session
+delegate that answers the hop first would produce the same silence. What makes
+it proof is that it agrees with two clients that have nothing in common with
+this one -- `curl` on Windows against the live endpoint, and a plain Go request
+carrying a valid `X-Apple-ActionSignature` over a dummy body -- both of which
+see `HTTP 1.1 301`, `Content-Type: text/html`, `Content-Length: 162`, and no
+`Location`. Three unrelated stacks, same absent header. The redirect theory is
+closed: there is no destination being hidden, and nothing to fix in this
+client about it.
+
+**The content type is not the lever either.** `application/x-apple-plist` was
+the one field where the reference client and this app demonstrably differ, and
+from the development machine it looked like a signal: naming the body that way
+produced an empty 204 three times out of three, where the urlencoded spelling
+drew 404 and 301 between identical bytes. On the phone it drew 503, 301 and
+500. So the pattern was a property of that machine's path, not of the header,
+and the field stays a switch rather than a fix.
+
+**What three tries buys, measured.** No application answer, in any of the
+three runs, in three tries each. With twelve allowed, the application answered
+on the fifth request in 511 and the sixth in 513 -- one to two minutes of
+ladder, and that is why the 2FA code never survives the trip: by the time
+MZFinance replies, the code the person typed has rotated. This is the first
+number in the note that argues with the reference client rather than with us:
+three tries is what upstream does, and on this path five or six are what it
+takes. Which means the next change is not to the count. It is to the flow -- a
+code-bearing ladder that ends without an application answer should ask for a
+fresh code and post it on the session it already holds, instead of re-sending
+the same stale one six times.
+
 ## What this probe does not do
 
 It changes nothing about what ships: three tries is still the default. It does
