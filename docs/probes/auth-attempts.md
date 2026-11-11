@@ -176,6 +176,61 @@ challenge, and that is the thing the next capture can settle either way. If
 run 512 still ends in BadLogin with `itspod=` equal on both answers, the pod
 story is dead and the age line is the next suspect.
 
+## Run 513: the session was carried, and the answer did not change
+
+Build `cc04b5c` (run `42960826776`, artifact `DLiPA-ipa` id 13829352296), the
+same account, code typed straight after the prompt. The mechanism landed
+exactly as specified:
+
+| line | what it said |
+| --- | --- |
+| `code posted 8s after apple asked for it` | the code was nine seconds old on its first request |
+| `authenticate carries cookies: itspod,mzf_in,mzf_dr,cmrc_shld_mk_ck` | only on the code pass; the password pass is `none`, and correctly so -- nothing had set them yet |
+| `Cookie=itspod=16; mzf_in=9160031; …` on the wire | the session that minted the challenge |
+| the answer's own `itspod=16`, `x-apple-application-instance=9160031` | the same instance replied |
+
+So affinity was established and the reply was still the BadLogin body. The pod
+hypothesis is dead by the criterion written above: presenting the code to the
+instance that asked for it does not make Apple accept it.
+
+What the same capture says about the other suspect is worse than a stale code
+-- it is a stale *chance*. The code pass went 204, 301, 301, 204, 404 and only
+then reached the application, 126 seconds after the challenge. The reference
+client would have given up after its third try, so this is not a place where
+we are more persistent than the protocol; it is a place where persistence
+buys an answer about a code that has rotated. He then set the override to 3 and
+ran it twice: 301/301/403 and 302/404/403, both ending in the edge-refusal
+text with no application answer at all. Three tries is too few on this path --
+the application is reachable, but not within three.
+
+That puts the question where it belongs: not how many times to re-post the
+password, but why the front end answers 301 and 302 with no destination and
+keeps doing it for two minutes. The only honest way to find out is to look
+where the header still exists, so `signedRequest` now carries a per-dispatch
+task delegate (`RedirectRecorder`) that sees the redirect response *before*
+URLSession surfaces it. Three outcomes, all decisive:
+
+* `redirect at the delegate: HTTP 302, location present` plus
+  `location recovered at the delegate for HTTP 302: <host+path>` -- the
+  destination was there all along and declining the hop hid it. The same signed
+  bytes are then replayed where Apple said, which is precisely what upstream
+  does with `NoRedirects: true` and its own read of `location`
+  (`appstore_login.go:403`); the Go client keeps the header because
+  `ErrUseLastResponse` hands back the response whole. Expect the application
+  answer on the first or second try, and a code young enough to be checked.
+* `location absent` at the delegate too -- the edge really does answer with
+  nowhere to go, nothing is being hidden by this client, and the remaining
+  difference between us and the reference is the header set: authenticate
+  carries the anisette values (`X-Apple-I-MD` renamed to `X-Apple-AMD`, and
+  `X-Apple-I-MD-M` to `X-Apple-AMD-M`) in every version of the reference
+  client, and ours sends neither. That is `feat/anisette-login`'s work, and the
+  42 ms identity stage is what makes it affordable to try on the phone.
+* `location present` but refused as unresolvable or off Apple's domain -- the
+  guard is working and the message says which.
+
+No claim is made here that the redirect is the cause. It is the last unmeasured
+one, and this build measures it.
+
 ## What this probe does not do
 
 It changes nothing about what ships: three tries is still the default. It does

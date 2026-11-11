@@ -50,6 +50,54 @@ final class NoAutoRedirectDelegate: NSObject, URLSessionTaskDelegate {
     }
 }
 
+/// Records the hop a task was handed, then declines it, so the destination
+/// Apple named can still be read.
+///
+/// A real account has been answering authenticate with an HTML 301 or 302 that
+/// carries no `Location` -- five tries in run 511, six in run 513 -- and every
+/// retry re-posted the password to the same edge while it waited. Two readings
+/// fit, and they want different fixes: the edge really sends no Location, or it
+/// sends one and URLSession drops it from the response it surfaces once a
+/// delegate has declined the hop. The Go reference client never has to ask,
+/// because `http.Client.CheckRedirect` returning `ErrUseLastResponse` keeps the
+/// header intact and `appstore_login.go:403` reads it straight off the result.
+///
+/// This type is the second reading made visible: the delegate is handed the
+/// response before the surfacing step, with its headers whole.
+final class RedirectRecorder: NSObject, URLSessionTaskDelegate {
+    private let lock = NSLock()
+    private var namedLocation: String?
+
+    /// The Location from the last declined hop, or nil when Apple named nowhere.
+    var location: String? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return namedLocation
+    }
+
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        let value = response.value(forHTTPHeaderField: "Location")
+
+        lock.lock()
+        namedLocation = value
+        lock.unlock()
+
+        // Whether the header exists at all is the whole question this answers,
+        // and a Location may carry a token in its query, so the presence is
+        // reported and the destination is what gets resolved below.
+        AppLog.info("redirect at the delegate: HTTP " + String(response.statusCode)
+                    + ", location " + (value.map { $0.isEmpty ? "empty" : "present" } ?? "absent"),
+                    .network)
+
+        completionHandler(nil)
+    }
+}
+
 final class AppStoreClient {
     private let session: URLSession
 
@@ -2263,7 +2311,13 @@ final class AppStoreClient {
             signed.setValue(try signer.signatureHeaderValue(for: body),
                            forHTTPHeaderField: "X-Apple-ActionSignature")
 
-            let (data, response) = try await signedSession.data(for: signed)
+            // One recorder per dispatch: it answers a question about this
+            // response only, and a shared one would let a hop from another
+            // request be read as this one's destination.
+            let recorder = RedirectRecorder()
+
+            let (data, response) = try await signedSession.data(for: signed,
+                                                                delegate: recorder)
             guard let http = response as? HTTPURLResponse else {
                 AppLog.error("response was not HTTP", .network)
                 throw StoreError.httpError(-1, "not an HTTP response")
@@ -2327,8 +2381,24 @@ final class AppStoreClient {
             // not resolve, or sent one off Apple's domain -- three different
             // faults, indistinguishable in the log, and the difference decides
             // whether the fix lives here.
-            guard let location = http.value(forHTTPHeaderField: "Location"),
-                  !location.isEmpty else {
+            var location = http.value(forHTTPHeaderField: "Location") ?? ""
+
+            // The surfaced response can carry no Location while the delegate was
+            // handed one, because declining a hop is URLSession's own cue to stop
+            // describing it. If the recorder named a destination, that is the pod
+            // Apple asked for, and replaying the same signed bytes there is what
+            // the reference client does when it reads `location` off the result.
+            // If neither has one, the edge really is answering with nowhere to
+            // go, and the fix is not here.
+            if location.isEmpty, let named = recorder.location, !named.isEmpty {
+                location = named
+
+                AppLog.warn("location recovered at the delegate for HTTP "
+                            + String(http.statusCode) + ": "
+                            + Self.destinationWithoutQuery(named), .network)
+            }
+
+            if location.isEmpty {
                 logUnfollowedRedirect(http, request: signed, reason: "no Location header")
 
                 return (data, http)
