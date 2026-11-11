@@ -85,6 +85,11 @@ struct DiagnosticsScreen: View {
     /// mean, with the numbers they produced, is in `docs/diagnostics.md`.
     static let mappingCensusKey = "com.a23bc.dliparebuild.mappingCensus"
     @AppStorage(mappingCensusKey) private var mappingCensus = false
+
+    /// Routes sign-in through the Store runtime instead of the hand-built
+    /// request. Off by default: it is the comparison arm, not the shipping
+    /// path, until a device run says otherwise.
+    @AppStorage(AppStoreClient.nativeAuthenticateKey) private var nativeAuthenticate = false
     // The tail as entries rather than as one joined string: the rows are laid
     // out lazily now, so the cost is what fits on screen, not what fits in the
     // window.
@@ -115,6 +120,9 @@ struct DiagnosticsScreen: View {
                         Toggle("Log the mapping measurements (next launch)",
                                isOn: $mappingCensus)
                             .onChange(of: mappingCensus) { _ in refresh() }
+                        Toggle("Authenticate through the Store runtime",
+                               isOn: $nativeAuthenticate)
+                            .onChange(of: nativeAuthenticate) { _ in refresh() }
                     }
 
                     Section {

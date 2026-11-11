@@ -33,6 +33,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSString *)signatureHeaderValue:(NSData *)body error:(NSError **)error;
 - (nullable NSData *)generateKBSync:(NSString *)dsid error:(NSError **)error;
 - (nullable NSString *)entDownload:(nullable NSString *)dsid token:(nullable NSString *)token storefront:(nullable NSString *)storefront endpoint:(nullable NSString *)endpoint cookieHeader:(nullable NSString *)cookieHeader appID:(long long)appID externalVersionID:(nullable NSString *)externalVersionID purpose:(nullable NSString *)purpose error:(NSError **)error;
+- (nullable NSString *)authenticateOnce:(NSString *)inputJSON error:(NSError **)error;
 - (nullable NSString *)storeSmoke:(nullable NSString *)dsid token:(nullable NSString *)token storefront:(nullable NSString *)storefront entEndpoint:(nullable NSString *)entEndpoint cookieHeader:(nullable NSString *)cookieHeader error:(NSError **)error;
 - (nullable NSData *)hardware;
 - (BOOL)close:(NSError **)error;

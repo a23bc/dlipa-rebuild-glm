@@ -179,6 +179,25 @@ func entDownload(dsid: String, token: String, storefront: String, endpoint: Stri
                            externalVersionID: externalVersionID, purpose: purpose)
 }
 
+/// One authenticate exchange through the Store runtime.
+///
+/// The Go side builds the request with Apple's AMSVerifyCredentialsTask, sends
+/// it once and returns status, headers and body as JSON. No retry and no
+/// redirect: the caller decides both.
+func authenticateOnce(json: String) throws -> String {
+    // Nullable return plus NSError** imports as a throwing, non-optional call:
+    // the nil case is folded into the error, the same shape as entDownload.
+    let value = try bridge.authenticateOnce(json)
+
+    guard !value.isEmpty else {
+        throw NSError(domain: "SAPSigner", code: 6, userInfo: [
+            NSLocalizedDescriptionKey: "the bridge returned an empty authenticate response",
+        ])
+    }
+
+    return value
+}
+
 func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: String, cookieHeader: String) throws -> String {
     try bridge.storeSmoke(dsid, token: token, storefront: storefront, entEndpoint: entEndpoint, cookieHeader: cookieHeader)
 }

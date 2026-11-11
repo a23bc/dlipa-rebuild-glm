@@ -34,6 +34,12 @@ final class AppStoreClient {
     /// endpoint on the code attempt is what produced a 404.
     private var authenticationPod: String?
 
+    /// When this process asked for a verification code. A code request may
+    /// inherit the challenge session only while this is set: the launch
+    /// restores the previous account's jar, and replaying that into a code
+    /// request would mint the session against somebody else's cookies.
+    var nativeChallengeAt: Date?
+
     /// The UA the original DLiPA shipped. Apple gates the private bag on the
     /// Configurator UA: with a generic UA the response contains none of the
     /// sign-sap-* keys at all. The 2.17 UA was found to return a generic
@@ -173,6 +179,15 @@ final class AppStoreClient {
                       endpoint: String,
                       signer: SAPSigner,
                       attempt: Int = 1) async throws -> Account {
+        // The native path owns one exchange and no retry. It ignores `attempt`:
+        // Apple wants 1 on the code request too, and AppSession still passes 2
+        // for the old path's benefit.
+        if UserDefaults.standard.bool(forKey: Self.nativeAuthenticateKey) {
+            return try await authenticateNative(email: email, password: password,
+                                                authCode: authCode, guid: guid,
+                                                endpoint: endpoint, signer: signer)
+        }
+
         // A sign-in starts from an empty jar. The launch restores the previous
         // account's cookies, and signing in the second account on top of them left
         // that account's X-Token and DSID in the values this call captures -- the new
@@ -403,6 +418,39 @@ final class AppStoreClient {
             pod: headerValue(http, "pod") ?? "",
             firstName: address["firstName"] as? String ?? "",
             lastName: address["lastName"] as? String ?? "")
+    }
+
+    // MARK: - Native authentication
+
+    /// Prepares the jar for a native exchange and returns the Cookie header the
+    /// first hop should send.
+    ///
+    /// A code-less sign-in starts clean: the launch restored the previous
+    /// account's jar, and minting a new session on top of it is the account
+    /// switch bug in another shape. A code request keeps the jar, because the
+    /// challenge belongs to the session that asked for it.
+    func beginNativeAuthentication(codeIsEmpty: Bool) -> String {
+        if codeIsEmpty {
+            clearPersistedCookieJar()
+            capturedCookieHeader = ""
+            capturedCookieValues = [:]
+            nativeChallengeAt = nil
+        } else if nativeChallengeAt == nil {
+            // A code arriving without a challenge this process asked for -- a
+            // restored sheet, or a caller that assembled its own flow -- must
+            // not inherit whatever jar the launch restored.
+            capturedCookieHeader = ""
+            capturedCookieValues = [:]
+        }
+
+        return capturedCookieHeader
+    }
+
+    /// Completes a native sign-in: writes the per-account snapshot and returns
+    /// the session cookie the response set.
+    func finishNativeAuthentication(dsid: String) -> String {
+        saveCookieSnapshot(forDSID: dsid)
+        return capturedCookieValues["X-Token"] ?? ""
     }
 
     // MARK: - Search
@@ -842,7 +890,23 @@ final class AppStoreClient {
                 raw.append(String(describing: value))
             }
         }
-        guard !raw.isEmpty else { return }
+
+        captureCookieHeaderValues(raw, host: http.url?.host ?? "")
+    }
+
+    /// The same cookie rules, for a response that exists only as header values.
+    ///
+    /// The Store-runtime bridge returns JSON, not an `URLResponse`, so a native
+    /// sign-in cannot go through `captureCookies(from:)`. This is the shared
+    /// body of the two; it returns the header the next hop should send.
+    @discardableResult
+    func captureCookieHeaderValues(_ raw: [String], host: String) -> String {
+        guard Self.isAppleHost(host) else {
+            AppLog.warn("ignoring Set-Cookie from non-Apple host " + host, .network)
+            return capturedCookieHeader
+        }
+
+        guard !raw.isEmpty else { return capturedCookieHeader }
 
         var pairs = capturedCookieHeader.isEmpty
             ? [String]()
@@ -870,7 +934,7 @@ final class AppStoreClient {
         // "Apple sent no cookies" and "we could not see them".
         let exposed = raw.count
         let total = capturedCookieValues.count
-        AppLog.info("Set-Cookie from " + (http.url?.host ?? "?") + ": "
+        AppLog.info("Set-Cookie from " + host + ": "
                     + String(exposed) + " header(s), total " + String(total)
                     + " cookies: " + names.joined(separator: ", "), .network)
 
@@ -886,6 +950,8 @@ final class AppStoreClient {
         if let dsid = capturedCookieValues["X-Dsid"], !dsid.isEmpty {
             saveCookieSnapshot(forDSID: dsid, quiet: true)
         }
+
+        return capturedCookieHeader
     }
 
     /// Header names with the values of anything carrying a credential replaced
@@ -2124,6 +2190,11 @@ final class AppStoreClient {
 
     /// How many times a single authentication request is sent. ipatool uses
     /// three, with the delays below between them.
+    /// Routes sign-in through the Store runtime instead of the hand-built
+    /// request. Off by default: the hand-built path is the one that has
+    /// reached the application, and this switch exists to compare them.
+    static let nativeAuthenticateKey = "com.a23bc.dliparebuild.nativeAuthenticate"
+
     private static let authenticationRequestAttempts = 3
 
     /// 10s then 20s, capped at 30s the way ipatool caps it.
