@@ -98,6 +98,46 @@ Three front-end answers in one minute to byte-identical requests is not an appli
 
 So the surface grew the last control it needs: **overrides in force**, a typed authenticate endpoint and a typed `User-Agent`, both cleared by leaving the field empty, both named in the log on every request that uses them and printed by a dump. Each host worth trying is then one request rather than one build.
 
+### Two claims in that table were wrong, and both were about parity
+
+Read on 2026-11-11, against runs 511 and 513 and against the reference
+client's own request builder:
+
+* **"Every field the reference client sends, and nothing it does not"** is not
+  true. It sends `Content-Type: application/x-apple-plist`
+  (`pkg/appstore/appstore_login.go:580`); we have always sent
+  `application/x-www-form-urlencoded` over the same plist body, a habit inherited
+  from the Objective-C client and good enough that Apple has answered it with
+  200. And it sends the anisette header set on every login request, renamed for
+  this endpoint (`X-Apple-I-MD` to `X-Apple-AMD`, `X-Apple-I-MD-M` to
+  `X-Apple-AMD-M`, `appstore_login.go:585-598`); we send none, because the app
+  has no path that produces them yet. A third difference -- the storefront
+  header -- genuinely does not apply, and for the reason the table gave: it is
+  derived only for telephone-number Apple IDs.
+* **"the cookie jar" as ruled out** was the more expensive mistake. The jar was
+  not ruled out; it was never attached. The reference client's authenticate
+  calls share a cookie jar (`appstore.go:101`), so its verification code goes
+  back carrying the `itspod` and `mzf_in` of the answer that asked for it. Ours
+  captured them, deleted them at the top of the second call, and never set the
+  header. That is fixed (run 513 proves the carry works, and also that carrying
+  the session does not make Apple accept the code -- see
+  `auth-attempts.md`), and the row above is what the fix was measured against.
+
+The `301 with no Location` observation survives both corrections, and it has
+now been reproduced by three unrelated clients on this machine: `curl` on
+Windows against the real endpoint, this app on device, and a plain Go client
+carrying a valid `X-Apple-ActionSignature` over a dummy body. Whatever else
+that edge is doing, it is not this client swallowing a redirect -- although the
+build now also records the header where it still exists, at the task delegate,
+so the claim is measured rather than argued.
+
+While the same body was being held still, one more variable moved on its own:
+with `application/x-apple-plist` named in the header, the answer from here was
+an empty 204 three times out of three, where the urlencoded spelling returned
+404 and 301 HTML between identical attempts. That is not an application answer
+either, so it decides nothing on its own -- it is the reason the content type
+became the third typed field rather than a code change.
+
 ## Reading, 2026-11-10 evening: what iOS actually exposes for anisette
 
 Package 503 on device, `build/dl-ipa/503.txt`. One lesson first, because it changes how to read every line: `exists=NO` with `dlopen=OK` is normal -- `FileManager` cannot see an image that lives only in the dyld shared cache. So absence has to be argued from the dlopen error text, not from `exists=`.

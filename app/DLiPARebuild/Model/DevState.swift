@@ -263,6 +263,7 @@ enum DevState {
     static let endpointKey = "com.a23bc.dliparebuild.devAuthEndpoint"
     static let userAgentKey = "com.a23bc.dliparebuild.devUserAgent"
     static let authAttemptsKey = "com.a23bc.dliparebuild.devAuthAttempts"
+    static let contentTypeKey = "com.a23bc.dliparebuild.devAuthContentType"
 
     /// A typed replacement for the authenticate endpoint, and for the
     /// `User-Agent` that goes with it.
@@ -291,6 +292,27 @@ enum DevState {
 
     static var userAgentOverride: String? {
         nonempty(UserDefaults.standard.string(forKey: DevState.userAgentKey))
+    }
+
+    /// A typed replacement for the authenticate request's `Content-Type`.
+    ///
+    /// This one is not a guess at where the endpoint moved. It is the single
+    /// header on that request where the reference client and this app
+    /// demonstrably differ: upstream sets `application/x-apple-plist`
+    /// (`pkg/appstore/appstore_login.go:580`) while we send
+    /// `application/x-www-form-urlencoded` over a plist body -- inherited from
+    /// the original Objective-C client, and good enough that Apple has answered
+    /// it with HTTP 200 more than once. Running the request the way the
+    /// reference client runs it is a one-request experiment, and the answer
+    /// shape changes with it: from this machine, the urlencoded form drew 404
+    /// and 301 HTML while `x-apple-plist` drew an empty 204 every single time,
+    /// three of three, with the same body and the same valid signature.
+    ///
+    /// A field rather than a code change because the shipping default should
+    /// stay what has been observed to work, and the comparison wants one
+    /// variable, not two builds.
+    static var contentTypeOverride: String? {
+        nonempty(UserDefaults.standard.string(forKey: DevState.contentTypeKey))
     }
 
     /// How many times one authentication request is sent, when a measurement

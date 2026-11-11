@@ -386,7 +386,13 @@ final class AppStoreClient {
                 // into a failed sign-in.
                 var attemptRequest = URLRequest(url: try Self.trustedEndpoint(endpointNow))
                 attemptRequest.httpMethod = "POST"
-                attemptRequest.setValue("application/x-www-form-urlencoded",
+                // The reference client names this body `application/x-apple-plist`;
+                // we have always named it urlencoded, which Apple has answered
+                // often enough to keep. The difference is one field of the request
+                // the edge keeps refusing, so it is a switch rather than a code
+                // change -- and the signature covers the bytes, not this header.
+                attemptRequest.setValue(DevState.contentTypeOverride
+                                        ?? Self.authenticateContentType,
                                         forHTTPHeaderField: "Content-Type")
                 attemptRequest.setValue(Self.authenticateUserAgent,
                                         forHTTPHeaderField: "User-Agent")
@@ -2517,6 +2523,14 @@ final class AppStoreClient {
     private static var authenticateUserAgent: String {
         DevState.userAgentOverride ?? bagUserAgent
     }
+
+    /// What this app has always named the authenticate body's format.
+    ///
+    /// The body is a plist and the header has said urlencoded since the
+    /// Objective-C client this project was rebuilt from, and Apple has answered
+    /// it with HTTP 200 -- so it is not a fault, it is a difference from the
+    /// reference client, which says `application/x-apple-plist`.
+    static let authenticateContentType = "application/x-www-form-urlencoded"
 
     /// Redirect codes whose body must be replayed at the destination.
     ///

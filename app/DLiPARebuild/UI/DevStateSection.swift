@@ -19,6 +19,7 @@ struct DevStateSection: View {
     @State private var guid = ""
     @State private var endpointOverride = ""
     @State private var userAgentOverride = ""
+    @State private var contentTypeOverride = ""
     @State private var authAttemptsOverride = ""
 
     var body: some View {
@@ -180,6 +181,16 @@ struct DevStateSection: View {
             }
 
             HStack {
+                TextField("content type", text: $contentTypeOverride)
+                    .font(.system(.caption2, design: .monospaced))
+                Button("Set") {
+                    let value = DevState.setOverride(contentTypeOverride, forKey: DevState.contentTypeKey)
+
+                    AppLog.warn("dev state: authenticate content type is now " + value, .auth)
+                }
+            }
+
+            HStack {
                 TextField("authentication attempts", text: $authAttemptsOverride)
                     .font(.system(.caption2, design: .monospaced))
                 Button("Set") {
@@ -221,8 +232,10 @@ struct DevStateSection: View {
     private var overrideSummary: String {
         let endpoint = DevState.endpointOverride ?? "from the bag"
         let agent = DevState.userAgentOverride ?? "built-in"
+        let format = DevState.contentTypeOverride ?? "urlencoded"
 
         return "endpoint " + endpoint + ", user-agent " + agent
+            + ", content-type " + format
             + ", attempts " + String(AppStoreClient.authenticationRequestAttempts)
     }
 
