@@ -3,9 +3,11 @@ package sapbridge
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/storeauth"
 )
 
@@ -31,6 +33,16 @@ import (
 //	  go test -run TestLiveAnisetteProof -v -timeout 35m ./
 func TestLiveAnisetteProof(t *testing.T) {
 	applyAssetDir()
+
+	// Ask the emulator first, and before anything is bought. A host with no
+	// libunicorn 2 cannot answer any part of this test, and the asset fetch
+	// below is minutes of Apple bandwidth spent to reach a failure that was
+	// knowable in the first microsecond. The probe job installs the pinned
+	// library and sets DSH_SAP_REQUIRE_LIVE; the lint job does neither, and
+	// should skip rather than go red over it.
+	if !unicorn.Available() {
+		unavailable(t, errors.New("libunicorn 2 is not loadable on this host"))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
