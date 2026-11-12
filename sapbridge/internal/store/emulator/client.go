@@ -73,18 +73,10 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		saved = map[string]any{"directoryServicesIdentifier": dsid, "passwordToken": input.Headers.Get("X-Token"), "storeFront": input.Headers.Get("X-Apple-Store-Front"), "email": ""}
 	}
 
-	if r.account == 0 {
-		account, err := r.ephemeralAccount(saved)
-		if err != nil {
-			return nil, err
-		}
-
-		_, _ = r.Invoke(account, "retain")
-
-		r.account = account
+	account, err := r.ephemeralAccount(saved)
+	if err != nil {
+		return nil, err
 	}
-
-	account := r.account
 
 	var bag uint64
 
@@ -110,20 +102,10 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		}
 	}
 
-	if r.session == 0 {
-		session, err := r.newSession()
-		if err != nil {
-			return nil, err
-		}
-
-		// The session and account outlive the request that created them; an
-		// autoreleased object would leave a dangling pointer for the next one.
-		_, _ = r.Invoke(session, "retain")
-
-		r.session = session
+	session, err := r.newSession()
+	if err != nil {
+		return nil, err
 	}
-
-	session := r.session
 
 	if input.Operation != "authenticate" {
 		if _, err = r.Invoke(session, "setDelegate:", r.interactiveDelegate()); err != nil {

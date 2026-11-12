@@ -146,8 +146,6 @@ type Runtime struct {
 	// flush once at the end.
 	deferFlush bool
 
-	session                                  uint64
-	account                                  uint64
 	lastResponse                             *http.Response
 	transportError                           error
 	streamResponse, noRedirects, authRequest bool
@@ -1022,9 +1020,6 @@ func methodKey(class, selector string, meta bool) string {
 func (r *Runtime) Close() error {
 	// The Go runtime object outlives the guest: pointers cached for the guest
 	// are meaningless after this call and must not be reused by the next open.
-	r.session = 0
-	r.account = 0
-
 	if r.engine == nil {
 		return nil
 	}
@@ -1618,6 +1613,30 @@ func (r *Runtime) String(address uint64) string {
 
 	return value
 }
+
+// registerGuestObject records an object the guest returned. Objects the host
+// allocates are registered when they are made; ones the guest allocates inside
+// a class cluster are not, and the next message to them reads an unknown
+// receiver.
+func (r *Runtime) registerGuestObject(ptr uint64) {
+	if ptr == 0 {
+		return
+	}
+
+	if _, ok := r.classNames[ptr]; ok {
+		return
+	}
+
+	isa := r.read64(ptr)
+	if isa == 0 {
+		return
+	}
+
+	if name, ok := r.classNames[isa]; ok {
+		r.classNames[ptr] = name
+	}
+}
+
 func (r *Runtime) lookup(class, selector string, meta bool) uint64 {
 	for class != "" {
 		if address := r.methods[methodKey(class, selector, meta)]; address != 0 {
