@@ -25,6 +25,27 @@ func (r *Runtime) symbol(name string) {
 	}
 
 	switch name {
+	case "xpc_get_type":
+		// The Store AMD proof hands AppleMediaServices a dictionary the host
+		// built (delegate.go's installStoreAMDAdapter creates it), and libxpc's
+		// type test is how the framework decides it may read it. Answering
+		// anything else makes the proof come back nil without a error to
+		// follow.
+		//
+		// The profile's symbol table is the preferred source because that is
+		// the pointer this build of libxpc compares against; the constant is
+		// the same value the SAP shim layer already answers with
+		// (machine/shim_platform.go), so the two guests cannot disagree.
+		object := r.objects[r.arg(0)]
+		if object != nil && object.Class == "HostXPCDictionary" {
+			if address, ok := r.profile.Symbols["__xpc_type_dictionary"]; ok && address != 0 {
+				r.set(address)
+			} else {
+				r.set(uint64(0xffff100000000001))
+			}
+		} else {
+			r.set(0)
+		}
 	case "CC_SHA512":
 		length := uint64(uint32(r.arg(1)))
 		if length > heapSize {

@@ -15,6 +15,7 @@ import (
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/measure"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -308,6 +309,63 @@ type Anisette struct{}
 // NewAnisette returns a handle for the identity calls.
 func NewAnisette() *Anisette {
 	return &Anisette{}
+}
+
+// ProvisionStore runs the Store provisioning step an SP answer asks for: it
+// finishes the machine action with the challenge and a kbsync blob, then mints
+// the Store AMD proof from the provisioned state.
+func (a *Anisette) ProvisionStore(stateBase64, challenge, kbsync, identityJSON, hardwareHex string) (string, error) {
+	state, err := base64.StdEncoding.DecodeString(stateBase64)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provisioning state: %w", err)
+	}
+
+	hardware, err := hex.DecodeString(hardwareHex)
+	if err != nil || len(hardware) != 6 {
+		return "", fmt.Errorf("sapbridge: provisioning hardware identity")
+	}
+
+	var identity map[string]string
+	if err := json.Unmarshal([]byte(identityJSON), &identity); err != nil {
+		return "", fmt.Errorf("sapbridge: provisioning identity: %w", err)
+	}
+
+	headers := make(http.Header, len(identity))
+	for name, value := range identity {
+		headers.Set(name, value)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	provisioned, err := storeauth.ProvisionStoreAnisette(ctx, storeauth.NewHTTPClient(nil), state,
+		challenge, "https://auth.itunes.apple.com/auth/v1/otp/1.5/finish",
+		"Configurator/2.21 (Macintosh; OS X 27.0.1; 26A434) AppleWebKit/0625.2.5.11.6",
+		kbsync, hardware, headers)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provision store: %w", err)
+	}
+
+	proof, next, err := storeauth.StoreAMDHeaders(ctx, provisioned,
+		"https://auth.itunes.apple.com/auth/v1/native", hardware)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: store proof after provisioning: %w", err)
+	}
+
+	output := struct {
+		Headers map[string]string `json:"headers"`
+		State   string            `json:"state"`
+	}{
+		Headers: proof,
+		State:   base64.StdEncoding.EncodeToString(next),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provisioning result: %w", err)
+	}
+
+	return string(data), nil
 }
 
 // Headers takes the state from the previous call (base64, empty on first use)

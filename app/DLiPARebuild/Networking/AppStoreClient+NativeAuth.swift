@@ -183,6 +183,36 @@ extension AppStoreClient {
                                                 identityMode: "reprovision")
         }
 
+        // SP is the second half of the machine action: finish Store
+        // provisioning with the challenge and a machine kbsync, mint the Store
+        // AMD proof, then send the same body with that proof.
+        if message == "AMD-Action::SP", identityMode != "store" {
+            guard let challenge = answer.header("X-Apple-AMD-Data"), !challenge.isEmpty else {
+                throw StoreError.failureType("AMD-SP", "the answer carried no provisioning data")
+            }
+
+            let blob = try signer.kbsync(dsid: "18446744073709551615")
+            let state = Keychain.anisetteState() ?? Data()
+
+            AppLog.info("AMD action SP: provisioning with " + String(challenge.count)
+                        + " challenge chars, kbsync " + String(blob.count) + " bytes", .auth)
+
+            let proof = try AnisetteIdentity.provisionStore(state: state,
+                                                            challenge: challenge,
+                                                            kbsync: blob,
+                                                            identity: identity,
+                                                            guid: guid)
+
+            return try await authenticateNative(email: email,
+                                                password: password,
+                                                authCode: authCode,
+                                                guid: guid,
+                                                endpoint: endpoint,
+                                                signer: signer,
+                                                reusedIdentity: proof,
+                                                identityMode: "store")
+        }
+
         if !failure.isEmpty {
             AppLog.error("authenticate failed: failureType=\(failure) message=\(message)", .auth)
             throw StoreError.failureType(failure, message)

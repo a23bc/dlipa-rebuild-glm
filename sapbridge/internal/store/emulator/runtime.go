@@ -175,6 +175,7 @@ type Runtime struct {
 	callbacks                   map[uint64]func()
 	pending                     []uint64
 	hardwareID                  []byte
+	xpcSyncHandler              func(string, []byte) ([]byte, error)
 	engine                      *unicorn.Engine
 	ownsEngine                  bool
 	profile                     Profile

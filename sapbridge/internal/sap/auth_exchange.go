@@ -133,9 +133,16 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	}
 
 	reprovision := strings.EqualFold(input.IdentityMode, "reprovision")
+	storeProof := strings.EqualFold(input.IdentityMode, "store")
 
 	for name, value := range input.ExtraHeaders {
 		if value == "" || strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+			continue
+		}
+
+		if storeProof {
+			headers.Set(name, value)
+
 			continue
 		}
 

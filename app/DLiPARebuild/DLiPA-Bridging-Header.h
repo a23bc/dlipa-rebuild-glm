@@ -42,6 +42,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface SapbridgeAnisette : NSObject
 - (nullable NSString *)headers:(NSString *)stateBase64 error:(NSError **)error;
+- (nullable NSString *)provisionStore:(NSString *)stateBase64
+                            challenge:(NSString *)challenge
+                               kbsync:(NSString *)kbsync
+                           identityJSON:(NSString *)identityJSON
+                           hardwareHex:(NSString *)hardwareHex
+                                 error:(NSError **)error;
 @end
 
 FOUNDATION_EXPORT SapbridgeAnisette * _Nullable SapbridgeNewAnisette(void);

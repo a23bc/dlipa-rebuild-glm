@@ -49,4 +49,44 @@ enum AnisetteIdentity {
 
         return headers
     }
+
+    /// Finishes the Store provisioning step and returns the Store AMD proof.
+    /// The state passed in is the one the SP answer was produced against; the
+    /// returned state replaces it.
+    static func provisionStore(state: Data,
+                               challenge: String,
+                               kbsync: Data,
+                               identity: [String: String],
+                               guid: String) throws -> [String: String] {
+        guard let bridge else {
+            throw NSError(domain: "AnisetteIdentity", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "the anisette bridge is unavailable",
+            ])
+        }
+
+        let identityData = try JSONSerialization.data(withJSONObject: identity, options: [])
+        let identityJSON = String(data: identityData, encoding: .utf8) ?? "{}"
+
+        let raw = try bridge.provisionStore(state.base64EncodedString(),
+                                            challenge: challenge,
+                                            kbsync: kbsync.base64EncodedString(),
+                                            identityJSON: identityJSON,
+                                            hardwareHex: guid)
+
+        guard let data = raw.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let headers = object["headers"] as? [String: String] else {
+            throw NSError(domain: "AnisetteIdentity", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "could not read the provisioning response",
+            ])
+        }
+
+        if let next = object["state"] as? String, let fresh = Data(base64Encoded: next) {
+            Keychain.saveAnisetteState(fresh)
+        }
+
+        AppLog.info("store provisioning produced " + String(headers.count) + " headers", .sap)
+
+        return headers
+    }
 }
