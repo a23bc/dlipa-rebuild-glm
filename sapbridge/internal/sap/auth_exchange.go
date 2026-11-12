@@ -1,16 +1,21 @@
 package sap
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strings"
 	"time"
+
+	"howett.net/plist"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
@@ -114,6 +119,7 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	}
 
 	headers := make(http.Header)
+	headers.Set("Content-Type", "application/x-apple-plist")
 	headers.Set("User-Agent", input.UserAgent)
 
 	if input.Cookie != "" {
@@ -142,14 +148,11 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 		timeout = 30 * time.Second
 	}
 
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: -1}).DialContext,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: timeout,
-		DisableKeepAlives:     true,
-		ForceAttemptHTTP2:     false,
-	}
+	// The reference client uses Go's default transport, which negotiates
+	// HTTP/2. Forcing HTTP/1.1 here was inherited from the recording probe and
+	// is the one transport-level difference left between the two requests.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = timeout
 	defer transport.CloseIdleConnections()
 
 	client := &http.Client{
@@ -161,6 +164,58 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	}
 
 	send := func(request *http.Request) (*http.Response, error) {
+		if os.Getenv("DLIPA_DUMP_AUTH") == "1" && request.Body != nil {
+			raw, readErr := io.ReadAll(request.Body)
+			if readErr == nil {
+				request.Body = io.NopCloser(bytes.NewReader(raw))
+
+				var values map[string]any
+				if _, decodeErr := plist.Unmarshal(raw, &values); decodeErr == nil {
+					keys := make([]string, 0, len(values))
+					for key := range values {
+						keys = append(keys, key)
+					}
+
+					sort.Strings(keys)
+
+					for _, key := range keys {
+						switch key {
+						case "appleId", "password":
+							if text, ok := values[key].(string); ok {
+								fmt.Fprintf(os.Stderr, "[AUTHD] body %s=string(%d)\n", key, len(text))
+							}
+						default:
+							switch value := values[key].(type) {
+							case string:
+								fmt.Fprintf(os.Stderr, "[AUTHD] body %s=%q\n", key, value)
+							case map[string]any:
+								fmt.Fprintf(os.Stderr, "[AUTHD] body %s=dict(%d)\n", key, len(value))
+							default:
+								fmt.Fprintf(os.Stderr, "[AUTHD] body %s=%v\n", key, value)
+							}
+						}
+					}
+				}
+
+				fmt.Fprintf(os.Stderr, "[AUTHD] body=%d hash=%x\n", len(raw), sha256.Sum256(raw))
+			}
+		}
+
+		if os.Getenv("DLIPA_DUMP_AUTH") == "1" {
+			fmt.Fprintf(os.Stderr, "[AUTHD] signature=%s\n", request.Header.Get("X-Apple-ActionSignature"))
+
+			names := make([]string, 0, len(request.Header))
+			for name := range request.Header {
+				names = append(names, name)
+			}
+
+			sort.Strings(names)
+
+			for _, name := range names {
+				fmt.Fprintf(os.Stderr, "[AUTHD] final %s=%s\n", name, strings.Join(request.Header[name], ", "))
+			}
+		}
+
 		// Apple's task asks for br, gzip and deflate. Go has no brotli decoder,
 		// so drop the negotiation and let the transport pick gzip and decompress
 		// it itself. This is the one header this bridge does not preserve.
