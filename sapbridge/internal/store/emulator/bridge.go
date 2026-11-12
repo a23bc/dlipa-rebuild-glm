@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha512"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -1264,6 +1265,13 @@ func (r *Runtime) message(receiver uint64, selector string, super bool) {
 		object.Value = time.Unix(int64(seconds), int64(fraction*1e9)).UTC()
 
 		r.set(receiver)
+	case "base64EncodedStringWithOptions:":
+		data, ok := object.Value.([]byte)
+		if !ok {
+			panic("base64EncodedString on a non-data object")
+		}
+
+		r.set(r.New("NSString", base64.StdEncoding.EncodeToString(data)))
 	case "initWithBytesNoCopy:length:freeWhenDone:":
 		if !r.kindOf(class, "NSData") || r.arg(3) > 1<<20 {
 			panic("unsupported data buffer initialization")
