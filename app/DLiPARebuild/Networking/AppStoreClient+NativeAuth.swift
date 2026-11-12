@@ -47,7 +47,9 @@ extension AppStoreClient {
                             authCode: String?,
                             guid: String,
                             endpoint: String,
-                            signer: SAPSigner) async throws -> Account {
+                            signer: SAPSigner,
+                            reusedIdentity: [String: String]? = nil,
+                            identityMode: String = "amd") async throws -> Account {
         let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
         var cookie = beginNativeAuthentication(codeIsEmpty: code.isEmpty)
         var target = Self.nativeEndpoint(endpoint)
@@ -57,12 +59,18 @@ extension AppStoreClient {
         // The store's authenticate task is built to receive an AMD pair. It is
         // fetched once per call: the proof is time-sensitive, and the code
         // request comes through this same function with the state advanced.
+        // A reprovision retry reuses the same set, because advancing the state
+        // again is what RP asked us not to do.
         let identity: [String: String]
 
-        do {
-            identity = try AnisetteIdentity.headers()
-        } catch {
-            throw StoreError.failureType("anisette", error.localizedDescription)
+        if let reusedIdentity {
+            identity = reusedIdentity
+        } else {
+            do {
+                identity = try AnisetteIdentity.headers()
+            } catch {
+                throw StoreError.failureType("anisette", error.localizedDescription)
+            }
         }
 
         while true {
@@ -74,6 +82,7 @@ extension AppStoreClient {
                 "cookie": cookie,
                 "userAgent": Self.nativeUserAgent,
                 "extraHeaders": identity,
+                "identityMode": identityMode,
                 "timeoutMs": 90_000,
             ]
 
@@ -157,6 +166,22 @@ extension AppStoreClient {
 
         // Any answer that is not a challenge ends the challenge session.
         nativeChallengeAt = nil
+
+        // RP asks for a new proof without the machine headers: drop MD, MD-M
+        // and MD-RINFO, keep the rest, and send the same body once more. This
+        // is the first request of the two-step machine action; an SP answer
+        // after the retry is a separate step.
+        if message == "AMD-Action::RP", identityMode == "amd" {
+            AppLog.info("AMD action RP: retrying without the MD headers", .auth)
+            return try await authenticateNative(email: email,
+                                                password: password,
+                                                authCode: authCode,
+                                                guid: guid,
+                                                endpoint: endpoint,
+                                                signer: signer,
+                                                reusedIdentity: identity,
+                                                identityMode: "reprovision")
+        }
 
         if !failure.isEmpty {
             AppLog.error("authenticate failed: failureType=\(failure) message=\(message)", .auth)

@@ -35,6 +35,11 @@ type AuthenticateInput struct {
 	// X-Apple-I-MD / X-Apple-I-MD-M, so those two are renamed here rather than
 	// at every caller.
 	ExtraHeaders map[string]string
+	// IdentityMode selects how ExtraHeaders are applied. The first request maps
+	// the MD pair to the AMD pair; a reprovision retry drops the three MD
+	// headers and keeps the rest, which is what the reference does after an
+	// AMD-Action::RP answer.
+	IdentityMode string
 	// Bag is the urlBag dictionary. Apple's task reads routing and storefront
 	// values from it; without it the request is built against an empty bag.
 	Bag     map[string]any
@@ -127,15 +132,29 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 		headers.Set("Cookie", input.Cookie)
 	}
 
+	reprovision := strings.EqualFold(input.IdentityMode, "reprovision")
+
 	for name, value := range input.ExtraHeaders {
 		if value == "" || strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
 			continue
 		}
 
-		// The authenticate request carries exactly two identity headers. The
-		// rest of the anisette set (client time, locale, routing info, Mme)
-		// belongs to other Apple endpoints; sending it here is what separated
-		// this request from the reference, whose dump shows only these two.
+		if reprovision {
+			switch {
+			case strings.EqualFold(name, "X-Apple-I-MD"),
+				strings.EqualFold(name, "X-Apple-I-MD-M"),
+				strings.EqualFold(name, "X-Apple-I-MD-RINFO"):
+				continue
+			}
+
+			headers.Set(name, value)
+
+			continue
+		}
+
+		// The first request carries exactly two identity headers. The rest of
+		// the anisette set belongs to other Apple endpoints; the reference dump
+		// shows only these two on its caller side.
 		switch {
 		case strings.EqualFold(name, "X-Apple-I-MD"):
 			headers.Set("X-Apple-AMD", value)

@@ -407,6 +407,7 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 		Cookie       string            `json:"cookie"`
 		UserAgent    string            `json:"userAgent"`
 		ExtraHeaders map[string]string `json:"extraHeaders"`
+		IdentityMode string            `json:"identityMode"`
 		Bag          map[string]any    `json:"bag"`
 		TimeoutMS    int               `json:"timeoutMs"`
 	}
@@ -444,6 +445,7 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 		Cookie:       input.Cookie,
 		UserAgent:    input.UserAgent,
 		ExtraHeaders: input.ExtraHeaders,
+		IdentityMode: input.IdentityMode,
 		Bag:          input.Bag,
 		Timeout:      timeout,
 	})
