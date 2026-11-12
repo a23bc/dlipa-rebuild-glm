@@ -209,7 +209,11 @@ extension AppStoreClient {
     }
 
     private static func nativeEndpoint(_ value: String) -> String {
-        value.hasSuffix("/") ? value : value + "/"
+        // The bag's authenticate URL is the legacy buy host. Apple's native
+        // verification task speaks to auth/v1/native; posting its body to the
+        // legacy path is what the edge answered with 301, 400 and 503 while
+        // the same bytes returned a token here.
+        "https://auth.itunes.apple.com/auth/v1/native"
     }
 
     private static func isEdgeStatus(_ status: Int) -> Bool {

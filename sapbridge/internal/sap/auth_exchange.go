@@ -50,8 +50,9 @@ type AuthenticateResult struct {
 }
 
 const (
-	authenticatePath = "/WebObjects/MZFinance.woa/wa/authenticate"
-	maxAuthBody      = 1 << 20
+	authenticatePath       = "/WebObjects/MZFinance.woa/wa/authenticate"
+	nativeAuthenticatePath = "/auth/v1/native"
+	maxAuthBody            = 1 << 20
 )
 
 // AuthenticateOnce sends exactly one authenticate request through the Store
@@ -325,11 +326,12 @@ func validateAuthenticateEndpoint(raw string) (string, error) {
 	}
 
 	host := strings.ToLower(parsed.Hostname())
-	if host != "buy.itunes.apple.com" && !strings.HasSuffix(host, "-buy.itunes.apple.com") {
+	if host != "buy.itunes.apple.com" && host != "auth.itunes.apple.com" &&
+		!strings.HasSuffix(host, "-buy.itunes.apple.com") {
 		return "", fmt.Errorf("authenticate: refusing host %q", host)
 	}
 
-	if strings.TrimRight(parsed.Path, "/") != authenticatePath {
+	if path := strings.TrimRight(parsed.Path, "/"); path != authenticatePath && path != nativeAuthenticatePath {
 		return "", fmt.Errorf("authenticate: refusing path %q", parsed.Path)
 	}
 
