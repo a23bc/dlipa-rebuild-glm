@@ -49,8 +49,6 @@ func (r *Runtime) ephemeralAccount(saved map[string]any) (uint64, error) {
 		return 0, err
 	}
 
-	r.registerGuestObject(account)
-
 	if saved == nil {
 		return account, nil
 	}
@@ -89,8 +87,6 @@ func (r *Runtime) newSession() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	r.registerGuestObject(session)
 
 	_, err = r.Invoke(session, "setUseFallbackBag:", 0)
 

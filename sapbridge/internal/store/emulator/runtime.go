@@ -1614,29 +1614,6 @@ func (r *Runtime) String(address uint64) string {
 	return value
 }
 
-// registerGuestObject records an object the guest returned. Objects the host
-// allocates are registered when they are made; ones the guest allocates inside
-// a class cluster are not, and the next message to them reads an unknown
-// receiver.
-func (r *Runtime) registerGuestObject(ptr uint64) {
-	if ptr == 0 {
-		return
-	}
-
-	if _, ok := r.classNames[ptr]; ok {
-		return
-	}
-
-	isa := r.read64(ptr)
-	if isa == 0 {
-		return
-	}
-
-	if name, ok := r.classNames[isa]; ok {
-		r.classNames[ptr] = name
-	}
-}
-
 func (r *Runtime) lookup(class, selector string, meta bool) uint64 {
 	for class != "" {
 		if address := r.methods[methodKey(class, selector, meta)]; address != 0 {
@@ -1663,6 +1640,15 @@ func (r *Runtime) Invoke(object uint64, selector string, args ...uint64) (result
 	}()
 
 	class, meta := r.classNames[object]
+	if class == "" && object != 0 {
+		// A class cluster can hand back an object the host never allocated.
+		// Its isa names the class; dispatch it as an instance, not a class.
+		if isa := r.read64(object); isa != 0 {
+			if name, ok := r.classNames[isa]; ok {
+				class, meta = name, false
+			}
+		}
+	}
 	if !meta {
 		obj := r.objects[object]
 		if obj == nil {
