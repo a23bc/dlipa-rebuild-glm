@@ -1020,6 +1020,11 @@ func methodKey(class, selector string, meta bool) string {
 	return prefix + "[" + class + " " + selector + "]"
 }
 func (r *Runtime) Close() error {
+	// The Go runtime object outlives the guest: pointers cached for the guest
+	// are meaningless after this call and must not be reused by the next open.
+	r.session = 0
+	r.account = 0
+
 	if r.engine == nil {
 		return nil
 	}
