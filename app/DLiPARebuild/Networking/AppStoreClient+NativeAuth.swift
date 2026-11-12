@@ -191,15 +191,19 @@ extension AppStoreClient {
                 throw StoreError.failureType("AMD-SP", "the answer carried no provisioning data")
             }
 
-            let blob = try signer.kbsync(dsid: "18446744073709551615")
+            // The machine kbsync exists for the FairPlay keybag a download
+            // needs, not for the sign-in. Generating it on the signer's
+            // machine spins in StoreAgent global init and hits its own timeout,
+            // so the login provisions without it and leaves the keybag to the
+            // download path.
             let state = Keychain.anisetteState() ?? Data()
 
             AppLog.info("AMD action SP: provisioning with " + String(challenge.count)
-                        + " challenge chars, kbsync " + String(blob.count) + " bytes", .auth)
+                        + " challenge chars, no kbsync", .auth)
 
             let proof = try AnisetteIdentity.provisionStore(state: state,
                                                             challenge: challenge,
-                                                            kbsync: blob,
+                                                            kbsync: Data(),
                                                             identity: identity,
                                                             guid: guid)
 
