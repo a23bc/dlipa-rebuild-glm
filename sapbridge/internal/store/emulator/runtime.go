@@ -146,6 +146,7 @@ type Runtime struct {
 	// flush once at the end.
 	deferFlush bool
 
+	session                                  uint64
 	lastResponse                             *http.Response
 	transportError                           error
 	streamResponse, noRedirects, authRequest bool

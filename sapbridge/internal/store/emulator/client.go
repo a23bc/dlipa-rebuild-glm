@@ -102,10 +102,16 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		}
 	}
 
-	session, err := r.newSession()
-	if err != nil {
-		return nil, err
+	if r.session == 0 {
+		session, err := r.newSession()
+		if err != nil {
+			return nil, err
+		}
+
+		r.session = session
 	}
+
+	session := r.session
 
 	if input.Operation != "authenticate" {
 		if _, err = r.Invoke(session, "setDelegate:", r.interactiveDelegate()); err != nil {
