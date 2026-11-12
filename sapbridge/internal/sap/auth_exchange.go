@@ -216,11 +216,8 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 			}
 		}
 
-		// Apple's task asks for br, gzip and deflate. Go has no brotli decoder,
-		// so drop the negotiation and let the transport pick gzip and decompress
-		// it itself. This is the one header this bridge does not preserve.
-		request.Header.Del("Accept-Encoding")
-
+		// Keep Apple's Accept-Encoding exactly: the reference sends
+		// "br, gzip, deflate" and the edge treats a narrower offer differently.
 		return client.Do(request)
 	}
 
