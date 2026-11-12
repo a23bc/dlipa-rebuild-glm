@@ -73,10 +73,16 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		saved = map[string]any{"directoryServicesIdentifier": dsid, "passwordToken": input.Headers.Get("X-Token"), "storeFront": input.Headers.Get("X-Apple-Store-Front"), "email": ""}
 	}
 
-	account, err := r.ephemeralAccount(saved)
-	if err != nil {
-		return nil, err
+	if r.account == 0 {
+		account, err := r.ephemeralAccount(saved)
+		if err != nil {
+			return nil, err
+		}
+
+		r.account = account
 	}
+
+	account := r.account
 
 	var bag uint64
 

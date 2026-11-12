@@ -147,6 +147,7 @@ type Runtime struct {
 	deferFlush bool
 
 	session                                  uint64
+	account                                  uint64
 	lastResponse                             *http.Response
 	transportError                           error
 	streamResponse, noRedirects, authRequest bool
