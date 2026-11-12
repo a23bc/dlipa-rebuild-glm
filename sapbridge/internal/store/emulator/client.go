@@ -79,6 +79,8 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 			return nil, err
 		}
 
+		_, _ = r.Invoke(account, "retain")
+
 		r.account = account
 	}
 
@@ -113,6 +115,10 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		if err != nil {
 			return nil, err
 		}
+
+		// The session and account outlive the request that created them; an
+		// autoreleased object would leave a dangling pointer for the next one.
+		_, _ = r.Invoke(session, "retain")
 
 		r.session = session
 	}
