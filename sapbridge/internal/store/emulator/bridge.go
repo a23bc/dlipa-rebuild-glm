@@ -1264,6 +1264,21 @@ func (r *Runtime) message(receiver uint64, selector string, super bool) {
 		object.Value = time.Unix(int64(seconds), int64(fraction*1e9)).UTC()
 
 		r.set(receiver)
+	case "initWithBytesNoCopy:length:freeWhenDone:":
+		if !r.kindOf(class, "NSData") || r.arg(3) > 1<<20 {
+			panic("unsupported data buffer initialization")
+		}
+
+		data, err := r.engine.MemRead(r.arg(2), r.arg(3))
+		if err != nil {
+			panic(err)
+		}
+
+		// Copy: the guest keeps ownership of the buffer whatever freeWhenDone
+		// says, and the host object outlives the call that built it.
+		object.Value = append([]byte(nil), data...)
+
+		r.set(receiver)
 	case "initWithBytesNoCopy:length:encoding:freeWhenDone:":
 		if !r.kindOf(class, "NSString") || (r.arg(4) != 4 && r.arg(4) != 1) || r.arg(3) > 1<<20 {
 			panic("unsupported string buffer initialization")
