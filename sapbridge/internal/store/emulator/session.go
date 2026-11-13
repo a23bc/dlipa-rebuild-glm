@@ -66,6 +66,8 @@ func (r *Runtime) ephemeralAccount(saved map[string]any) (uint64, error) {
 		account = instance
 	}
 
+	r.registerGuestObject(account, "AMSEphemeralAccount")
+
 	if saved == nil {
 		return account, nil
 	}
@@ -117,11 +119,30 @@ func (r *Runtime) configureRequest(request, account, bag uint64, raw bool) error
 
 	return nil
 }
+
+// registerGuestObject records an object the guest handed back under the class
+// the receiver was declared with. initWithConfiguration: answers with a class
+// cluster or dynamic subclass the host never allocated; without this the next
+// instance message is an unknown receiver (549/578/579).
+func (r *Runtime) registerGuestObject(ptr uint64, class string) {
+	if ptr == 0 {
+		return
+	}
+
+	if _, ok := r.objects[ptr]; ok {
+		return
+	}
+
+	r.objects[ptr] = &Object{Class: class, Properties: map[string]uint64{}}
+}
+
 func (r *Runtime) newSession() (uint64, error) {
 	session, err := r.Invoke(r.New("AMSURLSession", nil), "initWithConfiguration:delegate:delegateQueue:", 0, 0, 0)
 	if err != nil {
 		return 0, err
 	}
+
+	r.registerGuestObject(session, "AMSURLSession")
 
 	_, err = r.Invoke(session, "setUseFallbackBag:", 0)
 
