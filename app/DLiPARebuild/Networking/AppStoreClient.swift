@@ -1589,58 +1589,14 @@ final class AppStoreClient {
                                  bag: StoreBag,
                                  signer: SAPSigner,
                                  purpose: RequestPurpose = .licence) async throws -> [String: Any] {
-        // The licence gate, before the guest.
-        //
-        // ent/download needs the emulated Store runtime, and opening it costs
-        // about a minute and a half of mapping on device. Discovering only after
-        // that mapping that the account has no licence -- and then buying, which
-        // is a plain request that answers in a second -- is what this removes:
-        // the classic endpoint answers the ownership question in one request, so
-        // the buy happens before the runtime is touched.
-        //
-        // The gate's own songList is dropped on a positive answer: ent/download
-        // is the path the bridge has been measured on, and this check is about
-        // the licence, not about which endpoint serves the file.
-        // Skipped for a metadata read. The gate is six classic attempts and, in
-        // this run, 1.9-6.4 s per call; the ownership of every row in a version
-        // list is already settled by the list itself, and asking costs a second
-        // and answers nothing. The download path keeps it.
-        if purpose == .metadata {
-            return try await downloadWithRetries(
-                appId: appId, externalVersionId: externalVersionId, guid: guid,
-                account: account, bag: bag, signer: signer,
-                acquiredLicence: false, purpose: purpose)
-        }
-
-        let gateStart = Date()
-        let missing = await licenceMissing(appId: appId,
-                                           externalVersionId: externalVersionId,
-                                           guid: guid, account: account,
-                                           bag: bag, signer: signer)
-
-        if missing == false {
-            AppLog.info("licence gate: the account already owns this app ("
-                        + Self.seconds(since: gateStart) + ")", .download)
-        } else if missing == true {
-            // Not bought here on purpose: the licence belongs to the person, and
-            // the download button asks before anything is acquired. A download
-            // that reaches this line without that consent stops here instead of
-            // spending it.
-            AppLog.info("licence gate: no licence after " + Self.seconds(since: gateStart)
-                        + "; asking for one instead of buying it", .download)
-            throw StoreError.failureType("licence-required",
-                                         "This app needs a licence first")
-        } else {
-            // A gateway error, a transport failure, an answer this guard does not
-            // know: none of them is a licence verdict, so ent/download decides.
-            AppLog.info("licence gate: no verdict in " + Self.seconds(since: gateStart)
-                        + "; leaving it to ent/download", .download)
-        }
-
-        return try await downloadWithRetries(
-            appId: appId, externalVersionId: externalVersionId, guid: guid,
-            account: account, bag: bag, signer: signer,
-            acquiredLicence: false, purpose: purpose)
+        // ipatool's download path: the classic endpoint answers with the
+        // songList that carries the package URL. The licence gate existed to
+        // avoid opening the Store runtime, and the runtime is where the kbsync
+        // failure came from; with the URL in hand, neither is needed.
+        return try await classicDownload(appId: appId,
+                                         externalVersionId: externalVersionId,
+                                         guid: guid, account: account,
+                                         bag: bag, signer: signer)
     }
 
     /// Whether the account owns the app, asked of the cheap endpoint.
