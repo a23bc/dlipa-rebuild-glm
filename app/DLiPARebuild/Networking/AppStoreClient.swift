@@ -1952,8 +1952,8 @@ final class AppStoreClient {
         // variable. The variable this round is the Cookie header, which this
         // request has never sent -- only iCloud-DSID, X-Dsid and X-Token, none of
         // which carry a session.
-        let attempts: [(label: String, token: String, signed: Bool, sendCookie: Bool, sendStoreFront: Bool)] = [
-            ("cookie+passwordToken", account.passwordToken, false, true, false),
+        let attempts: [(label: String, token: String, signed: Bool, sendCookie: Bool, sendStoreFront: Bool, userAgent: String)] = [
+            ("cookie+passwordToken", account.passwordToken, false, true, false, Self.storeUserAgent),
             // Second attempt, and the first one that changes a single variable.
             //
             // Every attempt so far answered 2042 "sign in" while the jar held
@@ -1963,17 +1963,21 @@ final class AppStoreClient {
             // X-Token set by Apple for this account, and the header above sends
             // a different value under the same name. This attempt sends only the
             // session.
-            ("cookie only", "", false, true, false),
+            ("cookie only", "", false, true, false, Self.storeUserAgent),
             // The upstream shape: appstore_download_product.go sets
             // Content-Type, iCloud-DSID, X-Dsid, X-Apple-Store-Front and
             // X-Token = PasswordToken, and no Cookie. Earlier rounds read that
             // as "no X-Token", which sent this attempt with an empty credential.
             // Store-front stays out for now: it answered an empty 400 in every
             // earlier combination, and one variable at a time is the point.
-            ("ipatool headers", account.passwordToken, false, false, false),
+            ("ipatool headers", account.passwordToken, false, false, false, Self.storeUserAgent),
             // One more variable: the storefront header the reference also
             // sends. 555 showed the token alone still answered 2042.
-            ("ipatool + store-front", account.passwordToken, false, false, true),
+            ("ipatool + store-front", account.passwordToken, false, false, true, Self.storeUserAgent),
+            // The exact reference shape, including its User-Agent. 556 showed
+            // the storefront at 2.17 still answered 2042; upstream's download
+            // uses the authentication agent (2.21), not the purchase one.
+            ("ipatool exact", account.passwordToken, false, false, true, Self.nativeUserAgent),
         ]
 
         // Printed once, because a zero-length token silently turns every
@@ -2015,7 +2019,7 @@ final class AppStoreClient {
             request.httpMethod = "POST"
             request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
             // upstream's purchase operation uses 2.18 rather than the default.
-            request.setValue(Self.storeUserAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue(attempt.userAgent, forHTTPHeaderField: "User-Agent")
             request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
             if !attempt.token.isEmpty {
