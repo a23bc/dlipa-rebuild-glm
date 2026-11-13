@@ -647,6 +647,12 @@ final class AppStoreClient {
         let first: [String: Any]?
 
         if let items = songList as? [Any] {
+            // The array can carry the package URL itself; Apple answers that
+            // shape for a redownload whose licence already exists (572).
+            if let text = items.first as? String, let url = URL(string: text) {
+                return url
+            }
+
             first = items.first as? [String: Any]
         } else if let map = songList as? [String: Any] {
             // Dictionary shape: the keys are version ids and the item sits in
@@ -659,7 +665,9 @@ final class AppStoreClient {
         guard let first, let urlString = first["URL"] as? String,
               let url = URL(string: urlString) else {
             let shape = String(describing: type(of: songList))
-            let keys = first?.keys.sorted().joined(separator: ",") ?? "none"
+            let element = (songList as? [Any])?.first.map { String(describing: type(of: $0)) }
+                ?? "none"
+            let keys = first?.keys.sorted().joined(separator: ",") ?? "element " + element
             AppLog.error("songList shape " + shape + ", item keys: " + keys, .download)
             throw StoreError.failureType("Invalid response", "no package URL")
         }
