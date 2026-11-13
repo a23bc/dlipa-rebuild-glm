@@ -306,7 +306,14 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 // It owns no SAP session: the runtimes it opens are its own and are closed
 // before Headers returns. That is what lets Swift ask for identity headers
 // before it has a signer, which is the order a sign-in needs.
-type Anisette struct{}
+type Anisette struct {
+	// The download path asks for the same Store proof twice: once for the
+	// licence gate, once for the package. iOS has one guest, and a second
+	// type-2 run in it crashes, so keep the pair for a short window.
+	proofMu     sync.Mutex
+	lastProofAt time.Time
+	lastProof   map[string]string
+}
 
 // NewAnisette returns a handle for the identity calls.
 func NewAnisette() *Anisette {
@@ -365,6 +372,25 @@ func (a *Anisette) ProvisionStore(stateBase64, challenge, kbsync, identityJSON, 
 // DownloadProof runs the Store provisioning an AMD-Action from the download
 // endpoint asks for, then mints the proof for that endpoint.
 func (a *Anisette) DownloadProof(stateBase64, challenge, endpoint, identityJSON, hardwareHex string) (string, error) {
+	a.proofMu.Lock()
+	if time.Since(a.lastProofAt) < 2*time.Minute && a.lastProof != nil {
+		cached := a.lastProof
+		a.proofMu.Unlock()
+
+		output := struct {
+			Headers map[string]string `json:"headers"`
+			State   string            `json:"state"`
+		}{Headers: cached, State: stateBase64}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			return "", fmt.Errorf("sapbridge: download proof result: %w", err)
+		}
+
+		return string(data), nil
+	}
+	a.proofMu.Unlock()
+
 	state, err := base64.StdEncoding.DecodeString(stateBase64)
 	if err != nil {
 		return "", fmt.Errorf("sapbridge: download state: %w", err)
@@ -402,6 +428,11 @@ func (a *Anisette) DownloadProof(stateBase64, challenge, endpoint, identityJSON,
 	if err != nil {
 		return "", fmt.Errorf("sapbridge: download proof: %w", err)
 	}
+
+	a.proofMu.Lock()
+	a.lastProofAt = time.Now()
+	a.lastProof = proof
+	a.proofMu.Unlock()
 
 	// The provisioning exchange sets the store session cookie the download
 	// needs; the reference keeps it in its client jar, so return it with the
