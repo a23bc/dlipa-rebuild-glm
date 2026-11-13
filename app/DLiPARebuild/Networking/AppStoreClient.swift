@@ -658,6 +658,9 @@ final class AppStoreClient {
 
         guard let first, let urlString = first["URL"] as? String,
               let url = URL(string: urlString) else {
+            let shape = String(describing: type(of: songList))
+            let keys = first?.keys.sorted().joined(separator: ",") ?? "none"
+            AppLog.error("songList shape " + shape + ", item keys: " + keys, .download)
             throw StoreError.failureType("Invalid response", "no package URL")
         }
         return url
