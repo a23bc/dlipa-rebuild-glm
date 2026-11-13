@@ -1628,10 +1628,31 @@ final class AppStoreClient {
                                  bag: StoreBag,
                                  signer: SAPSigner,
                                  purpose: RequestPurpose = .licence) async throws -> [String: Any] {
-        // ipatool's download path: the classic endpoint answers with the
-        // songList that carries the package URL. The licence gate existed to
-        // avoid opening the Store runtime, and the runtime is where the kbsync
-        // failure came from; with the URL in hand, neither is needed.
+        // The reference prefers ent/download when the bag carries it and the
+        // kbsync generator exists (sendDownloadProduct). The classic endpoint is
+        // the fallback, not the primary.
+        if let ent = bag.volumeStoreDownloadProduct {
+            do {
+                return try await entDownload(appId: appId,
+                                             externalVersionId: externalVersionId,
+                                             guid: guid, account: account,
+                                             endpoint: ent, signer: signer,
+                                             purpose: purpose)
+            } catch let error as StoreError {
+                if case .failureType(let type, _) = error, type == "9610" {
+                    throw error
+                }
+
+                AppLog.warn("ent/download did not serve this app ("
+                            + error.localizedDescription
+                            + "); trying the classic endpoint", .download)
+            } catch {
+                AppLog.warn("ent/download did not serve this app ("
+                            + error.localizedDescription
+                            + "); trying the classic endpoint", .download)
+            }
+        }
+
         return try await classicDownload(appId: appId,
                                          externalVersionId: externalVersionId,
                                          guid: guid, account: account,
