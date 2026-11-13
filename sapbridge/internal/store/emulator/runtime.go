@@ -1657,12 +1657,18 @@ func (r *Runtime) Invoke(object uint64, selector string, args ...uint64) (result
 
 	class, meta := r.classNames[object]
 	if class == "" && object != 0 {
-		// A class cluster can hand back an object the host never allocated.
-		// Its isa names the class; dispatch it as an instance, not a class.
-		if isa := r.read64(object); isa != 0 {
+		// A class cluster can hand back an object whose isa is a dynamic
+		// subclass (KVO or a proxy) the host never saw. Walk the superclass
+		// chain to the first class the image named and dispatch as an instance.
+		isa := r.read64(object)
+		for depth := 0; depth < 8 && isa != 0; depth++ {
 			if name, ok := r.classNames[isa]; ok {
 				class, meta = name, false
+
+				break
 			}
+
+			isa = r.read64(isa + 8)
 		}
 	}
 	if !meta {

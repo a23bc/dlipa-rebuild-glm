@@ -51,6 +51,23 @@ func (r *Runtime) ephemeralAccount(saved map[string]any) (uint64, error) {
 
 	r.traceGuestObject("account", account)
 
+	// The method can answer with the class itself after the proof guest has
+	// rewritten the cluster; allocate a real instance rather than messaging the
+	// class with instance selectors.
+	if _, isClass := r.classNames[account]; isClass {
+		allocated, allocErr := r.Invoke(account, "alloc")
+		if allocErr != nil {
+			return 0, allocErr
+		}
+
+		instance, initErr := r.Invoke(allocated, "init")
+		if initErr != nil {
+			return 0, initErr
+		}
+
+		account = instance
+	}
+
 	if saved == nil {
 		return account, nil
 	}
