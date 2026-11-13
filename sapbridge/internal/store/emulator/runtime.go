@@ -1614,6 +1614,22 @@ func (r *Runtime) String(address uint64) string {
 	return value
 }
 
+// traceGuestObject reports how the host sees an object the guest returned.
+// Temporary: it separates "the object was never registered" from "its class is
+// missing", which are different repairs.
+func (r *Runtime) traceGuestObject(label string, ptr uint64) {
+	if ptr == 0 {
+		return
+	}
+
+	isa := r.read64(ptr)
+	objectClass, objectKnown := r.classNames[ptr]
+	isaClass, isaKnown := r.classNames[isa]
+
+	fmt.Fprintf(os.Stderr, "[SAP] %s %#x isa=%#x object=%q/%v isaClass=%q/%v\n",
+		label, ptr, isa, objectClass, objectKnown, isaClass, isaKnown)
+}
+
 func (r *Runtime) lookup(class, selector string, meta bool) uint64 {
 	for class != "" {
 		if address := r.methods[methodKey(class, selector, meta)]; address != 0 {
