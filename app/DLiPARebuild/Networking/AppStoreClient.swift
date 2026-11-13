@@ -1978,6 +1978,11 @@ final class AppStoreClient {
             // the storefront at 2.17 still answered 2042; upstream's download
             // uses the authentication agent (2.21), not the purchase one.
             ("ipatool exact", account.passwordToken, false, false, true, Self.nativeUserAgent),
+            // The reference's client keeps a cookie jar, so its download
+            // carries the sign-in cookies with the 2.21 agent. Every cookie
+            // attempt above was paired with 2.17; the bench download proves the
+            // session itself works.
+            ("ipatool + cookies", account.passwordToken, false, true, true, Self.nativeUserAgent),
         ]
 
         // Printed once, because a zero-length token silently turns every
