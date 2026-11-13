@@ -207,6 +207,10 @@ extension AppStoreClient {
                                                             identity: identity,
                                                             guid: guid)
 
+            // The proof guest wrote over this store guest's class metadata;
+            // the request needs a fresh one.
+            signer.resetStoreRuntime()
+
             return try await authenticateNative(email: email,
                                                 password: password,
                                                 authCode: authCode,

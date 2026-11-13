@@ -63,6 +63,15 @@ var lazyCachePages atomic.Bool
 // has either mapped the cache or installed the hook, not both.
 func SetLazyCachePages(on bool) { lazyCachePages.Store(on) }
 
+// forceProfileReset makes open() rewrite the profile pages even when the engine
+// already holds a non-zero page. The proof guest can leave class metadata in
+// those pages; keeping it is what makes the next request unable to name a
+// session's isa. The SAP handshake writes to its own region, not this profile.
+var forceProfileReset atomic.Bool
+
+// SetForceProfileReset turns the rewrite on for the next open.
+func SetForceProfileReset(on bool) { forceProfileReset.Store(on) }
+
 // LazyCachePages reports the current setting, for a screen that has to say
 // which of the two shapes its log lines will take.
 func LazyCachePages() bool { return lazyCachePages.Load() }
@@ -742,7 +751,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		timeProbe += time.Since(mark)
 		probeCalls++
 
-		if mapped {
+		if mapped && !forceProfileReset.Load() {
 			// Read a chunk and answer for the pages inside it. One uc_mem_read
 			// per page was 3,300 cross-cgo calls on device -- the same cost the
 			// page-at-a-time mapping had, one layer down.

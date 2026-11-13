@@ -202,6 +202,10 @@ func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: St
     try bridge.storeSmoke(dsid, token: token, storefront: storefront, entEndpoint: entEndpoint, cookieHeader: cookieHeader)
 }
 
+func resetStoreRuntime() {
+    bridge.resetStoreRuntime()
+}
+
 func kbsync(dsid: String) throws -> Data {
         let key = Self.cacheKey(dsid: dsid, guid: hardware.guid)
         if let cached = Self.kbsyncCache.object(forKey: key) {
