@@ -172,6 +172,15 @@ final class AppStoreClient {
                       signer: SAPSigner,
                       attempt: Int = 1) async throws -> Account {
         if UserDefaults.standard.bool(forKey: Self.nativeAuthenticateKey) {
+            // The code request is the same call as the password one upstream:
+            // the Store proof and state carry over, with no fresh anisette.
+            if !(authCode ?? "").isEmpty, let state = Keychain.anisetteState() {
+                return try await authenticateNative(email: email, password: password,
+                                                    authCode: authCode, guid: guid,
+                                                    endpoint: endpoint, signer: signer,
+                                                    storeProof: true, storeState: state)
+            }
+
             return try await authenticateNative(email: email, password: password,
                                                 authCode: authCode, guid: guid,
                                                 endpoint: endpoint, signer: signer)

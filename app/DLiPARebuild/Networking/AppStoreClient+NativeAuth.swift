@@ -69,6 +69,12 @@ extension AppStoreClient {
 
         if let reusedIdentity {
             identity = reusedIdentity
+        } else if storeProof {
+            // The reference's login reuses the Store proof and its state; it
+            // does not advance the anisette state with a fresh general identity
+            // (appstore_native_login.go). Advancing it is what left the download
+            // proof with a state AppleMediaServices cannot use (570).
+            identity = [:]
         } else {
             do {
                 identity = try AnisetteIdentity.headers()
