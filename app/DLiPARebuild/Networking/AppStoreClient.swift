@@ -1952,8 +1952,8 @@ final class AppStoreClient {
         // variable. The variable this round is the Cookie header, which this
         // request has never sent -- only iCloud-DSID, X-Dsid and X-Token, none of
         // which carry a session.
-        let attempts: [(label: String, token: String, signed: Bool, sendCookie: Bool)] = [
-            ("cookie+passwordToken", account.passwordToken, false, true),
+        let attempts: [(label: String, token: String, signed: Bool, sendCookie: Bool, sendStoreFront: Bool)] = [
+            ("cookie+passwordToken", account.passwordToken, false, true, false),
             // Second attempt, and the first one that changes a single variable.
             //
             // Every attempt so far answered 2042 "sign in" while the jar held
@@ -1963,14 +1963,17 @@ final class AppStoreClient {
             // X-Token set by Apple for this account, and the header above sends
             // a different value under the same name. This attempt sends only the
             // session.
-            ("cookie only", "", false, true),
+            ("cookie only", "", false, true, false),
             // The upstream shape: appstore_download_product.go sets
             // Content-Type, iCloud-DSID, X-Dsid, X-Apple-Store-Front and
             // X-Token = PasswordToken, and no Cookie. Earlier rounds read that
             // as "no X-Token", which sent this attempt with an empty credential.
             // Store-front stays out for now: it answered an empty 400 in every
             // earlier combination, and one variable at a time is the point.
-            ("ipatool headers", account.passwordToken, false, false),
+            ("ipatool headers", account.passwordToken, false, false, false),
+            // One more variable: the storefront header the reference also
+            // sends. 555 showed the token alone still answered 2042.
+            ("ipatool + store-front", account.passwordToken, false, false, true),
         ]
 
         // Printed once, because a zero-length token silently turns every
@@ -2017,6 +2020,9 @@ final class AppStoreClient {
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
             if !attempt.token.isEmpty {
                 request.setValue(attempt.token, forHTTPHeaderField: "X-Token")
+            }
+            if attempt.sendStoreFront, !account.storefront.isEmpty {
+                request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
             }
             // The session Apple actually checks. authenticate hands back
             // mz_at_ssl-<dsid>, X-Dsid, X-Token, wosid and session-store-id as
