@@ -173,10 +173,11 @@ final class SAPSigner {
 /// is the only construction Apple's endpoint accepted.
 func entDownload(dsid: String, token: String, storefront: String, endpoint: String,
                  cookieHeader: String, appID: Int64, externalVersionID: String,
-                 purpose: String) throws -> String {
+                 purpose: String, anisetteState: String) throws -> String {
     try bridge.entDownload(dsid, token: token, storefront: storefront, endpoint: endpoint,
                            cookieHeader: cookieHeader, appID: appID,
-                           externalVersionID: externalVersionID, purpose: purpose)
+                           externalVersionID: externalVersionID, purpose: purpose,
+                           anisetteState: anisetteState)
 }
 
 /// One authenticate exchange through the Store runtime.

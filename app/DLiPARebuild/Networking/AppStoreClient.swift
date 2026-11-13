@@ -1878,7 +1878,8 @@ final class AppStoreClient {
             try signer.entDownload(dsid: dsid, token: token, storefront: storefront,
                                    endpoint: endpoint, cookieHeader: cookieHeader,
                                    appID: numericID, externalVersionID: version,
-                                   purpose: purpose.rawValue)
+                                   purpose: purpose.rawValue,
+                                   anisetteState: Keychain.anisetteState()?.base64EncodedString() ?? "")
         }.value
 
         guard let raw = json.data(using: .utf8),

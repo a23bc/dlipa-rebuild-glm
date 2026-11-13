@@ -19,6 +19,7 @@ import (
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/storeauth"
 )
 
 // EntDownloadInput is one production ent/download request.
@@ -39,6 +40,9 @@ type EntDownloadInput struct {
 	// Purpose is why the request is being made: "licence" (the default) for a
 	// package the account keeps, "metadata" for a field read out of the answer.
 	Purpose string
+	// AnisetteState is the provisioned Store state; the request carries its
+	// AMD proof, as the reference's sendEntDownloadRequest does.
+	AnisetteState []byte
 }
 
 // EntDownloadResult is the answer, parsed only as far as the caller needs.
@@ -312,10 +316,24 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// endpoint is a device-management one, and the session cookie because a token
 	// alone is answered with 401.
 	headers.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-	headers.Set("User-Agent", "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6")
+	headers.Set("User-Agent", "Configurator/2.21 (Macintosh; OS X 27.0.1; 26A434) AppleWebKit/0625.2.5.11.6")
 
 	if input.CookieHeader != "" {
 		headers.Set("Cookie", input.CookieHeader)
+	}
+
+	// The reference's ent request carries the Store proof too
+	// (appstore_kbsync.go: sendEntDownloadRequest calls storeAMDProof). Without
+	// it the framework rejects the response inside the guest (576).
+	if len(input.AnisetteState) != 0 {
+		proof, _, proofErr := storeauth.StoreAMDHeaders(context.Background(), input.AnisetteState, endpoint, s.hardware)
+		if proofErr != nil {
+			return EntDownloadResult{}, fmt.Errorf("ent download: store proof: %w", proofErr)
+		}
+
+		for key, value := range proof {
+			headers.Set(key, value)
+		}
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}

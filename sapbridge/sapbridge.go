@@ -274,7 +274,7 @@ func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEnd
 // carries would overwrite the slot the next real download patches from.
 func (s *Signer) EntDownload(dsid string, token string, storefront string, endpoint string,
 	cookieHeader string, appID int64, externalVersionID string,
-	purpose string) (result string, err error) {
+	purpose string, anisetteState string) (result string, err error) {
 	if s == nil {
 		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
@@ -285,6 +285,17 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 	image, err := appleMediaServicesImage()
 	if err != nil {
 		return "", err
+	}
+
+	var rawState []byte
+
+	if anisetteState != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(anisetteState)
+		if decodeErr != nil {
+			return "", fmt.Errorf("sapbridge: ent state: %w", decodeErr)
+		}
+
+		rawState = decoded
 	}
 
 	return s.inner.(interface {
@@ -298,6 +309,7 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 		AppID:             appID,
 		Purpose:           purpose,
 		ExternalVersionID: externalVersionID,
+		AnisetteState:     rawState,
 	})
 }
 
