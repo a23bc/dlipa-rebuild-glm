@@ -214,7 +214,7 @@ extension AppStoreClient {
                                                 endpoint: endpoint,
                                                 signer: signer,
                                                 reusedIdentity: proof,
-                                                identityMode: "amd")
+                                                identityMode: "store")
         }
 
         if !failure.isEmpty {

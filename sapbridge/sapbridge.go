@@ -346,20 +346,10 @@ func (a *Anisette) ProvisionStore(stateBase64, challenge, kbsync, identityJSON, 
 		return "", fmt.Errorf("sapbridge: provision store: %w", err)
 	}
 
-	// The provisioned state is what the store asked for; ask the generic
-	// anisette path for the proof instead of opening the AMS type-2 guest a
-	// second time. That second guest is what leaves the request runtime unable
-	// to build a session.
-	found, next, err := storeauth.AnisetteHeaders(ctx, storeauth.NewHTTPClient(nil), provisioned)
+	proof, next, err := storeauth.StoreAMDHeaders(ctx, provisioned,
+		"https://auth.itunes.apple.com/auth/v1/native", hardware)
 	if err != nil {
-		return "", fmt.Errorf("sapbridge: proof after provisioning: %w", err)
-	}
-
-	proof := make(map[string]string, len(found))
-	for name, values := range found {
-		if len(values) != 0 {
-			proof[name] = values[0]
-		}
+		return "", fmt.Errorf("sapbridge: store proof after provisioning: %w", err)
 	}
 
 	output := struct {
