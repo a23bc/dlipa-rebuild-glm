@@ -144,7 +144,10 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	runtime := s.storeRuntime
 	if runtime == nil {
 		if strings.EqualFold(input.IdentityMode, "store") {
-			runtime, err = emulator.OpenWithEngineAtReset(ctx, engine, image, prepared, s.machine.HeapUsed())
+			// Experiment: give the request's guest its own engine so the
+			// package proof's runtime cannot rewrite its classes. 578 showed a
+			// second uc_open succeeds on this device.
+			runtime, err = emulator.Open(ctx, image, prepared)
 		} else {
 			runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, prepared, s.machine.HeapUsed())
 		}
