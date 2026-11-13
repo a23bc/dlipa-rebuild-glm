@@ -659,6 +659,13 @@ final class AppStoreClient {
     /// an empty set is visible rather than inferred.
     private var capturedCookieHeader = ""
 
+    /// The last classic songList, so a licence check and the download that
+    /// follows it do not run the Store proof twice. iOS has one guest, and the
+    /// second type-2 run in the same session crashed it (566).
+    private var lastClassicKey = ""
+    private var lastClassicDate = Date.distantPast
+    private var lastClassicPlist: [String: Any]?
+
     /// The cookie header the classic path replays, for callers that need the
     /// same session elsewhere. downloaddispatch answers 401 to a request that
     /// carries the token but not the session's cookies.
@@ -1613,6 +1620,13 @@ final class AppStoreClient {
                                          bag: bag, signer: signer)
     }
 
+    private func rememberClassic(_ key: String, _ plist: [String: Any]) -> [String: Any] {
+        lastClassicKey = key
+        lastClassicDate = Date()
+        lastClassicPlist = plist
+        return plist
+    }
+
     /// Whether the account owns the app, asked of the cheap endpoint.
     ///
     /// A songList means it does, 9610 and 2042 mean it does not, and anything
@@ -1874,6 +1888,14 @@ final class AppStoreClient {
                                      account: Account,
                                      bag: StoreBag,
                                      signer: SAPSigner) async throws -> [String: Any] {
+        let classicKey = appId + "|" + (externalVersionId ?? "")
+        if classicKey == lastClassicKey,
+           Date().timeIntervalSince(lastClassicDate) < 120,
+           let cached = lastClassicPlist {
+            AppLog.info("classic: reusing the answer for " + appId, .download)
+            return cached
+        }
+
         // The classic store endpoint, not the ent/download one in the bag.
         //
         // ipatool's downloadProductRequest (appstore_download_product.go:268)
@@ -2072,7 +2094,7 @@ final class AppStoreClient {
                            let plist = (try? PropertyListSerialization.propertyList(
                                from: body, options: [], format: nil)) as? [String: Any],
                            plist["songList"] != nil {
-                            return plist
+                            return rememberClassic(classicKey, plist)
                         }
                     } catch {
                         AppLog.error("download proof failed: "
@@ -2103,7 +2125,7 @@ final class AppStoreClient {
             if failure.isEmpty && plist["songList"] != nil {
                 AppLog.info("download attempt [" + attempt.label + "] returned a songList",
                             .download)
-                return plist
+                return rememberClassic(classicKey, plist)
             }
             // 2042 is "sign in required": Apple wants a live session, not a
             // licence. The two look alike in the UI, so name it in the log.
