@@ -122,6 +122,25 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 		return AuthenticateResult{}, fmt.Errorf("authenticate: load profile: %w", err)
 	}
 
+	// The reference mints the login's proof with storeauth.StoreAMDHeaders on
+	// its own runtime and keeps that returned state (appstore_native_login.go).
+	// Do the same before the request's guest opens: the state a same-runtime
+	// proof returns is not accepted by a later runtime (570/577), and the
+	// request's classes stay as the image made them.
+	var anisetteState []byte
+
+	if input.StoreProof {
+		proof, next, proofErr := storeauth.StoreAMDHeaders(ctx, input.AnisetteState,
+			input.StoreEndpoint, hardware)
+		if proofErr != nil {
+			return AuthenticateResult{}, fmt.Errorf("authenticate: store proof: %w", proofErr)
+		}
+
+		input.ExtraHeaders = proof
+		input.IdentityMode = "store"
+		anisetteState = next
+	}
+
 	runtime := s.storeRuntime
 	if runtime == nil {
 		if strings.EqualFold(input.IdentityMode, "store") {
@@ -139,20 +158,6 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	session, account, prepErr := runtime.PrepareAuthenticate()
 	if prepErr != nil {
 		return AuthenticateResult{}, fmt.Errorf("authenticate: prepare objects: %w", prepErr)
-	}
-
-	var anisetteState []byte
-
-	if input.StoreProof {
-		proof, next, proofErr := storeauth.StoreAMDHeadersIn(ctx, runtime,
-			input.AnisetteState, input.StoreEndpoint, hardware)
-		if proofErr != nil {
-			return AuthenticateResult{}, fmt.Errorf("authenticate: store proof: %w", proofErr)
-		}
-
-		input.ExtraHeaders = proof
-		input.IdentityMode = "store"
-		anisetteState = next
 	}
 
 	headers := make(http.Header)
