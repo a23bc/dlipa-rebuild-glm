@@ -1964,13 +1964,13 @@ final class AppStoreClient {
             // a different value under the same name. This attempt sends only the
             // session.
             ("cookie only", "", false, true),
-            // Exactly what ipatool sends, and nothing else:
-            // appstore_download_product.go sets Content-Type, iCloud-DSID and
-            // X-Dsid, and no X-Token, no Cookie, no store-front. Every attempt
-            // above has carried cookies this request was never supposed to
-            // have, and a session cookie on a request that expects only two
-            // DSID headers is a good reason to answer "sign in".
-            ("ipatool headers", "", false, false),
+            // The upstream shape: appstore_download_product.go sets
+            // Content-Type, iCloud-DSID, X-Dsid, X-Apple-Store-Front and
+            // X-Token = PasswordToken, and no Cookie. Earlier rounds read that
+            // as "no X-Token", which sent this attempt with an empty credential.
+            // Store-front stays out for now: it answered an empty 400 in every
+            // earlier combination, and one variable at a time is the point.
+            ("ipatool headers", account.passwordToken, false, false),
         ]
 
         // Printed once, because a zero-length token silently turns every
