@@ -2041,14 +2041,26 @@ final class AppStoreClient {
 
             let responseData: Data
             let status: Int
+            var httpResponse: HTTPURLResponse?
+
             if attempt.signed {
                 let (d, http) = try await signedRequest(request, signer: signer, redirects: 4)
                 responseData = d
                 status = http.statusCode
+                httpResponse = http
             } else {
                 let (d, r) = try await session.data(for: request)
                 responseData = d
                 status = (r as? HTTPURLResponse)?.statusCode ?? -1
+                httpResponse = r as? HTTPURLResponse
+            }
+
+            if let http = httpResponse, status == 200 {
+                let action = http.value(forHTTPHeaderField: "X-Apple-AMD-Action")
+                let data = http.value(forHTTPHeaderField: "X-Apple-AMD-Data")
+                AppLog.info("download AMD [" + attempt.label + "] action="
+                            + (action ?? "-") + " data=" + String(data?.count ?? 0),
+                            .download)
             }
 
             // The fields, not the bytes -- responseDetail says why the bytes were
