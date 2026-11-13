@@ -49,8 +49,6 @@ func (r *Runtime) ephemeralAccount(saved map[string]any) (uint64, error) {
 		return 0, err
 	}
 
-	r.traceGuestObject("account", account)
-
 	// The method can answer with the class itself after the proof guest has
 	// rewritten the cluster; allocate a real instance rather than messaging the
 	// class with instance selectors.
@@ -106,8 +104,6 @@ func (r *Runtime) newSession() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	r.traceGuestObject("session", session)
 
 	_, err = r.Invoke(session, "setUseFallbackBag:", 0)
 

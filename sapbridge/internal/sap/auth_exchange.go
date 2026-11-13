@@ -114,14 +114,13 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 		return AuthenticateResult{}, fmt.Errorf("authenticate: load profile: %w", err)
 	}
 
-	if strings.EqualFold(input.IdentityMode, "store") {
-		emulator.SetForceProfileReset(true)
-		defer emulator.SetForceProfileReset(false)
-	}
-
 	runtime := s.storeRuntime
 	if runtime == nil {
-		runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, prepared, s.machine.HeapUsed())
+		if strings.EqualFold(input.IdentityMode, "store") {
+			runtime, err = emulator.OpenWithEngineAtReset(ctx, engine, image, prepared, s.machine.HeapUsed())
+		} else {
+			runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, prepared, s.machine.HeapUsed())
+		}
 		if err != nil {
 			return AuthenticateResult{}, fmt.Errorf("authenticate: open runtime: %w", err)
 		}

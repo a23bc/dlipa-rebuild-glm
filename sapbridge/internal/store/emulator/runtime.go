@@ -63,15 +63,6 @@ var lazyCachePages atomic.Bool
 // has either mapped the cache or installed the hook, not both.
 func SetLazyCachePages(on bool) { lazyCachePages.Store(on) }
 
-// forceProfileReset makes open() rewrite the profile pages even when the engine
-// already holds a non-zero page. The proof guest can leave class metadata in
-// those pages; keeping it is what makes the next request unable to name a
-// session's isa. The SAP handshake writes to its own region, not this profile.
-var forceProfileReset atomic.Bool
-
-// SetForceProfileReset turns the rewrite on for the next open.
-func SetForceProfileReset(on bool) { forceProfileReset.Store(on) }
-
 // LazyCachePages reports the current setting, for a screen that has to say
 // which of the two shapes its log lines will take.
 func LazyCachePages() bool { return lazyCachePages.Load() }
@@ -242,7 +233,7 @@ type Runtime struct {
 }
 
 func Open(ctx context.Context, imageData []byte, prepared storeprofile.Data) (*Runtime, error) {
-	return open(ctx, nil, imageData, prepared, 0, false)
+	return open(ctx, nil, imageData, prepared, 0, false, false)
 }
 
 // OpenWithEngine builds the runtime on top of an engine that already exists.
@@ -256,7 +247,7 @@ func OpenWithEngine(ctx context.Context, engine *unicorn.Engine, imageData []byt
 		return nil, errors.New("emulator engine is nil")
 	}
 
-	return open(ctx, engine, imageData, prepared, 0, false)
+	return open(ctx, engine, imageData, prepared, 0, false, false)
 }
 
 // OpenWithEngineAt is OpenWithEngine for an engine whose heap already belongs to
@@ -300,12 +291,23 @@ func OpenWithEngineAt(ctx context.Context, engine *unicorn.Engine, imageData []b
 		return nil, errors.New("emulator engine is nil")
 	}
 
-	return open(ctx, engine, imageData, prepared, heapUsed, false)
+	return open(ctx, engine, imageData, prepared, heapUsed, false, false)
+}
+
+// OpenWithEngineAtReset is OpenWithEngineAt with the profile pages rewritten
+// even when the engine already holds a non-zero page. Only the store-proof
+// request needs that; every other caller keeps the existing pages.
+func OpenWithEngineAtReset(ctx context.Context, engine *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64) (*Runtime, error) {
+	if engine == nil {
+		return nil, errors.New("emulator engine is nil")
+	}
+
+	return open(ctx, engine, imageData, prepared, heapUsed, false, true)
 }
 
 // open optionally guards accesses against the exported page set. Validation and
 // production use the same grouped mappings to stay within Unicorn section limits.
-func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64, strict bool) (*Runtime, error) {
+func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64, strict, resetProfile bool) (*Runtime, error) {
 	// Phases are timed here rather than inferred from log timestamps: stderr is
 	// drained in batches, so two lines a second apart on the clock can arrive
 	// forty seconds apart, and every attribution made from those gaps was wrong.
@@ -751,7 +753,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		timeProbe += time.Since(mark)
 		probeCalls++
 
-		if mapped && !forceProfileReset.Load() {
+		if mapped && !resetProfile {
 			// Read a chunk and answer for the pages inside it. One uc_mem_read
 			// per page was 3,300 cross-cgo calls on device -- the same cost the
 			// page-at-a-time mapping had, one layer down.
@@ -1623,22 +1625,6 @@ func (r *Runtime) String(address uint64) string {
 	return value
 }
 
-// traceGuestObject reports how the host sees an object the guest returned.
-// Temporary: it separates "the object was never registered" from "its class is
-// missing", which are different repairs.
-func (r *Runtime) traceGuestObject(label string, ptr uint64) {
-	if ptr == 0 {
-		return
-	}
-
-	isa := r.read64(ptr)
-	objectClass, objectKnown := r.classNames[ptr]
-	isaClass, isaKnown := r.classNames[isa]
-
-	fmt.Fprintf(os.Stderr, "[SAP] %s %#x isa=%#x object=%q/%v isaClass=%q/%v\n",
-		label, ptr, isa, objectClass, objectKnown, isaClass, isaKnown)
-}
-
 func (r *Runtime) lookup(class, selector string, meta bool) uint64 {
 	for class != "" {
 		if address := r.methods[methodKey(class, selector, meta)]; address != 0 {
@@ -1672,7 +1658,6 @@ func (r *Runtime) Invoke(object uint64, selector string, args ...uint64) (result
 		isa := r.read64(object)
 		for depth := 0; depth < 8 && isa != 0; depth++ {
 			name, ok := r.classNames[isa]
-			fmt.Fprintf(os.Stderr, "[SAP] isa %#x depth=%d class=%q known=%v\n", isa, depth, name, ok)
 
 			if ok {
 				class, meta = name, false
