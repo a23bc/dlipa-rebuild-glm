@@ -360,6 +360,61 @@ func (a *Anisette) ProvisionStore(stateBase64, challenge, kbsync, identityJSON, 
 	return string(data), nil
 }
 
+// DownloadProof runs the Store provisioning an AMD-Action from the download
+// endpoint asks for, then mints the proof for that endpoint.
+func (a *Anisette) DownloadProof(stateBase64, challenge, endpoint, identityJSON, hardwareHex string) (string, error) {
+	state, err := base64.StdEncoding.DecodeString(stateBase64)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: download state: %w", err)
+	}
+
+	hardware, err := hex.DecodeString(hardwareHex)
+	if err != nil || len(hardware) != 6 {
+		return "", fmt.Errorf("sapbridge: download hardware identity")
+	}
+
+	var identity map[string]string
+	if err := json.Unmarshal([]byte(identityJSON), &identity); err != nil {
+		return "", fmt.Errorf("sapbridge: download identity: %w", err)
+	}
+
+	headers := make(http.Header, len(identity))
+	for name, value := range identity {
+		headers.Set(name, value)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	provisioned, err := storeauth.ProvisionStoreAnisette(ctx, storeauth.NewHTTPClient(nil), state,
+		challenge, "https://auth.itunes.apple.com/auth/v1/otp/1.5/finish",
+		"Configurator/2.21 (Macintosh; OS X 27.0.1; 26A434) AppleWebKit/0625.2.5.11.6",
+		"", hardware, headers)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provision download: %w", err)
+	}
+
+	proof, next, err := storeauth.StoreAMDHeaders(ctx, provisioned, endpoint, hardware)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: download proof: %w", err)
+	}
+
+	output := struct {
+		Headers map[string]string `json:"headers"`
+		State   string            `json:"state"`
+	}{
+		Headers: proof,
+		State:   base64.StdEncoding.EncodeToString(next),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: download proof result: %w", err)
+	}
+
+	return string(data), nil
+}
+
 // Headers takes the state from the previous call (base64, empty on first use)
 // and returns JSON {"headers":{...},"state":"base64"}.
 //

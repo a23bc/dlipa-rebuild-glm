@@ -88,4 +88,43 @@ enum AnisetteIdentity {
 
         return fresh
     }
+
+    /// Runs the provisioning a download endpoint's AMD-Action asks for and
+    /// returns the proof for that endpoint.
+    static func downloadProof(challenge: String,
+                              endpoint: String,
+                              identity: [String: String],
+                              guid: String) throws -> [String: String] {
+        guard let bridge else {
+            throw NSError(domain: "AnisetteIdentity", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "the anisette bridge is unavailable",
+            ])
+        }
+
+        let state = Keychain.anisetteState() ?? Data()
+        let identityData = try JSONSerialization.data(withJSONObject: identity, options: [])
+        let identityJSON = String(data: identityData, encoding: .utf8) ?? "{}"
+
+        let raw = try bridge.downloadProof(state.base64EncodedString(),
+                                           challenge: challenge,
+                                           endpoint: endpoint,
+                                           identityJSON: identityJSON,
+                                           hardwareHex: guid)
+
+        guard let data = raw.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let headers = object["headers"] as? [String: String] else {
+            throw NSError(domain: "AnisetteIdentity", code: 6, userInfo: [
+                NSLocalizedDescriptionKey: "could not read the download proof response",
+            ])
+        }
+
+        if let next = object["state"] as? String, let fresh = Data(base64Encoded: next) {
+            Keychain.saveAnisetteState(fresh)
+        }
+
+        AppLog.info("download proof produced " + String(headers.count) + " headers", .sap)
+
+        return headers
+    }
 }

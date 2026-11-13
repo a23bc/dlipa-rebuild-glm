@@ -2061,6 +2061,46 @@ final class AppStoreClient {
                 AppLog.info("download AMD [" + attempt.label + "] action="
                             + (action ?? "-") + " data=" + String(data?.count ?? 0),
                             .download)
+
+                // The download endpoint asks for its own Store provisioning.
+                // Same machine action as the sign-in, with the download URL as
+                // the proof endpoint.
+                if attempt.label == "ipatool exact",
+                   (action ?? "").uppercased() == "SP",
+                   let challenge = data, !challenge.isEmpty {
+                    AppLog.info("download SP: provisioning for "
+                                + String(challenge.count) + " chars", .download)
+
+                    do {
+                        let identity = try AnisetteIdentity.headers()
+                        let proof = try AnisetteIdentity.downloadProof(
+                            challenge: challenge,
+                            endpoint: components.url?.absoluteString ?? endpoint,
+                            identity: identity,
+                            guid: guid)
+
+                        var retry = request
+                        for (key, value) in proof {
+                            retry.setValue(value, forHTTPHeaderField: key)
+                        }
+
+                        let (body, response) = try await session.data(for: retry)
+                        let retryStatus = (response as? HTTPURLResponse)?.statusCode ?? -1
+                        AppLog.info("download proof retry HTTP " + String(retryStatus)
+                                    + ", " + String(body.count) + " bytes, "
+                                    + Self.responseDetail(from: body), .download)
+
+                        if retryStatus == 200,
+                           let plist = (try? PropertyListSerialization.propertyList(
+                               from: body, options: [], format: nil)) as? [String: Any],
+                           plist["songList"] != nil {
+                            return plist
+                        }
+                    } catch {
+                        AppLog.error("download proof failed: "
+                                     + error.localizedDescription, .download)
+                    }
+                }
             }
 
             // The fields, not the bytes -- responseDetail says why the bytes were
