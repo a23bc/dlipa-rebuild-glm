@@ -639,8 +639,12 @@ final class AppStoreClient {
 
         if let items = songList as? [Any] {
             first = items.first as? [String: Any]
+        } else if let map = songList as? [String: Any] {
+            // Dictionary shape: the keys are version ids and the item sits in
+            // the value. Fall back to the map itself when it is the item.
+            first = map.values.compactMap { $0 as? [String: Any] }.first ?? map
         } else {
-            first = songList as? [String: Any]
+            first = nil
         }
 
         guard let first, let urlString = first["URL"] as? String,
