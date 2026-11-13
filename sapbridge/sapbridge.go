@@ -16,6 +16,8 @@ import (
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/measure"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -386,7 +388,9 @@ func (a *Anisette) DownloadProof(stateBase64, challenge, endpoint, identityJSON,
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	provisioned, err := storeauth.ProvisionStoreAnisette(ctx, storeauth.NewHTTPClient(nil), state,
+	jar, _ := cookiejar.New(nil)
+
+	provisioned, err := storeauth.ProvisionStoreAnisette(ctx, storeauth.NewHTTPClient(jar), state,
 		challenge, "https://auth.itunes.apple.com/auth/v1/otp/1.5/finish",
 		"Configurator/2.21 (Macintosh; OS X 27.0.1; 26A434) AppleWebKit/0625.2.5.11.6",
 		"", hardware, headers)
@@ -397,6 +401,21 @@ func (a *Anisette) DownloadProof(stateBase64, challenge, endpoint, identityJSON,
 	proof, next, err := storeauth.StoreAMDHeaders(ctx, provisioned, endpoint, hardware)
 	if err != nil {
 		return "", fmt.Errorf("sapbridge: download proof: %w", err)
+	}
+
+	// The provisioning exchange sets the store session cookie the download
+	// needs; the reference keeps it in its client jar, so return it with the
+	// proof instead of dropping it with the client.
+	if jar != nil {
+		var pairs []string
+
+		for _, cookie := range jar.Cookies(&url.URL{Scheme: "https", Host: "itunes.apple.com"}) {
+			pairs = append(pairs, cookie.Name+"="+cookie.Value)
+		}
+
+		if len(pairs) != 0 {
+			proof["Cookie"] = strings.Join(pairs, "; ")
+		}
 	}
 
 	output := struct {

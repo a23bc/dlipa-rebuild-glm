@@ -2070,7 +2070,7 @@ final class AppStoreClient {
                 // The download endpoint asks for its own Store provisioning.
                 // Same machine action as the sign-in, with the download URL as
                 // the proof endpoint.
-                if attempt.label == "ipatool exact",
+                if attempt.label == "ipatool + cookies",
                    (action ?? "").uppercased() == "SP",
                    let challenge = data, !challenge.isEmpty {
                     AppLog.info("download SP: provisioning for "
