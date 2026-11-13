@@ -38,7 +38,7 @@ extension AppStoreClient {
 
     /// Apple's own login client, not the Configurator UA the hand-built path
     /// uses. The task's request is the one upstream sends.
-    private static var nativeUserAgent: String {
+    static var nativeUserAgent: String {
         "Configurator/2.21 (Macintosh; OS X 27.0.1; 26A434) AppleWebKit/0625.2.5.11.6"
     }
 
