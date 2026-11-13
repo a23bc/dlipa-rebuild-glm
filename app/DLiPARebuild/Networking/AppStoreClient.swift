@@ -627,11 +627,25 @@ final class AppStoreClient {
             appId: appId, externalVersionId: externalVersionId,
             guid: guid, account: account, bag: bag, signer: signer)
 
-        guard let items = plist["songList"] as? [Any],
-              let first = items.first as? [String: Any],
-              let urlString = first["URL"] as? String,
+        // songList comes in two shapes: an array whose first element is the
+        // item, or the item itself. The version list learned this earlier; the
+        // download path only handled the array, so a dictionary answer threw
+        // here and the caller re-ran the proof.
+        guard let songList = plist["songList"] else {
+            throw StoreError.failureType("Invalid response", "no songList")
+        }
+
+        let first: [String: Any]?
+
+        if let items = songList as? [Any] {
+            first = items.first as? [String: Any]
+        } else {
+            first = songList as? [String: Any]
+        }
+
+        guard let first, let urlString = first["URL"] as? String,
               let url = URL(string: urlString) else {
-            throw StoreError.failureType("Invalid response", "")
+            throw StoreError.failureType("Invalid response", "no package URL")
         }
         return url
     }
