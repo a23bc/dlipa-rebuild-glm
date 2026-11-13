@@ -28,6 +28,10 @@ type Request struct {
 	Sign                           func([]byte) ([]byte, error)
 	Transport                      func(*http.Request) (*http.Response, error)
 	Stream, Raw, NoRedirects       bool
+
+	// Session and Account let the caller build both before a step that
+	// rewrites the guest's classes, then send the request with them.
+	Session, Account uint64
 }
 
 //nolint:nonamedreturns // Recovery and streamed-body cleanup must update the returned error.
@@ -73,9 +77,13 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		saved = map[string]any{"directoryServicesIdentifier": dsid, "passwordToken": input.Headers.Get("X-Token"), "storeFront": input.Headers.Get("X-Apple-Store-Front"), "email": ""}
 	}
 
-	account, err := r.ephemeralAccount(saved)
-	if err != nil {
-		return nil, err
+	account := input.Account
+
+	if account == 0 {
+		account, err = r.ephemeralAccount(saved)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var bag uint64
@@ -102,9 +110,13 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 		}
 	}
 
-	session, err := r.newSession()
-	if err != nil {
-		return nil, err
+	session := input.Session
+
+	if session == 0 {
+		session, err = r.newSession()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if input.Operation != "authenticate" {

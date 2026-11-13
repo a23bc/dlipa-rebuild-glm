@@ -57,7 +57,7 @@ enum AnisetteIdentity {
                                challenge: String,
                                kbsync: Data,
                                identity: [String: String],
-                               guid: String) throws -> [String: String] {
+                               guid: String) throws -> Data {
         guard let bridge else {
             throw NSError(domain: "AnisetteIdentity", code: 3, userInfo: [
                 NSLocalizedDescriptionKey: "the anisette bridge is unavailable",
@@ -75,18 +75,17 @@ enum AnisetteIdentity {
 
         guard let data = raw.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let headers = object["headers"] as? [String: String] else {
+              let next = object["state"] as? String,
+              let fresh = Data(base64Encoded: next) else {
             throw NSError(domain: "AnisetteIdentity", code: 4, userInfo: [
                 NSLocalizedDescriptionKey: "could not read the provisioning response",
             ])
         }
 
-        if let next = object["state"] as? String, let fresh = Data(base64Encoded: next) {
-            Keychain.saveAnisetteState(fresh)
-        }
+        Keychain.saveAnisetteState(fresh)
 
-        AppLog.info("store provisioning produced " + String(headers.count) + " headers", .sap)
+        AppLog.info("store provisioning produced a " + String(fresh.count) + "-byte state", .sap)
 
-        return headers
+        return fresh
     }
 }

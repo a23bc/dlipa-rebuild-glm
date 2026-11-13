@@ -84,6 +84,24 @@ func (r *Runtime) ephemeralAccount(saved map[string]any) (uint64, error) {
 
 	return account, nil
 }
+
+// PrepareAuthenticate builds the session and account an authenticate request
+// will use. The caller builds them before a guest step that changes the class
+// cluster, so the request keeps objects whose classes the image named.
+func (r *Runtime) PrepareAuthenticate() (uint64, uint64, error) {
+	session, err := r.newSession()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	account, err := r.ephemeralAccount(nil)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return session, account, nil
+}
+
 func (r *Runtime) configureRequest(request, account, bag uint64, raw bool) error {
 	properties, err := r.Invoke(request, "properties")
 	if err != nil {

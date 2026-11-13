@@ -346,18 +346,10 @@ func (a *Anisette) ProvisionStore(stateBase64, challenge, kbsync, identityJSON, 
 		return "", fmt.Errorf("sapbridge: provision store: %w", err)
 	}
 
-	proof, next, err := storeauth.StoreAMDHeaders(ctx, provisioned,
-		"https://auth.itunes.apple.com/auth/v1/native", hardware)
-	if err != nil {
-		return "", fmt.Errorf("sapbridge: store proof after provisioning: %w", err)
-	}
-
 	output := struct {
-		Headers map[string]string `json:"headers"`
-		State   string            `json:"state"`
+		State string `json:"state"`
 	}{
-		Headers: proof,
-		State:   base64.StdEncoding.EncodeToString(next),
+		State: base64.StdEncoding.EncodeToString(provisioned),
 	}
 
 	data, err := json.Marshal(output)
@@ -458,17 +450,20 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 	}
 
 	var input struct {
-		Endpoint     string            `json:"endpoint"`
-		AppleID      string            `json:"appleId"`
-		Password     string            `json:"password"`
-		GUID         string            `json:"guid"`
-		Cookie       string            `json:"cookie"`
-		UserAgent    string            `json:"userAgent"`
-		ExtraHeaders map[string]string `json:"extraHeaders"`
-		IdentityMode string            `json:"identityMode"`
-		ResetStore   bool              `json:"resetStore"`
-		Bag          map[string]any    `json:"bag"`
-		TimeoutMS    int               `json:"timeoutMs"`
+		Endpoint      string            `json:"endpoint"`
+		AppleID       string            `json:"appleId"`
+		Password      string            `json:"password"`
+		GUID          string            `json:"guid"`
+		Cookie        string            `json:"cookie"`
+		UserAgent     string            `json:"userAgent"`
+		ExtraHeaders  map[string]string `json:"extraHeaders"`
+		IdentityMode  string            `json:"identityMode"`
+		ResetStore    bool              `json:"resetStore"`
+		StoreProof    bool              `json:"storeProof"`
+		StoreState    string            `json:"storeState"`
+		StoreEndpoint string            `json:"storeEndpoint"`
+		Bag           map[string]any    `json:"bag"`
+		TimeoutMS     int               `json:"timeoutMs"`
 	}
 
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
@@ -477,6 +472,17 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 
 	if input.ResetStore {
 		s.ResetStoreRuntime()
+	}
+
+	var storeState []byte
+
+	if input.StoreState != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(input.StoreState)
+		if decodeErr != nil {
+			return "", fmt.Errorf("sapbridge: store state: %w", decodeErr)
+		}
+
+		storeState = decoded
 	}
 
 	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
@@ -501,16 +507,19 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 	}
 
 	response, err := exchange.AuthenticateOnce(context.Background(), image, sap.AuthenticateInput{
-		Endpoint:     input.Endpoint,
-		AppleID:      input.AppleID,
-		Password:     input.Password,
-		GUID:         input.GUID,
-		Cookie:       input.Cookie,
-		UserAgent:    input.UserAgent,
-		ExtraHeaders: input.ExtraHeaders,
-		IdentityMode: input.IdentityMode,
-		Bag:          input.Bag,
-		Timeout:      timeout,
+		Endpoint:      input.Endpoint,
+		AppleID:       input.AppleID,
+		Password:      input.Password,
+		GUID:          input.GUID,
+		Cookie:        input.Cookie,
+		UserAgent:     input.UserAgent,
+		ExtraHeaders:  input.ExtraHeaders,
+		IdentityMode:  input.IdentityMode,
+		Bag:           input.Bag,
+		Timeout:       timeout,
+		StoreProof:    input.StoreProof,
+		AnisetteState: storeState,
+		StoreEndpoint: input.StoreEndpoint,
 	})
 	if err != nil {
 		return "", err
@@ -521,11 +530,13 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 		Headers    map[string][]string `json:"headers"`
 		BodyBase64 string              `json:"bodyBase64"`
 		URL        string              `json:"url"`
+		State      string              `json:"state,omitempty"`
 	}{
 		Status:     response.Status,
 		Headers:    response.Headers,
 		BodyBase64: base64.StdEncoding.EncodeToString(response.Body),
 		URL:        response.URL,
+		State:      base64.StdEncoding.EncodeToString(response.AnisetteState),
 	}
 
 	data, err := json.Marshal(output)

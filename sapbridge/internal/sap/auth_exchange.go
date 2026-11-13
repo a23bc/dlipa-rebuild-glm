@@ -19,6 +19,7 @@ import (
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/emulator"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/storeauth"
 )
 
 // AuthenticateInput is one sign-in exchange. It carries no retry policy and no
@@ -44,6 +45,11 @@ type AuthenticateInput struct {
 	// values from it; without it the request is built against an empty bag.
 	Bag     map[string]any
 	Timeout time.Duration
+	// StoreProof asks the signer to mint the Store proof inside the request's
+	// own guest, from this provisioned state, before the request is built.
+	StoreProof    bool
+	AnisetteState []byte
+	StoreEndpoint string
 }
 
 // AuthenticateResult is what the edge or the store answered, unread.
@@ -52,6 +58,8 @@ type AuthenticateResult struct {
 	Headers map[string][]string
 	Body    []byte
 	URL     string
+	// AnisetteState is the state advanced by the Store proof, if one ran.
+	AnisetteState []byte
 }
 
 const (
@@ -126,6 +134,25 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 		}
 
 		s.storeRuntime = runtime
+	}
+
+	session, account, prepErr := runtime.PrepareAuthenticate()
+	if prepErr != nil {
+		return AuthenticateResult{}, fmt.Errorf("authenticate: prepare objects: %w", prepErr)
+	}
+
+	var anisetteState []byte
+
+	if input.StoreProof {
+		proof, next, proofErr := storeauth.StoreAMDHeadersIn(ctx, runtime,
+			input.AnisetteState, input.StoreEndpoint, hardware)
+		if proofErr != nil {
+			return AuthenticateResult{}, fmt.Errorf("authenticate: store proof: %w", proofErr)
+		}
+
+		input.ExtraHeaders = proof
+		input.IdentityMode = "store"
+		anisetteState = next
 	}
 
 	headers := make(http.Header)
@@ -267,6 +294,8 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 			"why":      "signIn",
 		},
 		Bag:        input.Bag,
+		Session:    session,
+		Account:    account,
 		Sign:       s.signLocked,
 		HardwareID: hardware,
 		Timeout:    timeout,
@@ -287,9 +316,10 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	}
 
 	result := AuthenticateResult{
-		Status:  response.StatusCode,
-		Headers: response.Header,
-		Body:    body,
+		Status:        response.StatusCode,
+		Headers:       response.Header,
+		Body:          body,
+		AnisetteState: anisetteState,
 	}
 
 	if response.Request != nil && response.Request.URL != nil {

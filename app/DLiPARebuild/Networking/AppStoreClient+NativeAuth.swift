@@ -13,6 +13,7 @@ extension AppStoreClient {
         let headers: [String: [String]]
         let bodyBase64: String
         let url: String
+        let state: String?
 
         var body: Data { Data(base64Encoded: bodyBase64) ?? Data() }
 
@@ -50,7 +51,9 @@ extension AppStoreClient {
                             signer: SAPSigner,
                             reusedIdentity: [String: String]? = nil,
                             identityMode: String = "amd",
-                            resetStore: Bool = false) async throws -> Account {
+                            resetStore: Bool = false,
+                            storeProof: Bool = false,
+                            storeState: Data? = nil) async throws -> Account {
         let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
         var cookie = beginNativeAuthentication(codeIsEmpty: code.isEmpty)
         var target = Self.nativeEndpoint(endpoint)
@@ -85,6 +88,9 @@ extension AppStoreClient {
                 "extraHeaders": identity,
                 "identityMode": identityMode,
                 "resetStore": resetStore,
+                "storeProof": storeProof,
+                "storeState": storeState?.base64EncodedString() ?? "",
+                "storeEndpoint": "https://auth.itunes.apple.com/auth/v1/native",
                 "timeoutMs": 90_000,
             ]
 
@@ -99,6 +105,10 @@ extension AppStoreClient {
             let raw = try signer.authenticateOnce(json: json)
             let answer = try JSONDecoder().decode(NativeAnswer.self, from: Data(raw.utf8))
             last = answer
+
+            if let rawState = answer.state, let state = Data(base64Encoded: rawState) {
+                Keychain.saveAnisetteState(state)
+            }
 
             AppLog.info("native authenticate returned " + String(answer.status)
                         + ", body " + String(answer.body.count) + " bytes, url " + answer.url,
@@ -203,11 +213,11 @@ extension AppStoreClient {
             AppLog.info("AMD action SP: provisioning with " + String(challenge.count)
                         + " challenge chars, no kbsync", .auth)
 
-            let proof = try AnisetteIdentity.provisionStore(state: state,
-                                                            challenge: challenge,
-                                                            kbsync: Data(),
-                                                            identity: identity,
-                                                            guid: guid)
+            let provisioned = try AnisetteIdentity.provisionStore(state: state,
+                                                                  challenge: challenge,
+                                                                  kbsync: Data(),
+                                                                  identity: identity,
+                                                                  guid: guid)
 
             return try await authenticateNative(email: email,
                                                 password: password,
@@ -215,9 +225,11 @@ extension AppStoreClient {
                                                 guid: guid,
                                                 endpoint: endpoint,
                                                 signer: signer,
-                                                reusedIdentity: proof,
+                                                reusedIdentity: [:],
                                                 identityMode: "store",
-                                                resetStore: true)
+                                                resetStore: true,
+                                                storeProof: true,
+                                                storeState: provisioned)
         }
 
         if !failure.isEmpty {
