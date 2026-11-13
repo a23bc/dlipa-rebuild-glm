@@ -52,6 +52,7 @@ extension AppStoreClient {
                             reusedIdentity: [String: String]? = nil,
                             identityMode: String = "amd",
                             resetStore: Bool = false,
+                            resetStoreAfter: Bool = false,
                             storeProof: Bool = false,
                             storeState: Data? = nil) async throws -> Account {
         let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
@@ -94,6 +95,7 @@ extension AppStoreClient {
                 "extraHeaders": identity,
                 "identityMode": identityMode,
                 "resetStore": resetStore,
+                "resetStoreAfter": resetStoreAfter,
                 "storeProof": storeProof,
                 "storeState": storeState?.base64EncodedString() ?? "",
                 "storeEndpoint": "https://auth.itunes.apple.com/auth/v1/native",
@@ -234,6 +236,7 @@ extension AppStoreClient {
                                                 reusedIdentity: [:],
                                                 identityMode: "store",
                                                 resetStore: true,
+                                                resetStoreAfter: true,
                                                 storeProof: true,
                                                 storeState: provisioned)
         }

@@ -499,6 +499,11 @@ func (a *Anisette) StoreProof(stateBase64, endpoint, hardwareHex string) (string
 		return "", fmt.Errorf("sapbridge: store proof: %w", err)
 	}
 
+	a.proofMu.Lock()
+	a.lastProofAt = time.Now()
+	a.lastProof = proof
+	a.proofMu.Unlock()
+
 	output := struct {
 		Headers map[string]string `json:"headers"`
 		State   string            `json:"state"`
@@ -605,20 +610,21 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 	}
 
 	var input struct {
-		Endpoint      string            `json:"endpoint"`
-		AppleID       string            `json:"appleId"`
-		Password      string            `json:"password"`
-		GUID          string            `json:"guid"`
-		Cookie        string            `json:"cookie"`
-		UserAgent     string            `json:"userAgent"`
-		ExtraHeaders  map[string]string `json:"extraHeaders"`
-		IdentityMode  string            `json:"identityMode"`
-		ResetStore    bool              `json:"resetStore"`
-		StoreProof    bool              `json:"storeProof"`
-		StoreState    string            `json:"storeState"`
-		StoreEndpoint string            `json:"storeEndpoint"`
-		Bag           map[string]any    `json:"bag"`
-		TimeoutMS     int               `json:"timeoutMs"`
+		Endpoint        string            `json:"endpoint"`
+		AppleID         string            `json:"appleId"`
+		Password        string            `json:"password"`
+		GUID            string            `json:"guid"`
+		Cookie          string            `json:"cookie"`
+		UserAgent       string            `json:"userAgent"`
+		ExtraHeaders    map[string]string `json:"extraHeaders"`
+		IdentityMode    string            `json:"identityMode"`
+		ResetStore      bool              `json:"resetStore"`
+		ResetStoreAfter bool              `json:"resetStoreAfter"`
+		StoreProof      bool              `json:"storeProof"`
+		StoreState      string            `json:"storeState"`
+		StoreEndpoint   string            `json:"storeEndpoint"`
+		Bag             map[string]any    `json:"bag"`
+		TimeoutMS       int               `json:"timeoutMs"`
 	}
 
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
@@ -678,6 +684,13 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 	})
 	if err != nil {
 		return "", err
+	}
+
+	// The ent download's kbsync can only be generated with the store session
+	// closed. Closing it here is the "restart and download once" the ent path
+	// asks for, without the restart.
+	if input.ResetStoreAfter {
+		s.ResetStoreRuntime()
 	}
 
 	output := struct {
