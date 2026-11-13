@@ -2041,7 +2041,10 @@ final class AppStoreClient {
             // The reference mints the proof for the download URL before the
             // request and sends it with the first attempt (appstore_amd.go,
             // storeAMDProof). Do the same instead of waiting for an SP answer.
-            if attempt.label == "ipatool + cookies" {
+            // The reference's downloadProductRequest carries six headers and no
+            // Cookie; the proof is added by the send layer (download_product.go
+            // :272). That is the exact shape, not the cookie-replay one.
+            if attempt.label == "ipatool exact" {
                 do {
                     let proof = try AnisetteIdentity.storeProof(
                         endpoint: components.url?.absoluteString ?? endpoint,
