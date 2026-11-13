@@ -38,7 +38,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)storeSmoke:(nullable NSString *)dsid token:(nullable NSString *)token storefront:(nullable NSString *)storefront entEndpoint:(nullable NSString *)entEndpoint cookieHeader:(nullable NSString *)cookieHeader error:(NSError **)error;
 - (nullable NSData *)hardware;
 - (BOOL)close:(NSError **)error;
-- (void)resetStoreRuntime;
 @end
 
 @interface SapbridgeAnisette : NSObject

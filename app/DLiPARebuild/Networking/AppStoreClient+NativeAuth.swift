@@ -49,7 +49,8 @@ extension AppStoreClient {
                             endpoint: String,
                             signer: SAPSigner,
                             reusedIdentity: [String: String]? = nil,
-                            identityMode: String = "amd") async throws -> Account {
+                            identityMode: String = "amd",
+                            resetStore: Bool = false) async throws -> Account {
         let code = authCode?.replacingOccurrences(of: " ", with: "") ?? ""
         var cookie = beginNativeAuthentication(codeIsEmpty: code.isEmpty)
         var target = Self.nativeEndpoint(endpoint)
@@ -83,6 +84,7 @@ extension AppStoreClient {
                 "userAgent": Self.nativeUserAgent,
                 "extraHeaders": identity,
                 "identityMode": identityMode,
+                "resetStore": resetStore,
                 "timeoutMs": 90_000,
             ]
 
@@ -207,10 +209,6 @@ extension AppStoreClient {
                                                             identity: identity,
                                                             guid: guid)
 
-            // The proof guest wrote over this store guest's class metadata;
-            // the request needs a fresh one.
-            signer.resetStoreRuntime()
-
             return try await authenticateNative(email: email,
                                                 password: password,
                                                 authCode: authCode,
@@ -218,7 +216,8 @@ extension AppStoreClient {
                                                 endpoint: endpoint,
                                                 signer: signer,
                                                 reusedIdentity: proof,
-                                                identityMode: "store")
+                                                identityMode: "store",
+                                                resetStore: true)
         }
 
         if !failure.isEmpty {

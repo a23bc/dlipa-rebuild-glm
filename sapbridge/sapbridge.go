@@ -466,12 +466,17 @@ func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
 		UserAgent    string            `json:"userAgent"`
 		ExtraHeaders map[string]string `json:"extraHeaders"`
 		IdentityMode string            `json:"identityMode"`
+		ResetStore   bool              `json:"resetStore"`
 		Bag          map[string]any    `json:"bag"`
 		TimeoutMS    int               `json:"timeoutMs"`
 	}
 
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
 		return "", fmt.Errorf("sapbridge: authenticate input: %w", err)
+	}
+
+	if input.ResetStore {
+		s.ResetStoreRuntime()
 	}
 
 	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
@@ -539,6 +544,17 @@ func (s *Signer) Hardware() []byte {
 }
 
 // Close tears down the SAP session and releases the guest runtime.
+// ResetStoreRuntime throws away the cached store guest so the next request
+// opens a fresh one. The proof step can rewrite its class metadata in place.
+func (s *Signer) ResetStoreRuntime() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if resetter, ok := s.inner.(interface{ ResetStoreRuntime() }); ok {
+		resetter.ResetStoreRuntime()
+	}
+}
+
 func (s *Signer) Close() (err error) {
 	err = runRecovered("SAP close", func() error {
 		return s.close()
