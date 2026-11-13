@@ -212,22 +212,6 @@ func newEngine(ctx context.Context, loadLibrary func(context.Context) (library, 
 
 	fmt.Fprintf(os.Stderr, "[SAP]   uc_open ok\n")
 
-	// uc_open leaves initialization lazy; the first query forces it. Run that
-	// only while no engine is executing: initialization briefly switches the
-	// process-wide clock and can expire another engine's timeout (upstream
-	// 2029022). The SAP machine, the store runtime and the kbsync's StoreAgent
-	// share this process.
-	if err := engineClock.initialize(ctx, func() error {
-		var pageSize uint64
-
-		return engine.err(engine.api.query(engine.handle, queryPageSize, &pageSize))
-	}); err != nil {
-		_ = engine.api.close(engine.handle)
-		_ = library.close()
-
-		return nil, fmt.Errorf("initialize arm64 emulator: %w", err)
-	}
-
 	// Shrink the TCG JIT translation buffer from the 1 GiB default to
 	// 16 MiB. MUST happen before any UC_INIT-triggering call (uc_mem_map,
 	// uc_emu_start, uc_reg_write, uc_ctl READ, etc.) so that the eventual
@@ -263,6 +247,22 @@ func newEngine(ctx context.Context, loadLibrary func(context.Context) (library, 
 		_ = library.close()
 
 		return nil, fmt.Errorf("configure arm64 CPU model: %w", err)
+	}
+
+	// uc_open leaves initialization lazy; the first query forces it. Run that
+	// only while no engine is executing: initialization briefly switches the
+	// process-wide clock and can expire another engine's timeout (upstream
+	// 2029022). The SAP machine, the store runtime and the kbsync's StoreAgent
+	// share this process.
+	if err := engineClock.initialize(ctx, func() error {
+		var pageSize uint64
+
+		return engine.err(engine.api.query(engine.handle, queryPageSize, &pageSize))
+	}); err != nil {
+		_ = engine.api.close(engine.handle)
+		_ = library.close()
+
+		return nil, fmt.Errorf("initialize arm64 emulator: %w", err)
 	}
 
 	if err := configureEngine(engine); err != nil {
