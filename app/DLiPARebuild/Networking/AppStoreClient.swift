@@ -2075,7 +2075,10 @@ final class AppStoreClient {
                         let identity = try AnisetteIdentity.headers()
                         let proof = try AnisetteIdentity.downloadProof(
                             challenge: challenge,
-                            endpoint: components.url?.absoluteString ?? endpoint,
+                            // The sign-in mints its proof against the auth
+                            // endpoint; 560 showed the download URL returning a
+                            // proof the download still answered 2042 with.
+                            endpoint: "https://auth.itunes.apple.com/auth/v1/native",
                             identity: identity,
                             guid: guid)
 
