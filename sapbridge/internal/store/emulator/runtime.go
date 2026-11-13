@@ -1671,7 +1671,10 @@ func (r *Runtime) Invoke(object uint64, selector string, args ...uint64) (result
 		// chain to the first class the image named and dispatch as an instance.
 		isa := r.read64(object)
 		for depth := 0; depth < 8 && isa != 0; depth++ {
-			if name, ok := r.classNames[isa]; ok {
+			name, ok := r.classNames[isa]
+			fmt.Fprintf(os.Stderr, "[SAP] isa %#x depth=%d class=%q known=%v\n", isa, depth, name, ok)
+
+			if ok {
 				class, meta = name, false
 
 				break
