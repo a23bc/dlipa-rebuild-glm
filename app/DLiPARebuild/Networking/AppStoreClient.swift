@@ -178,7 +178,7 @@ final class AppStoreClient {
                 return try await authenticateNative(email: email, password: password,
                                                     authCode: authCode, guid: guid,
                                                     endpoint: endpoint, signer: signer,
-                                                    storeProof: true, resetStoreAfter: true,
+                                                    resetStoreAfter: true, storeProof: true,
                                                     storeState: state)
             }
 
