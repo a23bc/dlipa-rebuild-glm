@@ -44,6 +44,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)headers:(NSString *)stateBase64 error:(NSError **)error;
 - (nullable NSString *)provisionStore:(NSString *)stateBase64 challenge:(NSString *)challenge kbsync:(NSString *)kbsync identityJSON:(NSString *)identityJSON hardwareHex:(NSString *)hardwareHex error:(NSError **)error;
 - (nullable NSString *)downloadProof:(NSString *)stateBase64 challenge:(NSString *)challenge endpoint:(NSString *)endpoint identityJSON:(NSString *)identityJSON hardwareHex:(NSString *)hardwareHex error:(NSError **)error;
+- (nullable NSString *)storeProof:(NSString *)stateBase64 endpoint:(NSString *)endpoint hardwareHex:(NSString *)hardwareHex error:(NSError **)error;
 @end
 
 FOUNDATION_EXPORT SapbridgeAnisette * _Nullable SapbridgeNewAnisette(void);

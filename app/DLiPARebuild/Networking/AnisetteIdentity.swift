@@ -89,6 +89,35 @@ enum AnisetteIdentity {
         return fresh
     }
 
+    /// Mints the Store proof for one endpoint from the provisioned state, the
+    /// way the reference does before a download: no provisioning exchange.
+    static func storeProof(endpoint: String, guid: String) throws -> [String: String] {
+        guard let bridge else {
+            throw NSError(domain: "AnisetteIdentity", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "the anisette bridge is unavailable",
+            ])
+        }
+
+        let state = Keychain.anisetteState() ?? Data()
+        let raw = try bridge.storeProof(state.base64EncodedString(),
+                                        endpoint: endpoint,
+                                        hardwareHex: guid)
+
+        guard let data = raw.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let headers = object["headers"] as? [String: String] else {
+            throw NSError(domain: "AnisetteIdentity", code: 8, userInfo: [
+                NSLocalizedDescriptionKey: "could not read the store proof response",
+            ])
+        }
+
+        if let next = object["state"] as? String, let fresh = Data(base64Encoded: next) {
+            Keychain.saveAnisetteState(fresh)
+        }
+
+        return headers
+    }
+
     /// Runs the provisioning a download endpoint's AMD-Action asks for and
     /// returns the proof for that endpoint.
     static func downloadProof(challenge: String,

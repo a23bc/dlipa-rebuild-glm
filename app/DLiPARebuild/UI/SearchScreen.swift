@@ -548,18 +548,10 @@ final class SearchModel: ObservableObject {
         // question, and either way the card has done its job the moment it ends.
         // `workingDone` is cleared because a licence taken a minute ago left it
         // set, and this card would otherwise open on someone else's tick.
+        // The download's own classic answer carries the licence verdict; the
+        // reference reads FailureTypeLicenseNotFound from it. A second classic
+        // here only re-ran the Store proof and crashed the one guest.
         workingDone = false
-        workingStatus = "Checking the licence for " + app.trackName + "..."
-        let missing = await AppSession.shared.licenceMissing(for: app)
-        workingStatus = nil
-
-        if missing == true {
-            licenceVersion = versionID
-            alert = .takeLicence(app)
-
-            return
-        }
-
         queueDownload(app, versionID: versionID)
     }
 

@@ -2017,6 +2017,26 @@ final class AppStoreClient {
             if attempt.sendCookie, !capturedCookieHeader.isEmpty {
                 request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
             }
+
+            // The reference mints the proof for the download URL before the
+            // request and sends it with the first attempt (appstore_amd.go,
+            // storeAMDProof). Do the same instead of waiting for an SP answer.
+            if attempt.label == "ipatool + cookies" {
+                do {
+                    let proof = try AnisetteIdentity.storeProof(
+                        endpoint: components.url?.absoluteString ?? endpoint,
+                        guid: guid)
+                    for (key, value) in proof {
+                        request.setValue(value, forHTTPHeaderField: key)
+                    }
+                    AppLog.info("download: store proof attached ("
+                                + String(proof.count) + " headers)", .download)
+                } catch {
+                    AppLog.error("download proof failed: "
+                                 + error.localizedDescription, .download)
+                }
+            }
+
             request.httpBody = body
 
             let responseData: Data

@@ -465,6 +465,44 @@ func (a *Anisette) DownloadProof(stateBase64, challenge, endpoint, identityJSON,
 	return string(data), nil
 }
 
+// StoreProof mints the Store AMD proof for one endpoint from an already
+// provisioned state, the way the reference's storeAMDProof does before a
+// download. No provisioning exchange runs here.
+func (a *Anisette) StoreProof(stateBase64, endpoint, hardwareHex string) (string, error) {
+	state, err := base64.StdEncoding.DecodeString(stateBase64)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: store proof state: %w", err)
+	}
+
+	hardware, err := hex.DecodeString(hardwareHex)
+	if err != nil || len(hardware) != 6 {
+		return "", fmt.Errorf("sapbridge: store proof hardware identity")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	proof, next, err := storeauth.StoreAMDHeaders(ctx, state, endpoint, hardware)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: store proof: %w", err)
+	}
+
+	output := struct {
+		Headers map[string]string `json:"headers"`
+		State   string            `json:"state"`
+	}{
+		Headers: proof,
+		State:   base64.StdEncoding.EncodeToString(next),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: store proof result: %w", err)
+	}
+
+	return string(data), nil
+}
+
 // Headers takes the state from the previous call (base64, empty on first use)
 // and returns JSON {"headers":{...},"state":"base64"}.
 //
