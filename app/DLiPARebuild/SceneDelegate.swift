@@ -30,6 +30,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.backgroundColor = .systemBackground
         self.window = window
         window.makeKeyAndVisible()
-        print("[DLiPA] SceneDelegate: window visible, rootViewController=\(type(of: vc))")
+        print("[DLiPA] SceneDelegate: window visible, rootViewController=\(type(of: controller))")
     }
 }
