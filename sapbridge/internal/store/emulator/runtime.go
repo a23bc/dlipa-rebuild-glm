@@ -1670,11 +1670,15 @@ func (r *Runtime) Invoke(object uint64, selector string, args ...uint64) (result
 	}
 	if !meta {
 		obj := r.objects[object]
-		if obj == nil {
+
+		if obj != nil {
+			class = obj.Class
+		} else if class == "" {
+			// The walk above may have found the isa's class even though the host
+			// never created the object (a guest constant, a class cluster value).
+			// Use that class; only a receiver with no known class is unknown.
 			return 0, fmt.Errorf("unknown receiver %#x for %s", object, selector)
 		}
-
-		class = obj.Class
 	}
 
 	entry := r.lookup(class, selector, meta)
@@ -2056,6 +2060,17 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 
 	obj := r.objects[address]
 	if obj == nil {
+		// A guest object (a constant string, a class cluster value) has no host
+		// entry. Read the ones whose value is meaningful to the caller.
+		class := r.classNames[r.read64(address)]
+
+		switch class {
+		case "NSString", "__NSCFConstantString", "NSCFString", "NSMutableString":
+			if utf8, err := r.Invoke(address, "UTF8String"); err == nil && utf8 != 0 {
+				return r.cstring(utf8), nil
+			}
+		}
+
 		return nil, fmt.Errorf("unknown exported object %#x", address)
 	}
 
