@@ -1431,6 +1431,10 @@ func allZero(data []byte) bool {
 }
 
 func (r *Runtime) read64(address uint64) uint64 {
+	if _, ok := r.lazyPages[address&^uint64(4095)]; ok {
+		r.mapLazyPage(address, 8, true)
+	}
+
 	b, e := r.engine.MemRead(address, 8)
 	if e != nil {
 		panic(fmt.Sprintf("read guest pointer %#x: %v", address, e))
@@ -1530,6 +1534,10 @@ func (r *Runtime) set(value uint64) {
 func (r *Runtime) cstring(address uint64) string {
 	if address == 0 {
 		return ""
+	}
+
+	if _, ok := r.lazyPages[address&^uint64(4095)]; ok {
+		r.mapLazyPage(address, 1, true)
 	}
 
 	if value, ok := r.selectors[address]; ok {
