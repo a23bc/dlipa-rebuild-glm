@@ -2071,7 +2071,9 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 			}
 		}
 
-		return nil, fmt.Errorf("unknown exported object %#x (isa %#x, class %q)", address, isa, class)
+		// The first word is zero, so this is not an object header. Show the
+		// first words and the text, which tells a C string from a scalar.
+		return nil, fmt.Errorf("unknown exported object %#x (isa %#x, class %q, w0 %#x w1 %#x w2 %#x text %q)", address, isa, class, r.read64(address), r.read64(address+8), r.read64(address+16), r.cstring(address))
 	}
 
 	active[address] = true
