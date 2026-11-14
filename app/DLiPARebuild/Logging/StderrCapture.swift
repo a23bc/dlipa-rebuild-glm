@@ -56,13 +56,13 @@ enum StderrCapture {
     /// Call this at the very start of `AppDelegate.didFinishLaunchingWithOptions`,
     /// before any SAP bridge code runs. Idempotent across re-launches.
     static func start() {
-        let fm = FileManager.default
+        let fileManager = FileManager.default
 
         // 1. Archive the previous launch's currentLog → previousLog
         //    (remove any stale previousLog first so the move succeeds).
-        try? fm.removeItem(at: previousLogURL)
-        if fm.fileExists(atPath: currentLogURL.path) {
-            try? fm.moveItem(at: currentLogURL, to: previousLogURL)
+        try? fileManager.removeItem(at: previousLogURL)
+        if fileManager.fileExists(atPath: currentLogURL.path) {
+            try? fileManager.moveItem(at: currentLogURL, to: previousLogURL)
         }
 
         // 2. Truncate + redirect fd 2 (stderr) onto a fresh currentLog.

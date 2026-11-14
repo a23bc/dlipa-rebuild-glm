@@ -65,4 +65,4 @@ identifier_name:
   # AppSession.swift's sort comparator, and errno_str in JITEnabler.swift
   # -- because a permanent blind spot for two of the most common variable
   # names in any new code is a bad trade for three lines of edits.
-  excluded: [r, s, d]
+  excluded: [r, s, d, id]
