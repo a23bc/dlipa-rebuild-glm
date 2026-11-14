@@ -2062,16 +2062,16 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 	if obj == nil {
 		// A guest object (a constant string, a class cluster value) has no host
 		// entry. Read the ones whose value is meaningful to the caller.
-		class := r.classNames[r.read64(address)]
+		isa := r.read64(address)
+		class := r.classNames[isa]
 
-		switch class {
-		case "NSString", "__NSCFConstantString", "NSCFString", "NSMutableString":
+		if strings.Contains(class, "String") {
 			if utf8, err := r.Invoke(address, "UTF8String"); err == nil && utf8 != 0 {
 				return r.cstring(utf8), nil
 			}
 		}
 
-		return nil, fmt.Errorf("unknown exported object %#x", address)
+		return nil, fmt.Errorf("unknown exported object %#x (isa %#x, class %q)", address, isa, class)
 	}
 
 	active[address] = true
