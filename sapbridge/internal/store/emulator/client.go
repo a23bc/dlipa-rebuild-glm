@@ -146,6 +146,8 @@ func (r *Runtime) Execute(input Request) (response *http.Response, err error) {
 			return nil, e
 		}
 
+		fmt.Fprintf(os.Stderr, "[SAP] auth params: value %#x is %q\n", value, r.className(value))
+
 		built, e := r.Export(value)
 		if e != nil {
 			return nil, e

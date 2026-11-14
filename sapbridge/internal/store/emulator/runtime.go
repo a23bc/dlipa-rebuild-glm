@@ -1430,6 +1430,15 @@ func allZero(data []byte) bool {
 	return true
 }
 
+// className names the object or class at an address, for diagnostics.
+func (r *Runtime) className(address uint64) string {
+	if obj := r.objects[address]; obj != nil {
+		return obj.Class
+	}
+
+	return r.classNames[r.read64(address)]
+}
+
 func (r *Runtime) read64(address uint64) uint64 {
 	if _, ok := r.lazyPages[address&^uint64(4095)]; ok {
 		r.mapLazyPage(address, 8, true)

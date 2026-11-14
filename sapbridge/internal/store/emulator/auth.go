@@ -2,12 +2,17 @@ package emulator
 
 import (
 	"errors"
+	"fmt"
+	"os"
 )
 
 func (r *Runtime) newCredentialTask(account, bag uint64, password string, source uint64) (uint64, error) {
 	if r.ClassAddress("AMSVerifyCredentialsTask") == 0 {
 		return 0, errors.New("authentication plugin is missing from the profile")
 	}
+
+	fmt.Fprintf(os.Stderr, "[SAP] auth task: account %#x is %q, bag %#x is %q\n",
+		account, r.className(account), bag, r.className(bag))
 
 	options, err := r.Invoke(r.New("AMSAuthenticateOptions", nil), "init")
 	if err != nil {
