@@ -2068,6 +2068,12 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 
 	obj := r.objects[address]
 	if obj == nil {
+		// A class object exports as its name; the auth parameters carry the
+		// dictionary class itself as one value (592).
+		if name, ok := r.classNames[address]; ok {
+			return name, nil
+		}
+
 		// A guest object (a constant string, a class cluster value) has no host
 		// entry. Read the ones whose value is meaningful to the caller.
 		isa := r.read64(address)
