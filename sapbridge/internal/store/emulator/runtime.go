@@ -1432,6 +1432,10 @@ func allZero(data []byte) bool {
 
 // className names the object or class at an address, for diagnostics.
 func (r *Runtime) className(address uint64) string {
+	if address == 0 {
+		return "nil"
+	}
+
 	if obj := r.objects[address]; obj != nil {
 		return obj.Class
 	}
