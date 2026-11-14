@@ -2079,6 +2079,24 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 			}
 		}
 
+		if strings.Contains(class, "Dictionary") {
+			if fields, err := r.exportGuestDictionary(address); err == nil {
+				return fields, nil
+			}
+		}
+
+		if strings.Contains(class, "Array") {
+			if items, err := r.exportGuestArray(address); err == nil {
+				return items, nil
+			}
+		}
+
+		if strings.Contains(class, "Number") {
+			if number, err := r.Invoke(address, "doubleValue"); err == nil {
+				return float64(number), nil
+			}
+		}
+
 		// The first word is zero, so this is not an object header. Show the
 		// first words and the text, which tells a C string from a scalar.
 		return nil, fmt.Errorf("unknown exported object %#x (isa %#x, class %q, w0 %#x w1 %#x w2 %#x text %q)", address, isa, class, r.read64(address), r.read64(address+8), r.read64(address+16), r.cstring(address))
@@ -2117,6 +2135,74 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 	default:
 		return v, nil
 	}
+}
+
+// exportGuestDictionary reads a dictionary the host never created through the
+// guest's own accessors. The auth task returns one of these, not a host value.
+func (r *Runtime) exportGuestDictionary(address uint64) (map[string]any, error) {
+	count, err := r.Invoke(address, "count")
+	if err != nil {
+		return nil, err
+	}
+
+	keys, err := r.Invoke(address, "allKeys")
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]any, count)
+
+	for i := uint64(0); i < count; i++ {
+		key, e := r.Invoke(keys, "objectAtIndex:", i)
+		if e != nil {
+			return nil, e
+		}
+
+		keyValue, e := r.Export(key)
+		if e != nil {
+			return nil, e
+		}
+
+		value, e := r.Invoke(address, "objectForKey:", key)
+		if e != nil {
+			return nil, e
+		}
+
+		exported, e := r.Export(value)
+		if e != nil {
+			return nil, e
+		}
+
+		result[fmt.Sprint(keyValue)] = exported
+	}
+
+	return result, nil
+}
+
+// exportGuestArray is the array counterpart of exportGuestDictionary.
+func (r *Runtime) exportGuestArray(address uint64) ([]any, error) {
+	count, err := r.Invoke(address, "count")
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]any, 0, count)
+
+	for i := uint64(0); i < count; i++ {
+		item, e := r.Invoke(address, "objectAtIndex:", i)
+		if e != nil {
+			return nil, e
+		}
+
+		exported, e := r.Export(item)
+		if e != nil {
+			return nil, e
+		}
+
+		result = append(result, exported)
+	}
+
+	return result, nil
 }
 
 func (r *Runtime) queuePending(block, queue uint64) {
