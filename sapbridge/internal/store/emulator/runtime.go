@@ -2079,27 +2079,38 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 			}
 		}
 
+		var exportErr error
+
 		if strings.Contains(class, "Dictionary") {
-			if fields, err := r.exportGuestDictionary(address); err == nil {
+			fields, err := r.exportGuestDictionary(address)
+			if err == nil {
 				return fields, nil
 			}
+
+			exportErr = err
 		}
 
 		if strings.Contains(class, "Array") {
-			if items, err := r.exportGuestArray(address); err == nil {
+			items, err := r.exportGuestArray(address)
+			if err == nil {
 				return items, nil
 			}
+
+			exportErr = err
 		}
 
 		if strings.Contains(class, "Number") {
-			if number, err := r.Invoke(address, "doubleValue"); err == nil {
+			number, err := r.Invoke(address, "doubleValue")
+			if err == nil {
 				return float64(number), nil
 			}
+
+			exportErr = err
 		}
 
 		// The first word is zero, so this is not an object header. Show the
 		// first words and the text, which tells a C string from a scalar.
-		return nil, fmt.Errorf("unknown exported object %#x (isa %#x, class %q, w0 %#x w1 %#x w2 %#x text %q)", address, isa, class, r.read64(address), r.read64(address+8), r.read64(address+16), r.cstring(address))
+		return nil, fmt.Errorf("unknown exported object %#x (isa %#x, class %q, export %v, w0 %#x w1 %#x w2 %#x text %q)", address, isa, class, exportErr, r.read64(address), r.read64(address+8), r.read64(address+16), r.cstring(address))
 	}
 
 	active[address] = true
