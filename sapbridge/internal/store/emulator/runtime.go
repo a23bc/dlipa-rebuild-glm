@@ -1093,8 +1093,9 @@ func (r *Runtime) Close() error {
 	fmt.Fprintf(os.Stderr, "[SAP] close(): left %d pages mapped (%d its own, %d recognised as the machine's)\n",
 		len(r.pages), owned, shared)
 
-	clear(r.entries)
-	clear(r.calls)
+	// entries and calls belong to the immutable metadata template and are shared
+	// by every runtime. Clearing them here leaves later runtimes with patched
+	// call sites but no host dispatch (596).
 	r.codeRanges = nil
 
 	// Guest objects live for one request. Release their host references on close.

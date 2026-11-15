@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/unicorn"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/store/profile"
 )
 
@@ -97,5 +98,27 @@ func TestMetadataCachesByDigest(t *testing.T) {
 	truncated := data.Metadata[:len(data.Metadata)/2]
 	if _, err := cachedMetadata.load(context.Background(), truncated); err == nil {
 		t.Error("a truncated metadata blob was accepted")
+	}
+}
+
+func TestClosePreservesSharedDispatchTables(t *testing.T) {
+	const address = uint64(0x1000)
+	meta := &runtimeMetadata{
+		calls:   map[uint64]Call{address: {Symbol: "objc_alloc_init"}},
+		entries: map[uint64]string{address: "-[TestObject init]"},
+	}
+	first := meta.newRuntime()
+	first.engine = &unicorn.Engine{}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first runtime: %v", err)
+	}
+
+	second := meta.newRuntime()
+	if _, ok := second.calls[address]; !ok {
+		t.Error("closing a runtime erased the call table used by the next runtime")
+	}
+	if _, ok := second.entries[address]; !ok {
+		t.Error("closing a runtime erased the entry table used by the next runtime")
 	}
 }
