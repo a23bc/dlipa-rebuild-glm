@@ -665,6 +665,18 @@ final class AppStoreClient {
 
         guard let first, let urlString = first["URL"] as? String,
               let url = URL(string: urlString) else {
+            // Upstream treats a 200 with no package on it as "no items" and
+            // falls back to the bag's redownload and updateProduct endpoints.
+            // The SP proof now gets the classic request to 200, so its empty
+            // songList is that case, not a malformed response.
+            if (plist["failureType"] as? String ?? "").isEmpty,
+               let recovered = try await redownloadPackageURL(
+                   session: session, appId: appId,
+                   externalVersionId: externalVersionId, guid: guid,
+                   account: account, bag: bag) {
+                return recovered
+            }
+
             let shape = String(describing: type(of: songList))
             let element = (songList as? [Any])?.first.map { String(describing: type(of: $0)) }
                 ?? "none"
