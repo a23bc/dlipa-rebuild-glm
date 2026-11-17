@@ -92,6 +92,52 @@ extension AppStoreClient {
         return nil
     }
 
+    /// Answers the download endpoint's `AMD-Action: …:SP` challenge.
+    ///
+    /// Run 597 succeeded on the first try; run 598's retry threw
+    /// `NSURLErrorCannotParseResponse` and the whole download stopped at the
+    /// 287-byte challenge. Bound the attempts and name each failure instead.
+    func retryWithDownloadProof(session: URLSession,
+                                request: URLRequest,
+                                challenge: String,
+                                guid: String) async -> [String: Any]? {
+        for attempt in 1...3 {
+            do {
+                let identity = try AnisetteIdentity.headers()
+                let proof = try AnisetteIdentity.downloadProof(
+                    challenge: challenge,
+                    // 560 showed a proof minted against the download URL still
+                    // got 2042; keep the auth URL that worked in run 597.
+                    endpoint: "https://auth.itunes.apple.com/auth/v1/native",
+                    identity: identity,
+                    guid: guid)
+
+                var retry = request
+                for (key, value) in proof {
+                    retry.setValue(value, forHTTPHeaderField: key)
+                }
+
+                let (body, response) = try await session.data(for: retry)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                AppLog.info("download proof retry " + String(attempt) + " HTTP "
+                            + String(status) + ", " + String(body.count) + " bytes, "
+                            + Self.responseDetail(from: body), .download)
+
+                if status == 200,
+                   let plist = (try? PropertyListSerialization.propertyList(
+                    from: body, options: [], format: nil)) as? [String: Any],
+                   plist["songList"] != nil {
+                    return plist
+                }
+            } catch {
+                AppLog.error("download proof retry " + String(attempt)
+                             + " failed: " + error.localizedDescription, .download)
+            }
+        }
+
+        return nil
+    }
+
     /// Both songList shapes, plus the bare URL string a redownload can carry.
     private static func packageURL(in plist: [String: Any]) -> URL? {
         guard let songList = plist["songList"] else { return nil }

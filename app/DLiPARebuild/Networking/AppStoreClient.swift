@@ -1056,7 +1056,7 @@ final class AppStoreClient {
     /// 403 page is not a plist. Values are capped where they are long, and
     /// `songList` is reported as present rather than printed -- it is the 18 kB
     /// half of a download response.
-    private static func responseDetail(from data: Data) -> String {
+    static func responseDetail(from data: Data) -> String {
         guard let text = String(data: data, encoding: .utf8) else {
             return "<" + String(data.count) + " binary bytes>"
         }
@@ -2129,37 +2129,10 @@ final class AppStoreClient {
                     AppLog.info("download SP: provisioning for "
                                 + String(challenge.count) + " chars", .download)
 
-                    do {
-                        let identity = try AnisetteIdentity.headers()
-                        let proof = try AnisetteIdentity.downloadProof(
-                            challenge: challenge,
-                            // The sign-in mints its proof against the auth
-                            // endpoint; 560 showed the download URL returning a
-                            // proof the download still answered 2042 with.
-                            endpoint: "https://auth.itunes.apple.com/auth/v1/native",
-                            identity: identity,
-                            guid: guid)
-
-                        var retry = request
-                        for (key, value) in proof {
-                            retry.setValue(value, forHTTPHeaderField: key)
-                        }
-
-                        let (body, response) = try await session.data(for: retry)
-                        let retryStatus = (response as? HTTPURLResponse)?.statusCode ?? -1
-                        AppLog.info("download proof retry HTTP " + String(retryStatus)
-                                    + ", " + String(body.count) + " bytes, "
-                                    + Self.responseDetail(from: body), .download)
-
-                        if retryStatus == 200,
-                           let plist = (try? PropertyListSerialization.propertyList(
-                               from: body, options: [], format: nil)) as? [String: Any],
-                           plist["songList"] != nil {
-                            return plist
-                        }
-                    } catch {
-                        AppLog.error("download proof failed: "
-                                     + error.localizedDescription, .download)
+                    if let retried = await retryWithDownloadProof(
+                        session: session, request: request,
+                        challenge: challenge, guid: guid) {
+                        return retried
                     }
                 }
             }
