@@ -680,7 +680,7 @@ final class AppStoreClient {
                let recovered = try await redownloadPackageURL(
                    session: session, appId: appId,
                    externalVersionId: externalVersionId, guid: guid,
-                   account: account, bag: bag) {
+                   account: account, bag: bag, cookieHeader: sessionCookieHeader) {
                 return recovered
             }
 

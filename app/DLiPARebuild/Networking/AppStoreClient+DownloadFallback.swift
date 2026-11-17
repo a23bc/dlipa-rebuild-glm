@@ -13,7 +13,8 @@ extension AppStoreClient {
                               externalVersionId: String?,
                               guid: String,
                               account: Account,
-                              bag: StoreBag) async throws -> URL? {
+                              bag: StoreBag,
+                              cookieHeader: String) async throws -> URL? {
         // Upstream uses `appExtVrsId` on both recovery endpoints; the classic
         // volume store uses `externalVersionId` (`downloadVersionKeyRedownload`
         // vs `downloadVersionKeyVolumeStore`, appstore_download_product.go:19-20).
@@ -31,6 +32,9 @@ extension AppStoreClient {
             }
             components.queryItems = [URLQueryItem(name: "guid", value: guid)]
             guard let url = components.url else { continue }
+            AppLog.info("download fallback [" + candidate.label + "] "
+                        + url.host + url.path + " cookies="
+                        + String(cookieHeader.count) + " chars", .download)
 
             var payload: [String: Any] = [
                 "creditDisplay": "",
@@ -56,6 +60,13 @@ extension AppStoreClient {
             }
             if !account.storefront.isEmpty {
                 request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
+            }
+            // Upstream's download client has a cookie jar, so its redownload and
+            // updateProduct requests carry the sign-in session. Run 600's 403/0
+            // came from sending these without it; the SP retry proved the jar
+            // matters for this account.
+            if !cookieHeader.isEmpty {
+                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }
 
             // Upstream mints a proof against each request URL before sending
