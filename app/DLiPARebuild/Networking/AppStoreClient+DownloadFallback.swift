@@ -19,6 +19,9 @@ extension AppStoreClient {
         // volume store uses `externalVersionId` (`downloadVersionKeyRedownload`
         // vs `downloadVersionKeyVolumeStore`, appstore_download_product.go:19-20).
         let endpoints: [(label: String, endpoint: String?)] = [
+            // The same recovery order a working on-device client uses:
+            // backgroundUpdateProduct first, then the two classic bag paths.
+            ("background", bag.backgroundUpdateProduct),
             ("redownload", bag.redownloadProduct),
             ("update", bag.updateProduct),
         ]

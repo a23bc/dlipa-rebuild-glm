@@ -12,6 +12,9 @@ struct StoreBag {
     var volumeStoreDownloadProduct: String?
     var redownloadProduct: String?
     var updateProduct: String?
+    /// ipadn's recovery endpoint when ent/download returns no items. The bag
+    /// carries it alongside redownloadProduct and updateProduct.
+    var backgroundUpdateProduct: String?
     /// The endpoint that binds this device to the account. authenticate only
     /// proves the password; the store session is what this one establishes.
     var authorizeMachine: String?
@@ -115,6 +118,7 @@ struct StoreBag {
         result.volumeStoreDownloadProduct = lookup(bag, bagDict, "volumeStoreDownloadProduct")
         result.redownloadProduct = lookup(bag, bagDict, "redownloadProduct")
         result.updateProduct = lookup(bag, bagDict, "updateProduct")
+        result.backgroundUpdateProduct = lookup(bag, bagDict, "backgroundUpdateProduct")
         result.buyProduct = lookup(bag, bagDict, "buyProduct")
         result.authorizeMachine = lookup(bag, bagDict, "authorizeMachine")
         result.signSapVersion = Int32(lookup(bag, bagDict, "sign-sap-version") ?? "") ?? 0
