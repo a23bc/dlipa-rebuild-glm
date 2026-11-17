@@ -32,9 +32,12 @@ extension AppStoreClient {
             }
             components.queryItems = [URLQueryItem(name: "guid", value: guid)]
             guard let url = components.url else { continue }
-            AppLog.info("download fallback [" + candidate.label + "] "
-                        + url.host + url.path + " cookies="
-                        + String(cookieHeader.count) + " chars", .download)
+            let host = url.host ?? "?"
+            var detail = "download fallback [" + candidate.label + "] "
+            detail += host
+            detail += url.path
+            detail += " cookies=" + String(cookieHeader.count) + " chars"
+            AppLog.info(detail, .download)
 
             var payload: [String: Any] = [
                 "creditDisplay": "",
