@@ -203,7 +203,14 @@ func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: St
     try bridge.storeSmoke(dsid, token: token, storefront: storefront, entEndpoint: entEndpoint, cookieHeader: cookieHeader)
 }
 
-func kbsync(dsid: String) throws -> Data {
+    /// Whether a Store guest is mapped on this signer's engine. The caller uses
+    /// it to avoid running the kbsync generator on an engine that already holds
+    /// store pages, where generation runs past its bound.
+    func hasStoreRuntime() -> Bool {
+        return bridge.hasStoreRuntime()
+    }
+
+    func kbsync(dsid: String) throws -> Data {
         let key = Self.cacheKey(dsid: dsid, guid: hardware.guid)
         if let cached = Self.kbsyncCache.object(forKey: key) {
             return cached as Data
