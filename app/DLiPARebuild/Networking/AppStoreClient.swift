@@ -26,6 +26,29 @@ final class AppStoreClient {
     private let session: URLSession
     private let decoder = PropertyListDecoder()
 
+    /// A Store proof that was just spent successfully, kept for the next request.
+    ///
+    /// The SP challenge produces one proof for one exchange. Minting another for
+    /// the redownload URL fails on the dispatch host (600/601), so the proof that
+    /// got the previous request a 200 is buffered here and spent on the next one.
+    private var bufferedStoreProof: [String: String] = [:]
+
+    /// The download fallback extension lives in its own file, so it reaches this
+    /// one-shot buffer through these methods rather than the private property.
+    func bufferStoreProof(_ proof: [String: String]) {
+        bufferedStoreProof = proof
+    }
+
+    func takeBufferedStoreProof() -> [String: String] {
+        let spent = bufferedStoreProof
+        bufferedStoreProof = [:]
+        return spent
+    }
+
+    func clearBufferedStoreProof() {
+        bufferedStoreProof = [:]
+    }
+
     /// The address Apple redirected the authenticate endpoint to.
     ///
     /// The 2FA retry is a second call to `authenticate`, not a loop inside one
@@ -633,6 +656,8 @@ final class AppStoreClient {
                          account: Account,
                          bag: StoreBag,
                          signer: SAPSigner) async throws -> URL {
+        // One download owns one proof buffer; never spend a previous run's.
+        clearBufferedStoreProof()
         let plist = try await downloadProduct(
             appId: appId, externalVersionId: externalVersionId,
             guid: guid, account: account, bag: bag, signer: signer)

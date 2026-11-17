@@ -72,18 +72,25 @@ extension AppStoreClient {
                 request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }
 
-            // Upstream mints a proof against each request URL before sending
-            // (appstore_download_product.go:272). Run 599 showed the bridge can
-            // fail to mint one for the dispatch host; a proof failure must not
-            // abort the chain, so log it and send this attempt without headers.
-            do {
-                let proof = try AnisetteIdentity.storeProof(endpoint: url.absoluteString, guid: guid)
-                for (key, value) in proof {
+            // Spend the proof that just earned the previous request its 200.
+            // A fresh mint against the dispatch host returned nil on 600/601.
+            let spent = takeBufferedStoreProof()
+            if !spent.isEmpty {
+                for (key, value) in spent {
                     request.setValue(value, forHTTPHeaderField: key)
                 }
-            } catch {
-                AppLog.error("download fallback [" + candidate.label + "] proof failed: "
-                             + error.localizedDescription + "; sending without it", .download)
+                AppLog.info("download fallback [" + candidate.label + "] spent "
+                            + String(spent.count) + " buffered proof headers", .download)
+            } else {
+                do {
+                    let proof = try AnisetteIdentity.storeProof(endpoint: url.absoluteString, guid: guid)
+                    for (key, value) in proof {
+                        request.setValue(value, forHTTPHeaderField: key)
+                    }
+                } catch {
+                    AppLog.error("download fallback [" + candidate.label + "] proof failed: "
+                                 + error.localizedDescription + "; sending without it", .download)
+                }
             }
             request.httpBody = body
 
@@ -147,6 +154,11 @@ extension AppStoreClient {
                    let plist = (try? PropertyListSerialization.propertyList(
                     from: body, options: [], format: nil)) as? [String: Any],
                    plist["songList"] != nil {
+                    // This proof bought the 200. Keep it for the request that
+                    // follows, rather than minting a fresh one for a new URL.
+                    bufferStoreProof(proof)
+                    AppLog.info("download proof buffered "
+                                + String(proof.count) + " headers", .download)
                     return plist
                 }
             } catch {
