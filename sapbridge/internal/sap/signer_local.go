@@ -239,7 +239,25 @@ func (s *Signer) KBSync(ctx context.Context, dsid uint64) ([]byte, error) {
 		return nil, errors.New("kbsync: blob is empty")
 	}
 
+	// A generated blob is the only kind ent/download can use when a store runtime
+	// is already resident: ent_fetch resolves memory/disk only, because running the
+	// generator on an engine with mapped store pages runs past its bound. Seeding
+	// both here means a blob made before sign-in (or by the Gate 0 button) is the
+	// one the later download uses, instead of being thrown away.
+	s.kbsyncBlob, s.kbsyncDSID = blob, dsid
+	storeKBSync(dsid, blob)
+
+	fmt.Fprintf(os.Stderr, "[SAP] kbsync: seeded DSID %d (%d bytes) for ent/download\n",
+		dsid, len(blob))
+
 	return blob, nil
+}
+
+// HasStoreRuntime reports whether a Store guest is currently mapped on this
+// signer's engine. The caller uses it to avoid generating kbsync on an engine
+// that already holds store pages, where the generator runs past its bound.
+func (s *Signer) HasStoreRuntime() bool {
+	return s != nil && s.storeRuntime != nil
 }
 
 func (s *Signer) Close() error {

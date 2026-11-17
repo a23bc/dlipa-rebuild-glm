@@ -222,6 +222,21 @@ func (s *Signer) kbsync(dsid string) ([]byte, error) {
 	return blob, nil
 }
 
+// HasStoreRuntime reports whether the Store guest is mapped on this signer's
+// engine. Swift asks before generating kbsync: the generator must run before
+// any store runtime opens, or it runs past its bound on the busy engine.
+func (s *Signer) HasStoreRuntime() bool {
+	if s == nil || s.inner == nil {
+		return false
+	}
+	// Only the live signer knows; the test double and other implementations need
+	// no opinion, so this stays an optional capability rather than widening
+	// ActionSigner and every fake that satisfies it.
+	probe, ok := s.inner.(interface{ HasStoreRuntime() bool })
+
+	return ok && probe.HasStoreRuntime()
+}
+
 // Hardware returns a copy of the device identity bytes.
 // StoreSmoke opens the Store runtime on this signer's machine and reports how
 // long each half took. It runs on the existing guest rather than creating one,
