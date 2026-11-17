@@ -645,6 +645,13 @@ final class AppStoreClient {
             throw StoreError.failureType("Invalid response", "no songList")
         }
 
+        // Run 599's SP retoken got 812 bytes of songList with no URL and no
+        // failureType. Name the shape and the other keys before the fallback
+        // so an empty answer can be told apart from a URL we fail to parse.
+        let songCount = (songList as? [Any])?.count ?? 1
+        AppLog.info("download songList: " + String(songCount) + " item(s), keys "
+                    + plist.keys.sorted().joined(separator: ","), .download)
+
         let first: [String: Any]?
 
         if let items = songList as? [Any] {

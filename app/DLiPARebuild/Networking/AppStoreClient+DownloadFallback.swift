@@ -59,11 +59,17 @@ extension AppStoreClient {
             }
 
             // Upstream mints a proof against each request URL before sending
-            // (appstore_download_product.go:272). Reuse that shape here rather
-            // than the SP proof from the volume store answer.
-            let proof = try AnisetteIdentity.storeProof(endpoint: url.absoluteString, guid: guid)
-            for (key, value) in proof {
-                request.setValue(value, forHTTPHeaderField: key)
+            // (appstore_download_product.go:272). Run 599 showed the bridge can
+            // fail to mint one for the dispatch host; a proof failure must not
+            // abort the chain, so log it and send this attempt without headers.
+            do {
+                let proof = try AnisetteIdentity.storeProof(endpoint: url.absoluteString, guid: guid)
+                for (key, value) in proof {
+                    request.setValue(value, forHTTPHeaderField: key)
+                }
+            } catch {
+                AppLog.error("download fallback [" + candidate.label + "] proof failed: "
+                             + error.localizedDescription + "; sending without it", .download)
             }
             request.httpBody = body
 
