@@ -88,6 +88,10 @@ func resolveRemoteImage(ctx context.Context) (Bundle, error) {
 		return Bundle{}, err
 	}
 
+	blocks, bytes := remote.Stats()
+	fmt.Fprintf(os.Stderr, "[SAP] assets: %d range requests, %d bytes fetched from the restore image\n",
+		blocks, bytes)
+
 	return bundle, nil
 }
 

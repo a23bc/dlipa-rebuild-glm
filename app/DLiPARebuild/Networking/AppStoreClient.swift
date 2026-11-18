@@ -2338,7 +2338,11 @@ final class AppStoreClient {
     /// Routes sign-in through the Store runtime instead of the hand-built
     /// request. Off by default: the hand-built path is the one that has
     /// reached the application, and this switch exists to compare them.
-    static let nativeAuthenticateKey = "com.a23bc.dliparebuild.nativeAuthenticate"
+    /// A new key so a stale `false` from the old comparison-arm setting cannot
+    /// pin a fresh install to the hand-built login (run 611). Native passed
+    /// device runs 554, 597 and 610; the fallback stays in Diagnostics under
+    /// this key, defaulting on.
+    static let nativeAuthenticateKey = "com.a23bc.dliparebuild.nativeAuthenticateV2"
 
     private static let authenticationRequestAttempts = 3
 

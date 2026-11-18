@@ -16,9 +16,11 @@ const (
 	restoreImageUserAgent = "Mozilla/5.0"
 	// The callers of ReaderAt walk the restore image in small pieces: APFS uses
 	// 4 KiB blocks. One HTTP range request per piece made a fresh install take
-	// about six minutes (610-2). Fetch a whole block per request and serve the
-	// small reads out of it. 8 MiB keeps the request count in the dozens.
-	remoteReadAhead = 8 << 20
+	// about six minutes (610-2). Fetch a modest block per request and serve the
+	// small reads out of it. 256 KiB cuts request count 64x without over-fetching
+	// whole megabytes for the sparse reads the APFS and dyld extractors make;
+	// an 8 MiB block (run 611) fetched far more than it saved.
+	remoteReadAhead = 256 << 10
 )
 
 type remoteFile struct {
@@ -27,9 +29,21 @@ type remoteFile struct {
 	url    string
 	size   int64
 
-	mu         sync.Mutex
-	cache      []byte
-	cacheStart int64
+	mu            sync.Mutex
+	cache         []byte
+	cacheStart    int64
+	blocksFetched int
+	bytesFetched  int64
+}
+
+// Stats reports how much of the restore image was actually fetched. The
+// extractors read sparse extents; this line is the only way to tell a slow
+// network from a block size that fetches too much.
+func (r *remoteFile) Stats() (int, int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.blocksFetched, r.bytesFetched
 }
 
 //nolint:wsl // Request construction and validation are clearer in protocol order.
@@ -143,6 +157,9 @@ func (r *remoteFile) readBlock(start int64, length int) ([]byte, error) {
 		}
 
 		if readErr == nil {
+			r.blocksFetched++
+			r.bytesFetched += int64(len(block))
+
 			return block, nil
 		}
 
