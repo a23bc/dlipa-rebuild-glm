@@ -237,6 +237,21 @@ func (s *Signer) HasStoreRuntime() bool {
 	return ok && probe.HasStoreRuntime()
 }
 
+// CloseStoreRuntime releases just the Store guest on this signer's engine.
+// Swift calls it before generating kbsync on a fresh install, where login has
+// already opened the guest but no blob is cached yet.
+func (s *Signer) CloseStoreRuntime() error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	closer, ok := s.inner.(interface{ CloseStoreRuntime() error })
+	if !ok {
+		return nil
+	}
+
+	return closer.CloseStoreRuntime()
+}
+
 // Hardware returns a copy of the device identity bytes.
 // StoreSmoke opens the Store runtime on this signer's machine and reports how
 // long each half took. It runs on the existing guest rather than creating one,

@@ -210,6 +210,17 @@ func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: St
         return bridge.hasStoreRuntime()
     }
 
+    /// Releases only the Store guest, keeping the signer for logins.
+    func closeStoreRuntime() throws {
+        try bridge.closeStoreRuntime()
+    }
+
+    /// Whether this process already holds a kbsync blob for this account.
+    func hasCachedKBSync(dsid: String) -> Bool {
+        let key = Self.cacheKey(dsid: dsid, guid: hardware.guid)
+        return Self.kbsyncCache.object(forKey: key) != nil
+    }
+
     func kbsync(dsid: String) throws -> Data {
         let key = Self.cacheKey(dsid: dsid, guid: hardware.guid)
         if let cached = Self.kbsyncCache.object(forKey: key) {

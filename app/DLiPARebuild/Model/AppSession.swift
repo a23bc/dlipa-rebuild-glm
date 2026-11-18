@@ -519,9 +519,23 @@ final class AppSession: ObservableObject {
 
         if !account.dsid.isEmpty && !didPreGenerateKBSync {
             didPreGenerateKBSync = true
+            if signer.hasStoreRuntime() && !signer.hasCachedKBSync(dsid: account.dsid) {
+                // A fresh install has no blob on disk and login has already
+                // opened the guest. Release just the guest so the generator can
+                // run on a clean engine; the download opens its own guest after.
+                AppLog.info("closing the store runtime to generate kbsync for a "
+                            + "fresh account", .sap)
+                do {
+                    try signer.closeStoreRuntime()
+                } catch {
+                    AppLog.warn("could not close the store runtime: "
+                                + error.localizedDescription, .sap)
+                }
+            }
+
             if signer.hasStoreRuntime() {
                 AppLog.warn("kbsync pre-generation skipped: the store runtime is "
-                            + "already open on this engine", .sap)
+                            + "still open on this engine", .sap)
             } else {
                 signer.invalidateKBSync(dsid: account.dsid)
                 do {

@@ -260,6 +260,29 @@ func (s *Signer) HasStoreRuntime() bool {
 	return s != nil && s.storeRuntime != nil
 }
 
+// CloseStoreRuntime releases just the Store guest, leaving the SAP machine and
+// its signer intact. A fresh install has no kbsync on disk and login opens the
+// guest before the account DSID is known; closing it lets the generator run on
+// a clean engine, after which the download opens a new guest.
+func (s *Signer) CloseStoreRuntime() error {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.storeRuntime == nil {
+		return nil
+	}
+
+	err := s.storeRuntime.Close()
+	s.storeRuntime = nil
+	s.storeRuntimeDSID = 0
+
+	return err
+}
+
 func (s *Signer) Close() error {
 	if s == nil {
 		return nil
