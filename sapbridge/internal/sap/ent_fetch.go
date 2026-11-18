@@ -217,7 +217,8 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 		if !cached {
 			return EntDownloadResult{}, fmt.Errorf(
 				"ent download: no cached kbsync for DSID %d while its store session is open; "+
-					"restart the app and download once with this account to generate one",
+					"restart the app once after sign-in so kbsync can be generated before "+
+					"the store runtime opens, then download again",
 				dsid)
 		}
 
