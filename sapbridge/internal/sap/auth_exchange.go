@@ -112,26 +112,28 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	engine := s.machine.Engine()
-	if engine == nil {
-		return AuthenticateResult{}, errors.New("authenticate: machine has no engine")
-	}
-
 	prepared, err := profile.Load(ctx)
 	if err != nil {
 		return AuthenticateResult{}, fmt.Errorf("authenticate: load profile: %w", err)
 	}
 
-	// The reference mints the proof with storeauth.StoreAMDHeaders on its own
-	// runtime and keeps that returned state (appstore_native_login.go). That
-	// state is the portable one; the same-runtime proof's ADI state was nil for
-	// the download hours later (583). The request's guest opens after the proof
-	// and its session is now registered by class (508ed10), so the earlier
-	// setUseFallbackBag failure does not come back.
+	// Run the entire exchange -- proof and request -- on one standalone guest,
+	// then close it before returning. The shared machine's engine stays free for
+	// kbsync generation after sign-in: run 615 showed a resident store guest
+	// makes StoreAgent global init return -42306, and run 614 showed the
+	// download cannot start without that blob on a fresh install.
+	runtime, err := emulator.Open(ctx, image, prepared)
+	if err != nil {
+		return AuthenticateResult{}, fmt.Errorf("authenticate: open runtime: %w", err)
+	}
+	defer func() { _ = runtime.Close() }()
+
+	// The proof must be minted on the same guest that sends the request (549/552).
+	// The returned state is the portable one the download needs later.
 	var anisetteState []byte
 
 	if input.StoreProof {
-		proof, next, proofErr := storeauth.StoreAMDHeaders(ctx, input.AnisetteState,
+		proof, next, proofErr := storeauth.StoreAMDHeadersIn(ctx, runtime, input.AnisetteState,
 			input.StoreEndpoint, hardware)
 		if proofErr != nil {
 			return AuthenticateResult{}, fmt.Errorf("authenticate: store proof: %w", proofErr)
@@ -140,20 +142,6 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 		input.ExtraHeaders = proof
 		input.IdentityMode = "store"
 		anisetteState = next
-	}
-
-	runtime := s.storeRuntime
-	if runtime == nil {
-		if strings.EqualFold(input.IdentityMode, "store") {
-			runtime, err = emulator.OpenWithEngineAtReset(ctx, engine, image, prepared, s.machine.HeapUsed())
-		} else {
-			runtime, err = emulator.OpenWithEngineAt(ctx, engine, image, prepared, s.machine.HeapUsed())
-		}
-		if err != nil {
-			return AuthenticateResult{}, fmt.Errorf("authenticate: open runtime: %w", err)
-		}
-
-		s.storeRuntime = runtime
 	}
 
 	session, account, prepErr := runtime.PrepareAuthenticate()
