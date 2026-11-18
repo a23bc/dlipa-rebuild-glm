@@ -325,8 +325,14 @@ func (s *Signer) entDownload(image []byte, input EntDownloadInput) (EntDownloadR
 	// The reference's ent request carries the Store proof too
 	// (appstore_kbsync.go: sendEntDownloadRequest calls storeAMDProof). Without
 	// it the framework rejects the response inside the guest (576).
+	//
+	// Mint it on the runtime that will send this request. Run 609 hung in the
+	// second engine's open() after "bag slot after images" while the first
+	// runtime was resident and RSS was ~823 MB. Proof and request sharing one
+	// guest is also the shape the sign-in path requires, and it costs no extra
+	// engine.
 	if len(input.AnisetteState) != 0 {
-		proof, _, proofErr := storeauth.StoreAMDHeaders(context.Background(), input.AnisetteState, endpoint, s.hardware)
+		proof, _, proofErr := storeauth.StoreAMDHeadersIn(ctx, runtime, input.AnisetteState, endpoint, s.hardware)
 		if proofErr != nil {
 			return EntDownloadResult{}, fmt.Errorf("ent download: store proof: %w", proofErr)
 		}
