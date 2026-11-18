@@ -195,7 +195,13 @@ final class AppStoreClient {
                       endpoint: String,
                       signer: SAPSigner,
                       attempt: Int = 1) async throws -> Account {
-        if UserDefaults.standard.bool(forKey: Self.nativeAuthenticateKey) {
+        // @AppStorage registers its default only when DiagnosticsView is built.
+        // A fresh install that signs in before opening that tab has no value for
+        // this key, and bool(forKey:) returns false for a missing key -- which
+        // silently selected the hand-built login in runs 611 and 613. Treat a
+        // missing value as the shipping default instead.
+        let nativeEnabled = UserDefaults.standard.object(forKey: Self.nativeAuthenticateKey) as? Bool ?? true
+        if nativeEnabled {
             // The code request is the same call as the password one upstream:
             // the Store proof and state carry over, with no fresh anisette.
             if !(authCode ?? "").isEmpty, let state = Keychain.anisetteState() {
