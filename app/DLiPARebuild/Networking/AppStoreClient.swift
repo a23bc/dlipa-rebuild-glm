@@ -184,9 +184,10 @@ final class AppStoreClient {
 
     /// Signs in.
     ///
-    /// The switch chooses the Store-runtime exchange or the hand-built
-    /// request. Both return the same account; the hand-built one stays the
-    /// shipping path until the native one passes a device run.
+    /// The switch chooses the Store-runtime exchange or the hand-built request.
+    /// Native is the default: it passed device runs 554, 597 and 610, while the
+    /// hand-built fallback got 204/403/500 on a fresh install (610-2). The
+    /// fallback stays for comparison, not as the shipping path.
     func authenticate(email: String,
                       password: String,
                       authCode: String?,

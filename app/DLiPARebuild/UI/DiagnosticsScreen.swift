@@ -89,7 +89,7 @@ struct DiagnosticsScreen: View {
     /// Routes sign-in through the Store runtime instead of the hand-built
     /// request. Off by default: it is the comparison arm, not the shipping
     /// path, until a device run says otherwise.
-    @AppStorage(AppStoreClient.nativeAuthenticateKey) private var nativeAuthenticate = false
+    @AppStorage(AppStoreClient.nativeAuthenticateKey) private var nativeAuthenticate = true
     // The tail as entries rather than as one joined string: the rows are laid
     // out lazily now, so the cost is what fits on screen, not what fits in the
     // window.

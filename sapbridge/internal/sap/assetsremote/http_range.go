@@ -8,11 +8,17 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
 	remoteReadAttempts    = 3
 	restoreImageUserAgent = "Mozilla/5.0"
+	// The callers of ReaderAt walk the restore image in small pieces: APFS uses
+	// 4 KiB blocks. One HTTP range request per piece made a fresh install take
+	// about six minutes (610-2). Fetch a whole block per request and serve the
+	// small reads out of it. 8 MiB keeps the request count in the dozens.
+	remoteReadAhead = 8 << 20
 )
 
 type remoteFile struct {
@@ -20,6 +26,10 @@ type remoteFile struct {
 	client *http.Client
 	url    string
 	size   int64
+
+	mu         sync.Mutex
+	cache      []byte
+	cacheStart int64
 }
 
 //nolint:wsl // Request construction and validation are clearer in protocol order.
@@ -82,7 +92,66 @@ func parseContentRange(value string) (int64, int64, int64, error) {
 	return start, end, size, nil
 }
 
+// readBlock fetches one aligned block. It keeps the three attempts and the
+// strict Content-Range check of the original per-read request.
+//
 //nolint:wsl // Range request validation is clearer in protocol order.
+func (r *remoteFile) readBlock(start int64, length int) ([]byte, error) {
+	end := start + int64(length) - 1
+	if end >= r.size {
+		end = r.size - 1
+	}
+
+	var lastErr error
+
+	for attempt := 0; attempt < remoteReadAttempts; attempt++ {
+		request, err := http.NewRequestWithContext(r.ctx, http.MethodGet, r.url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create remote range request: %w", err)
+		}
+
+		request.Header.Set("User-Agent", restoreImageUserAgent)
+		request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+		response, err := r.client.Do(request)
+		if err != nil {
+			lastErr = err
+
+			continue
+		}
+
+		if response.StatusCode != http.StatusPartialContent {
+			response.Body.Close()
+
+			return nil, fmt.Errorf("read remote image range: server returned %s", response.Status)
+		}
+		actualStart, actualEnd, actualSize, err := parseContentRange(response.Header.Get("Content-Range"))
+
+		if err != nil || actualStart != start || actualEnd != end || actualSize != r.size {
+			response.Body.Close()
+			if err != nil {
+				return nil, fmt.Errorf("read remote image range: %w", err)
+			}
+
+			return nil, fmt.Errorf("read remote image range: server returned bytes %d-%d/%d, expected %d-%d/%d", actualStart, actualEnd, actualSize, start, end, r.size)
+		}
+
+		block := make([]byte, int(end-start+1))
+		_, readErr := io.ReadFull(response.Body, block)
+		closeErr := response.Body.Close()
+		if readErr == nil && closeErr != nil {
+			readErr = closeErr
+		}
+
+		if readErr == nil {
+			return block, nil
+		}
+
+		lastErr = readErr
+	}
+
+	return nil, fmt.Errorf("read remote block at %d: %w", start, lastErr)
+}
+
 func (r *remoteFile) ReadAt(data []byte, offset int64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
@@ -101,63 +170,34 @@ func (r *remoteFile) ReadAt(data []byte, offset int64) (int, error) {
 		wanted = int(remaining)
 	}
 
+	// The cache belongs to this file; guard it so concurrent ReaderAt callers
+	// cannot see a half-filled block.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	total := 0
 
-	var lastErr error
+	for total < wanted {
+		position := offset + int64(total)
+		inBlock := position - r.cacheStart
 
-	for attempt := 0; attempt < remoteReadAttempts && total < wanted; attempt++ {
-		start := offset + int64(total)
-		end := offset + int64(wanted) - 1
-
-		request, err := http.NewRequestWithContext(r.ctx, http.MethodGet, r.url, nil)
-		if err != nil {
-			return total, fmt.Errorf("create remote range request: %w", err)
-		}
-
-		request.Header.Set("User-Agent", restoreImageUserAgent)
-		request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-		response, err := r.client.Do(request)
-		if err != nil {
-			lastErr = err
-
-			continue
-		}
-
-		if response.StatusCode != http.StatusPartialContent {
-			response.Body.Close()
-
-			return total, fmt.Errorf("read remote image range: server returned %s", response.Status)
-		}
-		actualStart, actualEnd, actualSize, err := parseContentRange(response.Header.Get("Content-Range"))
-
-		if err != nil || actualStart != start || actualEnd != end || actualSize != r.size {
-			response.Body.Close()
+		if r.cache == nil || inBlock < 0 || inBlock >= int64(len(r.cache)) {
+			start := (position / remoteReadAhead) * remoteReadAhead
+			block, err := r.readBlock(start, remoteReadAhead)
 			if err != nil {
-				return total, fmt.Errorf("read remote image range: %w", err)
+				return total, fmt.Errorf("read remote image at offset %d: %w", position, err)
 			}
 
-			return total, fmt.Errorf("read remote image range: server returned bytes %d-%d/%d, expected %d-%d/%d", actualStart, actualEnd, actualSize, start, end, r.size)
+			r.cache, r.cacheStart = block, start
+			inBlock = position - r.cacheStart
 		}
 
-		count, readErr := io.ReadFull(response.Body, data[total:wanted])
-		closeErr := response.Body.Close()
+		count := copy(data[total:wanted], r.cache[inBlock:])
+		if count == 0 {
+			return total, io.ErrUnexpectedEOF
+		}
+
 		total += count
-
-		if readErr == nil {
-			lastErr = closeErr
-
-			break
-		}
-
-		lastErr = readErr
-	}
-
-	if total != wanted {
-		if lastErr == nil {
-			lastErr = io.ErrUnexpectedEOF
-		}
-
-		return total, fmt.Errorf("read remote image at offset %d: %w", offset+int64(total), lastErr)
 	}
 
 	if wanted != len(data) {
