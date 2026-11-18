@@ -181,6 +181,23 @@ func (s *Signer) signatureHeaderValue(body []byte) (string, error) {
 // per account and device, so callers should cache it: generating one runs the
 // emulated Apple binaries and takes seconds.
 func (s *Signer) GenerateKBSync(dsid string) (blob []byte, err error) {
+	// A blob already on disk is the one to use. Generating another one in the
+	// same process leaves the machine unable to produce a Store proof: run 616
+	// regenerated despite a cached blob and ent failed with no Store AMD proof,
+	// while run 610 reused the disk blob and downloaded successfully.
+	if numeric, parseErr := parseDSID(dsid); parseErr == nil && s != nil && s.inner != nil {
+		if cached, ok := s.inner.(interface {
+			CachedKBSync(uint64) ([]byte, bool)
+		}); ok {
+			if existing, found := cached.CachedKBSync(numeric); found {
+				fmt.Fprintf(os.Stderr, "[SAP] kbsync: using cached blob for DSID %d (%d bytes)\n",
+					numeric, len(existing))
+
+				return existing, nil
+			}
+		}
+	}
+
 	err = runRecovered("KBSync", func() error {
 		var innerErr error
 		blob, innerErr = s.kbsync(dsid)

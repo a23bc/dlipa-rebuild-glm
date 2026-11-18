@@ -260,6 +260,17 @@ func (s *Signer) HasStoreRuntime() bool {
 	return s != nil && s.storeRuntime != nil
 }
 
+// CachedKBSync exposes the memory-or-disk lookup to the bridge. A caller that
+// pre-generates must reuse an accepted blob instead of making another one: run
+// 616 regenerated despite a cached blob, and the Store proof failed afterwards.
+func (s *Signer) CachedKBSync(dsid uint64) ([]byte, bool) {
+	if s == nil {
+		return nil, false
+	}
+
+	return s.cachedKBSync(dsid)
+}
+
 // CloseStoreRuntime releases just the Store guest, leaving the SAP machine and
 // its signer intact. A fresh install has no kbsync on disk and login opens the
 // guest before the account DSID is known; closing it lets the generator run on
