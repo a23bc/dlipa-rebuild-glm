@@ -307,7 +307,20 @@ func (r *Runtime) swiftSymbol(name string) bool {
 	case "swift_allocError":
 		metadata, witness, source := r.arg(0), r.arg(1), r.arg(2)
 
-		size := r.read64(r.read64(metadata-8) + 64)
+		// 598's ent encode hit this with a null type descriptor, and read64(0x40)
+		// panicked with UC_ERR_READ_UNMAPPED. The source is also null there, so
+		// no payload needs copying: an empty error box keeps the guest's error
+		// path running instead of aborting the whole encode.
+		var descriptor uint64
+		if metadata != 0 {
+			descriptor = r.read64(metadata - 8)
+		}
+
+		size := uint64(0)
+		if descriptor != 0 {
+			size = r.read64(descriptor + 64)
+		}
+
 		if size > 1<<20 {
 			panic("Swift error exceeds budget")
 		}

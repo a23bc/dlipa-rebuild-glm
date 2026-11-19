@@ -98,8 +98,8 @@ enum SAPSelfTest {
                 emit("SELF TEST PASSED")
             } catch {
                 emit("FAILED: \(error.localizedDescription)")
-                let ns = error as NSError
-                emit("  domain=\(ns.domain) code=\(ns.code)")
+                let nsError = error as NSError
+                emit("  domain=\(nsError.domain) code=\(nsError.code)")
             }
         }
     }

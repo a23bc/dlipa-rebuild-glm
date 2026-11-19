@@ -12,6 +12,9 @@ struct StoreBag {
     var volumeStoreDownloadProduct: String?
     var redownloadProduct: String?
     var updateProduct: String?
+    /// ipadn's recovery endpoint when ent/download returns no items. The bag
+    /// carries it alongside redownloadProduct and updateProduct.
+    var backgroundUpdateProduct: String?
     /// The endpoint that binds this device to the account. authenticate only
     /// proves the password; the store session is what this one establishes.
     var authorizeMachine: String?
@@ -115,6 +118,7 @@ struct StoreBag {
         result.volumeStoreDownloadProduct = lookup(bag, bagDict, "volumeStoreDownloadProduct")
         result.redownloadProduct = lookup(bag, bagDict, "redownloadProduct")
         result.updateProduct = lookup(bag, bagDict, "updateProduct")
+        result.backgroundUpdateProduct = lookup(bag, bagDict, "backgroundUpdateProduct")
         result.buyProduct = lookup(bag, bagDict, "buyProduct")
         result.authorizeMachine = lookup(bag, bagDict, "authorizeMachine")
         result.signSapVersion = Int32(lookup(bag, bagDict, "sign-sap-version") ?? "") ?? 0
@@ -241,6 +245,11 @@ enum StoreError: LocalizedError {
     case httpError(Int, String)
     case failureType(String, String)
     case twoFactorRequired
+    /// A verification code was sent and the front end never handed the request
+    /// to the store, so nothing was checked -- not the code, not the password.
+    /// The distinction is the whole point of the message: this needs a *newer*
+    /// code, not a corrected one.
+    case codeUnseen(Int)
     /// The bag, or a redirect, pointed at somewhere credentials may not go.
     case untrustedEndpoint(String)
     /// Signing needs the four Apple binaries, this build carries none, and
@@ -271,6 +280,8 @@ enum StoreError: LocalizedError {
             return NSLocalizedString(key, value: message, comment: "Apple failure type with message")
         case .twoFactorRequired:
             return NSLocalizedString("alert_2f_auth_message", comment: "2FA required")
+        case .codeUnseen:
+            return "Apple never saw that code. Enter the newest one and try again."
         }
     }
 
@@ -305,6 +316,8 @@ enum StoreError: LocalizedError {
             return type + (message.isEmpty ? "" : ": \(message)")
         case .twoFactorRequired:
             return "Apple requires 2FA verification code"
+        case .codeUnseen(let status):
+            return "the verification code was refused by the edge at HTTP \(status)"
         case .untrustedEndpoint(let url):
             return "refusing a request to " + url
         case .assetsNotFetched:

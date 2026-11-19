@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assets"
 )
@@ -212,13 +214,38 @@ func GenerateKBSyncOn(ctx context.Context, m *Machine, hardwareID []byte, dsid u
 		return nil, err
 	}
 
-	global, err := m.initializeStoreAgentGlobal(hardware)
+	total := time.Now()
+
+	var global uint32
+
+	if err := m.kbsyncStep("storeagent global init", func() error {
+		var err error
+		global, err = m.initializeStoreAgentGlobal(hardware)
+
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		_ = m.kbsyncStep("storeagent global close", func() error {
+			return m.closeStoreAgentGlobal(global)
+		})
+	}()
+
+	blob, err := m.kbsyncBytes("generate", func() ([]byte, error) {
+		return m.generateKBSync(m.storeAgent.kbsync, global, dsid)
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = m.closeStoreAgentGlobal(global) }()
 
-	return m.generateKBSync(m.storeAgent.kbsync, global, dsid)
+	// The two steps above are the generation; the close is deferred, so it stamps
+	// after this line rather than before it.
+	fmt.Fprintf(os.Stderr, "[SAP] kbsync: DSID %d generated %d bytes in %s (init and generate)\n",
+		dsid, len(blob), time.Since(total).Round(time.Millisecond))
+
+	return blob, nil
 }
 
 func (s *StoreAgent) initializeSession(globalContext uint32, dpInfo []byte) (uint64, error) {

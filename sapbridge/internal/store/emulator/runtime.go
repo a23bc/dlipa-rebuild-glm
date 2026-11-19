@@ -175,6 +175,7 @@ type Runtime struct {
 	callbacks                   map[uint64]func()
 	pending                     []uint64
 	hardwareID                  []byte
+	xpcSyncHandler              func(string, []byte) ([]byte, error)
 	engine                      *unicorn.Engine
 	ownsEngine                  bool
 	profile                     Profile
@@ -232,7 +233,7 @@ type Runtime struct {
 }
 
 func Open(ctx context.Context, imageData []byte, prepared storeprofile.Data) (*Runtime, error) {
-	return open(ctx, nil, imageData, prepared, 0, false)
+	return open(ctx, nil, imageData, prepared, 0, false, false)
 }
 
 // OpenWithEngine builds the runtime on top of an engine that already exists.
@@ -246,7 +247,7 @@ func OpenWithEngine(ctx context.Context, engine *unicorn.Engine, imageData []byt
 		return nil, errors.New("emulator engine is nil")
 	}
 
-	return open(ctx, engine, imageData, prepared, 0, false)
+	return open(ctx, engine, imageData, prepared, 0, false, false)
 }
 
 // OpenWithEngineAt is OpenWithEngine for an engine whose heap already belongs to
@@ -290,12 +291,23 @@ func OpenWithEngineAt(ctx context.Context, engine *unicorn.Engine, imageData []b
 		return nil, errors.New("emulator engine is nil")
 	}
 
-	return open(ctx, engine, imageData, prepared, heapUsed, false)
+	return open(ctx, engine, imageData, prepared, heapUsed, false, false)
+}
+
+// OpenWithEngineAtReset is OpenWithEngineAt with the profile pages rewritten
+// even when the engine already holds a non-zero page. Only the store-proof
+// request needs that; every other caller keeps the existing pages.
+func OpenWithEngineAtReset(ctx context.Context, engine *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64) (*Runtime, error) {
+	if engine == nil {
+		return nil, errors.New("emulator engine is nil")
+	}
+
+	return open(ctx, engine, imageData, prepared, heapUsed, false, true)
 }
 
 // open optionally guards accesses against the exported page set. Validation and
 // production use the same grouped mappings to stay within Unicorn section limits.
-func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64, strict bool) (*Runtime, error) {
+func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepared storeprofile.Data, heapUsed uint64, strict, resetProfile bool) (*Runtime, error) {
 	// Phases are timed here rather than inferred from log timestamps: stderr is
 	// drained in batches, so two lines a second apart on the clock can arrive
 	// forty seconds apart, and every attribution made from those gaps was wrong.
@@ -741,7 +753,7 @@ func open(ctx context.Context, provided *unicorn.Engine, imageData []byte, prepa
 		timeProbe += time.Since(mark)
 		probeCalls++
 
-		if mapped {
+		if mapped && !resetProfile {
 			// Read a chunk and answer for the pages inside it. One uc_mem_read
 			// per page was 3,300 cross-cgo calls on device -- the same cost the
 			// page-at-a-time mapping had, one layer down.
@@ -1017,6 +1029,8 @@ func methodKey(class, selector string, meta bool) string {
 	return prefix + "[" + class + " " + selector + "]"
 }
 func (r *Runtime) Close() error {
+	// The Go runtime object outlives the guest: pointers cached for the guest
+	// are meaningless after this call and must not be reused by the next open.
 	if r.engine == nil {
 		return nil
 	}
@@ -1079,8 +1093,9 @@ func (r *Runtime) Close() error {
 	fmt.Fprintf(os.Stderr, "[SAP] close(): left %d pages mapped (%d its own, %d recognised as the machine's)\n",
 		len(r.pages), owned, shared)
 
-	clear(r.entries)
-	clear(r.calls)
+	// entries and calls belong to the immutable metadata template and are shared
+	// by every runtime. Clearing them here leaves later runtimes with patched
+	// call sites but no host dispatch (596).
 	r.codeRanges = nil
 
 	// Guest objects live for one request. Release their host references on close.
@@ -1416,7 +1431,24 @@ func allZero(data []byte) bool {
 	return true
 }
 
+// className names the object or class at an address, for diagnostics.
+func (r *Runtime) className(address uint64) string {
+	if address == 0 {
+		return "nil"
+	}
+
+	if obj := r.objects[address]; obj != nil {
+		return obj.Class
+	}
+
+	return r.classNames[r.read64(address)]
+}
+
 func (r *Runtime) read64(address uint64) uint64 {
+	if _, ok := r.lazyPages[address&^uint64(4095)]; ok {
+		r.mapLazyPage(address, 8, true)
+	}
+
 	b, e := r.engine.MemRead(address, 8)
 	if e != nil {
 		panic(fmt.Sprintf("read guest pointer %#x: %v", address, e))
@@ -1518,6 +1550,10 @@ func (r *Runtime) cstring(address uint64) string {
 		return ""
 	}
 
+	if _, ok := r.lazyPages[address&^uint64(4095)]; ok {
+		r.mapLazyPage(address, 1, true)
+	}
+
 	if value, ok := r.selectors[address]; ok {
 		return value
 	}
@@ -1610,6 +1646,7 @@ func (r *Runtime) String(address uint64) string {
 
 	return value
 }
+
 func (r *Runtime) lookup(class, selector string, meta bool) uint64 {
 	for class != "" {
 		if address := r.methods[methodKey(class, selector, meta)]; address != 0 {
@@ -1636,13 +1673,34 @@ func (r *Runtime) Invoke(object uint64, selector string, args ...uint64) (result
 	}()
 
 	class, meta := r.classNames[object]
+	if class == "" && object != 0 {
+		// A class cluster can hand back an object whose isa is a dynamic
+		// subclass (KVO or a proxy) the host never saw. Walk the superclass
+		// chain to the first class the image named and dispatch as an instance.
+		isa := r.read64(object)
+		for depth := 0; depth < 8 && isa != 0; depth++ {
+			name, ok := r.classNames[isa]
+
+			if ok {
+				class, meta = name, false
+
+				break
+			}
+
+			isa = r.read64(isa + 8)
+		}
+	}
 	if !meta {
 		obj := r.objects[object]
-		if obj == nil {
+
+		if obj != nil {
+			class = obj.Class
+		} else if class == "" {
+			// The walk above may have found the isa's class even though the host
+			// never created the object (a guest constant, a class cluster value).
+			// Use that class; only a receiver with no known class is unknown.
 			return 0, fmt.Errorf("unknown receiver %#x for %s", object, selector)
 		}
-
-		class = obj.Class
 	}
 
 	entry := r.lookup(class, selector, meta)
@@ -2024,7 +2082,55 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 
 	obj := r.objects[address]
 	if obj == nil {
-		return nil, fmt.Errorf("unknown exported object %#x", address)
+		// A class object exports as its name; the auth parameters carry the
+		// dictionary class itself as one value (592).
+		if name, ok := r.classNames[address]; ok {
+			return name, nil
+		}
+
+		// A guest object (a constant string, a class cluster value) has no host
+		// entry. Read the ones whose value is meaningful to the caller.
+		isa := r.read64(address)
+		class := r.classNames[isa]
+
+		if strings.Contains(class, "String") {
+			if utf8, err := r.Invoke(address, "UTF8String"); err == nil && utf8 != 0 {
+				return r.cstring(utf8), nil
+			}
+		}
+
+		var exportErr error
+
+		if strings.Contains(class, "Dictionary") {
+			fields, err := r.exportGuestDictionary(address)
+			if err == nil {
+				return fields, nil
+			}
+
+			exportErr = err
+		}
+
+		if strings.Contains(class, "Array") {
+			items, err := r.exportGuestArray(address)
+			if err == nil {
+				return items, nil
+			}
+
+			exportErr = err
+		}
+
+		if strings.Contains(class, "Number") {
+			number, err := r.Invoke(address, "doubleValue")
+			if err == nil {
+				return float64(number), nil
+			}
+
+			exportErr = err
+		}
+
+		// The first word is zero, so this is not an object header. Show the
+		// first words and the text, which tells a C string from a scalar.
+		return nil, fmt.Errorf("unknown exported object %#x (isa %#x, class %q, export %v, w0 %#x w1 %#x w2 %#x text %q)", address, isa, class, exportErr, r.read64(address), r.read64(address+8), r.read64(address+16), r.cstring(address))
 	}
 
 	active[address] = true
@@ -2060,6 +2166,74 @@ func (r *Runtime) export(address uint64, active map[uint64]bool, depth int) (any
 	default:
 		return v, nil
 	}
+}
+
+// exportGuestDictionary reads a dictionary the host never created through the
+// guest's own accessors. The auth task returns one of these, not a host value.
+func (r *Runtime) exportGuestDictionary(address uint64) (map[string]any, error) {
+	count, err := r.Invoke(address, "count")
+	if err != nil {
+		return nil, err
+	}
+
+	keys, err := r.Invoke(address, "allKeys")
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]any, count)
+
+	for i := uint64(0); i < count; i++ {
+		key, e := r.Invoke(keys, "objectAtIndex:", i)
+		if e != nil {
+			return nil, e
+		}
+
+		keyValue, e := r.Export(key)
+		if e != nil {
+			return nil, e
+		}
+
+		value, e := r.Invoke(address, "objectForKey:", key)
+		if e != nil {
+			return nil, e
+		}
+
+		exported, e := r.Export(value)
+		if e != nil {
+			return nil, e
+		}
+
+		result[fmt.Sprint(keyValue)] = exported
+	}
+
+	return result, nil
+}
+
+// exportGuestArray is the array counterpart of exportGuestDictionary.
+func (r *Runtime) exportGuestArray(address uint64) ([]any, error) {
+	count, err := r.Invoke(address, "count")
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]any, 0, count)
+
+	for i := uint64(0); i < count; i++ {
+		item, e := r.Invoke(address, "objectAtIndex:", i)
+		if e != nil {
+			return nil, e
+		}
+
+		exported, e := r.Export(item)
+		if e != nil {
+			return nil, e
+		}
+
+		result = append(result, exported)
+	}
+
+	return result, nil
 }
 
 func (r *Runtime) queuePending(block, queue uint64) {

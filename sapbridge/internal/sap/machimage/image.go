@@ -435,6 +435,89 @@ func (i *Image) PreparePrelinked(external map[uint64]string, resolve func(string
 	return nil
 }
 
+// RelocateKernelCachePointers decodes authenticated pointers embedded in an
+// executable extracted from a kernel collection. These are already fixed up
+// for the collection and are not described by the image's standalone Mach-O
+// bind/rebase streams -- so a kernel image needs this pass on top of Relocate,
+// and the stride is 4 bytes rather than 8 because that is how the collection
+// packs them.
+func (i *Image) RelocateKernelCachePointers(loadBase, kernelBase uint64, resolve func(string) (uint64, error)) error {
+	externalSymbols := make(map[uint64]string)
+
+	if i.file.Symtab != nil {
+		for _, symbol := range i.file.Symtab.Syms {
+			if symbol.Value == 0 || i.containsAddress(symbol.Value) {
+				continue
+			}
+
+			externalSymbols[symbol.Value] = symbol.Name
+		}
+	}
+
+	for _, item := range i.segments {
+		if item.name == "__TEXT" || item.name == "__TEXT_EXEC" || item.name == "__LINKEDIT" || item.fileSize < pointerSize {
+			continue
+		}
+
+		const kernelFixupStride = uint64(4)
+
+		start := item.fileOff
+		if remainder := item.address % kernelFixupStride; remainder != 0 {
+			start += kernelFixupStride - remainder
+		}
+
+		end := item.fileOff + item.fileSize
+		for offset := start; offset <= end-pointerSize; offset += kernelFixupStride {
+			raw := binary.LittleEndian.Uint64(i.data[offset : offset+pointerSize])
+
+			pointer := fixupchains.DyldChainedPtr64KernelCacheRebase{Pointer: raw}
+			if pointer.CacheLevel() != 0 || pointer.Target() == 0 {
+				continue
+			}
+
+			original, overflow := add(kernelBase, pointer.Target())
+			if overflow {
+				continue
+			}
+
+			var relocated uint64
+			if i.containsAddress(original) {
+				relocated, overflow = add(loadBase, original-i.base)
+				if overflow {
+					return fmt.Errorf("kernel-cache pointer at %#x overflows in %s", offset, i.name)
+				}
+			} else if name, ok := externalSymbols[original]; ok {
+				var err error
+
+				relocated, err = resolve(name)
+				if err != nil {
+					return fmt.Errorf("resolve kernel-cache pointer %s at %#x in %s: %w", name, offset, i.name, err)
+				}
+			} else {
+				continue
+			}
+
+			if err := i.putPointer(offset, relocated); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// containsAddress answers whether an address falls inside one of this image's
+// segments, which is how a fixup target is told between internal and external.
+func (i *Image) containsAddress(address uint64) bool {
+	for _, item := range i.segments {
+		if address >= item.address && address-item.address < item.size {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (i *Image) Load(memory Memory) error {
 	if !i.relocated {
 		return fmt.Errorf("%s must be relocated before loading", i.name)

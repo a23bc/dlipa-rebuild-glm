@@ -85,6 +85,11 @@ struct DiagnosticsScreen: View {
     /// mean, with the numbers they produced, is in `docs/diagnostics.md`.
     static let mappingCensusKey = "com.a23bc.dliparebuild.mappingCensus"
     @AppStorage(mappingCensusKey) private var mappingCensus = false
+
+    /// Routes sign-in through the Store runtime instead of the hand-built
+    /// request. On by default: it passed device runs 554, 597 and 610; the
+    /// hand-built request only serves as the comparison arm here.
+    @AppStorage(AppStoreClient.nativeAuthenticateKey) private var nativeAuthenticate = true
     // The tail as entries rather than as one joined string: the rows are laid
     // out lazily now, so the cost is what fits on screen, not what fits in the
     // window.
@@ -115,12 +120,18 @@ struct DiagnosticsScreen: View {
                         Toggle("Log the mapping measurements (next launch)",
                                isOn: $mappingCensus)
                             .onChange(of: mappingCensus) { _ in refresh() }
+                        Toggle("Authenticate through the Store runtime",
+                               isOn: $nativeAuthenticate)
+                            .onChange(of: nativeAuthenticate) { _ in refresh() }
                     }
 
                     Section {
                         Button("Run SAP self test") { runSAP() }
                             .disabled(running)
                         Button("Run framework probe") { runFrameworkProbe() }
+                            .disabled(running)
+                        Button("Probe anisette daemon") { probeAnisetteDaemon() }
+                        Button("Probe anisette identity") { probeAnisetteIdentity() }
                             .disabled(running)
                         Button("Generate kbsync (Gate 0)") { runKBSync() }
                             .disabled(running)
@@ -288,6 +299,33 @@ struct DiagnosticsScreen: View {
             FrameworkProbe.run()
             AppLog.info("framework probe finished", .app)
             running = false
+        }
+    }
+
+    /// Provisions and proves a machine identity through the ported runtime.
+    /// This is the device gate before any sign-in is attempted.
+    private func probeAnisetteIdentity() {
+        running = true
+        started = Date()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let headers = try AnisetteIdentity.headers()
+                AppLog.info("anisette identity probe finished: "
+                            + String(headers.count) + " headers", .sap)
+            } catch {
+                AppLog.error("anisette identity probe failed: "
+                             + error.localizedDescription, .sap)
+            }
+            DispatchQueue.main.async { running = false }
+        }
+    }
+
+    /// Asks AuthKit's daemon for anisette data. This is the route the earlier
+    /// probe left untested: the classes were enumerated, never called.
+    private func probeAnisetteDaemon() {
+        AppLog.info("anisette daemon probe: start", .sap)
+        DLPAProbeAnisetteDaemon { message in
+            AppLog.info("anisette daemon probe: " + message, .sap)
         }
     }
 

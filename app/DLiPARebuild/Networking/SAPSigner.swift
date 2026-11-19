@@ -173,17 +173,55 @@ final class SAPSigner {
 /// is the only construction Apple's endpoint accepted.
 func entDownload(dsid: String, token: String, storefront: String, endpoint: String,
                  cookieHeader: String, appID: Int64, externalVersionID: String,
-                 purpose: String) throws -> String {
+                 purpose: String, anisetteState: String) throws -> String {
     try bridge.entDownload(dsid, token: token, storefront: storefront, endpoint: endpoint,
                            cookieHeader: cookieHeader, appID: appID,
-                           externalVersionID: externalVersionID, purpose: purpose)
+                           externalVersionID: externalVersionID, purpose: purpose,
+                           anisetteState: anisetteState)
+}
+
+/// One authenticate exchange through the Store runtime.
+///
+/// The Go side builds the request with Apple's AMSVerifyCredentialsTask, sends
+/// it once and returns status, headers and body as JSON. No retry and no
+/// redirect: the caller decides both.
+func authenticateOnce(json: String) throws -> String {
+    // Nullable return plus NSError** imports as a throwing, non-optional call:
+    // the nil case is folded into the error, the same shape as entDownload.
+    let value = try bridge.authenticateOnce(json)
+
+    guard !value.isEmpty else {
+        throw NSError(domain: "SAPSigner", code: 6, userInfo: [
+            NSLocalizedDescriptionKey: "the bridge returned an empty authenticate response",
+        ])
+    }
+
+    return value
 }
 
 func storeSmoke(dsid: String, token: String, storefront: String, entEndpoint: String, cookieHeader: String) throws -> String {
     try bridge.storeSmoke(dsid, token: token, storefront: storefront, entEndpoint: entEndpoint, cookieHeader: cookieHeader)
 }
 
-func kbsync(dsid: String) throws -> Data {
+    /// Whether a Store guest is mapped on this signer's engine. The caller uses
+    /// it to avoid running the kbsync generator on an engine that already holds
+    /// store pages, where generation runs past its bound.
+    func hasStoreRuntime() -> Bool {
+        return bridge.hasStoreRuntime()
+    }
+
+    /// Releases only the Store guest, keeping the signer for logins.
+    func closeStoreRuntime() throws {
+        try bridge.closeStoreRuntime()
+    }
+
+    /// Whether this process already holds a kbsync blob for this account.
+    func hasCachedKBSync(dsid: String) -> Bool {
+        let key = Self.cacheKey(dsid: dsid, guid: hardware.guid)
+        return Self.kbsyncCache.object(forKey: key) != nil
+    }
+
+    func kbsync(dsid: String) throws -> Data {
         let key = Self.cacheKey(dsid: dsid, guid: hardware.guid)
         if let cached = Self.kbsyncCache.object(forKey: key) {
             return cached as Data

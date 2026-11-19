@@ -26,6 +26,29 @@ final class AppStoreClient {
     private let session: URLSession
     private let decoder = PropertyListDecoder()
 
+    /// A Store proof that was just spent successfully, kept for the next request.
+    ///
+    /// The SP challenge produces one proof for one exchange. Minting another for
+    /// the redownload URL fails on the dispatch host (600/601), so the proof that
+    /// got the previous request a 200 is buffered here and spent on the next one.
+    private var bufferedStoreProof: [String: String] = [:]
+
+    /// The download fallback extension lives in its own file, so it reaches this
+    /// one-shot buffer through these methods rather than the private property.
+    func bufferStoreProof(_ proof: [String: String]) {
+        bufferedStoreProof = proof
+    }
+
+    func takeBufferedStoreProof() -> [String: String] {
+        let spent = bufferedStoreProof
+        bufferedStoreProof = [:]
+        return spent
+    }
+
+    func clearBufferedStoreProof() {
+        bufferedStoreProof = [:]
+    }
+
     /// The address Apple redirected the authenticate endpoint to.
     ///
     /// The 2FA retry is a second call to `authenticate`, not a loop inside one
@@ -33,6 +56,12 @@ final class AppStoreClient {
     /// URL in its retry loop and posts there again; going back to the generic
     /// endpoint on the code attempt is what produced a 404.
     private var authenticationPod: String?
+
+    /// When this process asked for a verification code. A code request may
+    /// inherit the challenge session only while this is set: the launch
+    /// restores the previous account's jar, and replaying that into a code
+    /// request would mint the session against somebody else's cookies.
+    var nativeChallengeAt: Date?
 
     /// The UA the original DLiPA shipped. Apple gates the private bag on the
     /// Configurator UA: with a generic UA the response contains none of the
@@ -155,6 +184,48 @@ final class AppStoreClient {
 
     /// Signs in.
     ///
+    /// The switch chooses the Store-runtime exchange or the hand-built request.
+    /// Native is the default: it passed device runs 554, 597 and 610, while the
+    /// hand-built fallback got 204/403/500 on a fresh install (610-2). The
+    /// fallback stays for comparison, not as the shipping path.
+    func authenticate(email: String,
+                      password: String,
+                      authCode: String?,
+                      guid: String,
+                      endpoint: String,
+                      signer: SAPSigner,
+                      attempt: Int = 1) async throws -> Account {
+        // @AppStorage registers its default only when DiagnosticsView is built.
+        // A fresh install that signs in before opening that tab has no value for
+        // this key, and bool(forKey:) returns false for a missing key -- which
+        // silently selected the hand-built login in runs 611 and 613. Treat a
+        // missing value as the shipping default instead.
+        let nativeEnabled = UserDefaults.standard.object(forKey: Self.nativeAuthenticateKey) as? Bool ?? true
+        if nativeEnabled {
+            // The code request is the same call as the password one upstream:
+            // the Store proof and state carry over, with no fresh anisette.
+            if !(authCode ?? "").isEmpty, let state = Keychain.anisetteState() {
+                return try await authenticateNative(email: email, password: password,
+                                                    authCode: authCode, guid: guid,
+                                                    endpoint: endpoint, signer: signer,
+                                                    resetStoreAfter: true, storeProof: true,
+                                                    storeState: state)
+            }
+
+            return try await authenticateNative(email: email, password: password,
+                                                authCode: authCode, guid: guid,
+                                                endpoint: endpoint, signer: signer)
+        }
+
+        return try await authenticateHandBuilt(email: email, password: password,
+                                               authCode: authCode, guid: guid,
+                                               endpoint: endpoint, signer: signer,
+                                               attempt: attempt)
+    }
+
+    /// The hand-built request: six plist fields, signed here, sent with
+    /// URLSession. Kept whole as the comparison arm and the fallback.
+    ///
     /// Two-factor runs over two requests, and the shape is not obvious:
     ///
     /// - The code is appended to the password, not sent in a field of its own.
@@ -166,13 +237,13 @@ final class AppStoreClient {
     ///   There is no failure code to match on, and a response shaped this way
     ///   otherwise looks like a success: it has no passwordToken and no
     ///   dsPersonId, which is why they are checked below.
-    func authenticate(email: String,
-                      password: String,
-                      authCode: String?,
-                      guid: String,
-                      endpoint: String,
-                      signer: SAPSigner,
-                      attempt: Int = 1) async throws -> Account {
+    private func authenticateHandBuilt(email: String,
+                                       password: String,
+                                       authCode: String?,
+                                       guid: String,
+                                       endpoint: String,
+                                       signer: SAPSigner,
+                                       attempt: Int = 1) async throws -> Account {
         // A sign-in starts from an empty jar. The launch restores the previous
         // account's cookies, and signing in the second account on top of them left
         // that account's X-Token and DSID in the values this call captures -- the new
@@ -405,6 +476,39 @@ final class AppStoreClient {
             lastName: address["lastName"] as? String ?? "")
     }
 
+    // MARK: - Native authentication
+
+    /// Prepares the jar for a native exchange and returns the Cookie header the
+    /// first hop should send.
+    ///
+    /// A code-less sign-in starts clean: the launch restored the previous
+    /// account's jar, and minting a new session on top of it is the account
+    /// switch bug in another shape. A code request keeps the jar, because the
+    /// challenge belongs to the session that asked for it.
+    func beginNativeAuthentication(codeIsEmpty: Bool) -> String {
+        if codeIsEmpty {
+            clearPersistedCookieJar()
+            capturedCookieHeader = ""
+            capturedCookieValues = [:]
+            nativeChallengeAt = nil
+        } else if nativeChallengeAt == nil {
+            // A code arriving without a challenge this process asked for -- a
+            // restored sheet, or a caller that assembled its own flow -- must
+            // not inherit whatever jar the launch restored.
+            capturedCookieHeader = ""
+            capturedCookieValues = [:]
+        }
+
+        return capturedCookieHeader
+    }
+
+    /// Completes a native sign-in: writes the per-account snapshot and returns
+    /// the session cookie the response set.
+    func finishNativeAuthentication(dsid: String) -> String {
+        saveCookieSnapshot(forDSID: dsid)
+        return capturedCookieValues["X-Token"] ?? ""
+    }
+
     // MARK: - Search
 
     /// Searches the public catalogue.
@@ -559,15 +663,65 @@ final class AppStoreClient {
                          account: Account,
                          bag: StoreBag,
                          signer: SAPSigner) async throws -> URL {
+        // One download owns one proof buffer; never spend a previous run's.
+        clearBufferedStoreProof()
         let plist = try await downloadProduct(
             appId: appId, externalVersionId: externalVersionId,
             guid: guid, account: account, bag: bag, signer: signer)
 
-        guard let items = plist["songList"] as? [Any],
-              let first = items.first as? [String: Any],
-              let urlString = first["URL"] as? String,
+        // songList comes in two shapes: an array whose first element is the
+        // item, or the item itself. The version list learned this earlier; the
+        // download path only handled the array, so a dictionary answer threw
+        // here and the caller re-ran the proof.
+        guard let songList = plist["songList"] else {
+            throw StoreError.failureType("Invalid response", "no songList")
+        }
+
+        // Run 599's SP retoken got 812 bytes of songList with no URL and no
+        // failureType. Name the shape and the other keys before the fallback
+        // so an empty answer can be told apart from a URL we fail to parse.
+        let songCount = (songList as? [Any])?.count ?? 1
+        AppLog.info("download songList: " + String(songCount) + " item(s), keys "
+                    + plist.keys.sorted().joined(separator: ","), .download)
+
+        let first: [String: Any]?
+
+        if let items = songList as? [Any] {
+            // The array can carry the package URL itself; Apple answers that
+            // shape for a redownload whose licence already exists (572).
+            if let text = items.first as? String, let url = URL(string: text) {
+                return url
+            }
+
+            first = items.first as? [String: Any]
+        } else if let map = songList as? [String: Any] {
+            // Dictionary shape: the keys are version ids and the item sits in
+            // the value. Fall back to the map itself when it is the item.
+            first = map.values.compactMap { $0 as? [String: Any] }.first ?? map
+        } else {
+            first = nil
+        }
+
+        guard let first, let urlString = first["URL"] as? String,
               let url = URL(string: urlString) else {
-            throw StoreError.failureType("Invalid response", "")
+            // Upstream treats a 200 with no package on it as "no items" and
+            // falls back to the bag's redownload and updateProduct endpoints.
+            // The SP proof now gets the classic request to 200, so its empty
+            // songList is that case, not a malformed response.
+            if (plist["failureType"] as? String ?? "").isEmpty,
+               let recovered = try await redownloadPackageURL(
+                   session: session, appId: appId,
+                   externalVersionId: externalVersionId, guid: guid,
+                   account: account, bag: bag, cookieHeader: sessionCookieHeader) {
+                return recovered
+            }
+
+            let shape = String(describing: type(of: songList))
+            let element = (songList as? [Any])?.first.map { String(describing: type(of: $0)) }
+                ?? "none"
+            let keys = first?.keys.sorted().joined(separator: ",") ?? "element " + element
+            AppLog.error("songList shape " + shape + ", item keys: " + keys, .download)
+            throw StoreError.failureType("Invalid response", "no package URL")
         }
         return url
     }
@@ -580,6 +734,7 @@ final class AppStoreClient {
     /// removes the storage question from the picture, and the log names them so
     /// an empty set is visible rather than inferred.
     private var capturedCookieHeader = ""
+
 
     /// The cookie header the classic path replays, for callers that need the
     /// same session elsewhere. downloaddispatch answers 401 to a request that
@@ -842,7 +997,23 @@ final class AppStoreClient {
                 raw.append(String(describing: value))
             }
         }
-        guard !raw.isEmpty else { return }
+
+        captureCookieHeaderValues(raw, host: http.url?.host ?? "")
+    }
+
+    /// The same cookie rules, for a response that exists only as header values.
+    ///
+    /// The Store-runtime bridge returns JSON, not an `URLResponse`, so a native
+    /// sign-in cannot go through `captureCookies(from:)`. This is the shared
+    /// body of the two; it returns the header the next hop should send.
+    @discardableResult
+    func captureCookieHeaderValues(_ raw: [String], host: String) -> String {
+        guard Self.isAppleHost(host) else {
+            AppLog.warn("ignoring Set-Cookie from non-Apple host " + host, .network)
+            return capturedCookieHeader
+        }
+
+        guard !raw.isEmpty else { return capturedCookieHeader }
 
         var pairs = capturedCookieHeader.isEmpty
             ? [String]()
@@ -870,7 +1041,7 @@ final class AppStoreClient {
         // "Apple sent no cookies" and "we could not see them".
         let exposed = raw.count
         let total = capturedCookieValues.count
-        AppLog.info("Set-Cookie from " + (http.url?.host ?? "?") + ": "
+        AppLog.info("Set-Cookie from " + host + ": "
                     + String(exposed) + " header(s), total " + String(total)
                     + " cookies: " + names.joined(separator: ", "), .network)
 
@@ -886,6 +1057,8 @@ final class AppStoreClient {
         if let dsid = capturedCookieValues["X-Dsid"], !dsid.isEmpty {
             saveCookieSnapshot(forDSID: dsid, quiet: true)
         }
+
+        return capturedCookieHeader
     }
 
     /// Header names with the values of anything carrying a credential replaced
@@ -922,7 +1095,7 @@ final class AppStoreClient {
     /// 403 page is not a plist. Values are capped where they are long, and
     /// `songList` is reported as present rather than printed -- it is the 18 kB
     /// half of a download response.
-    private static func responseDetail(from data: Data) -> String {
+    static func responseDetail(from data: Data) -> String {
         guard let text = String(data: data, encoding: .utf8) else {
             return "<" + String(data.count) + " binary bytes>"
         }
@@ -1507,58 +1680,35 @@ final class AppStoreClient {
                                  bag: StoreBag,
                                  signer: SAPSigner,
                                  purpose: RequestPurpose = .licence) async throws -> [String: Any] {
-        // The licence gate, before the guest.
-        //
-        // ent/download needs the emulated Store runtime, and opening it costs
-        // about a minute and a half of mapping on device. Discovering only after
-        // that mapping that the account has no licence -- and then buying, which
-        // is a plain request that answers in a second -- is what this removes:
-        // the classic endpoint answers the ownership question in one request, so
-        // the buy happens before the runtime is touched.
-        //
-        // The gate's own songList is dropped on a positive answer: ent/download
-        // is the path the bridge has been measured on, and this check is about
-        // the licence, not about which endpoint serves the file.
-        // Skipped for a metadata read. The gate is six classic attempts and, in
-        // this run, 1.9-6.4 s per call; the ownership of every row in a version
-        // list is already settled by the list itself, and asking costs a second
-        // and answers nothing. The download path keeps it.
-        if purpose == .metadata {
-            return try await downloadWithRetries(
-                appId: appId, externalVersionId: externalVersionId, guid: guid,
-                account: account, bag: bag, signer: signer,
-                acquiredLicence: false, purpose: purpose)
+        // The reference prefers ent/download when the bag carries it and the
+        // kbsync generator exists (sendDownloadProduct). The classic endpoint is
+        // the fallback, not the primary.
+        if let ent = bag.volumeStoreDownloadProduct {
+            do {
+                return try await entDownload(appId: appId,
+                                             externalVersionId: externalVersionId,
+                                             guid: guid, account: account,
+                                             endpoint: ent, signer: signer,
+                                             purpose: purpose)
+            } catch let error as StoreError {
+                if case .failureType(let type, _) = error, type == "9610" {
+                    throw error
+                }
+
+                AppLog.warn("ent/download did not serve this app ("
+                            + error.localizedDescription
+                            + "); trying the classic endpoint", .download)
+            } catch {
+                AppLog.warn("ent/download did not serve this app ("
+                            + error.localizedDescription
+                            + "); trying the classic endpoint", .download)
+            }
         }
 
-        let gateStart = Date()
-        let missing = await licenceMissing(appId: appId,
-                                           externalVersionId: externalVersionId,
-                                           guid: guid, account: account,
-                                           bag: bag, signer: signer)
-
-        if missing == false {
-            AppLog.info("licence gate: the account already owns this app ("
-                        + Self.seconds(since: gateStart) + ")", .download)
-        } else if missing == true {
-            // Not bought here on purpose: the licence belongs to the person, and
-            // the download button asks before anything is acquired. A download
-            // that reaches this line without that consent stops here instead of
-            // spending it.
-            AppLog.info("licence gate: no licence after " + Self.seconds(since: gateStart)
-                        + "; asking for one instead of buying it", .download)
-            throw StoreError.failureType("licence-required",
-                                         "This app needs a licence first")
-        } else {
-            // A gateway error, a transport failure, an answer this guard does not
-            // know: none of them is a licence verdict, so ent/download decides.
-            AppLog.info("licence gate: no verdict in " + Self.seconds(since: gateStart)
-                        + "; leaving it to ent/download", .download)
-        }
-
-        return try await downloadWithRetries(
-            appId: appId, externalVersionId: externalVersionId, guid: guid,
-            account: account, bag: bag, signer: signer,
-            acquiredLicence: false, purpose: purpose)
+        return try await classicDownload(appId: appId,
+                                         externalVersionId: externalVersionId,
+                                         guid: guid, account: account,
+                                         bag: bag, signer: signer)
     }
 
     /// Whether the account owns the app, asked of the cheap endpoint.
@@ -1780,7 +1930,8 @@ final class AppStoreClient {
             try signer.entDownload(dsid: dsid, token: token, storefront: storefront,
                                    endpoint: endpoint, cookieHeader: cookieHeader,
                                    appID: numericID, externalVersionID: version,
-                                   purpose: purpose.rawValue)
+                                   purpose: purpose.rawValue,
+                                   anisetteState: Keychain.anisetteState()?.base64EncodedString() ?? "")
         }.value
 
         guard let raw = json.data(using: .utf8),
@@ -1870,8 +2021,8 @@ final class AppStoreClient {
         // variable. The variable this round is the Cookie header, which this
         // request has never sent -- only iCloud-DSID, X-Dsid and X-Token, none of
         // which carry a session.
-        let attempts: [(label: String, token: String, signed: Bool, sendCookie: Bool)] = [
-            ("cookie+passwordToken", account.passwordToken, false, true),
+        let attempts: [(label: String, token: String, signed: Bool, sendCookie: Bool, sendStoreFront: Bool, userAgent: String)] = [
+            ("cookie+passwordToken", account.passwordToken, false, true, false, Self.storeUserAgent),
             // Second attempt, and the first one that changes a single variable.
             //
             // Every attempt so far answered 2042 "sign in" while the jar held
@@ -1881,14 +2032,26 @@ final class AppStoreClient {
             // X-Token set by Apple for this account, and the header above sends
             // a different value under the same name. This attempt sends only the
             // session.
-            ("cookie only", "", false, true),
-            // Exactly what ipatool sends, and nothing else:
-            // appstore_download_product.go sets Content-Type, iCloud-DSID and
-            // X-Dsid, and no X-Token, no Cookie, no store-front. Every attempt
-            // above has carried cookies this request was never supposed to
-            // have, and a session cookie on a request that expects only two
-            // DSID headers is a good reason to answer "sign in".
-            ("ipatool headers", "", false, false),
+            ("cookie only", "", false, true, false, Self.storeUserAgent),
+            // The upstream shape: appstore_download_product.go sets
+            // Content-Type, iCloud-DSID, X-Dsid, X-Apple-Store-Front and
+            // X-Token = PasswordToken, and no Cookie. Earlier rounds read that
+            // as "no X-Token", which sent this attempt with an empty credential.
+            // Store-front stays out for now: it answered an empty 400 in every
+            // earlier combination, and one variable at a time is the point.
+            ("ipatool headers", account.passwordToken, false, false, false, Self.storeUserAgent),
+            // One more variable: the storefront header the reference also
+            // sends. 555 showed the token alone still answered 2042.
+            ("ipatool + store-front", account.passwordToken, false, false, true, Self.storeUserAgent),
+            // The exact reference shape, including its User-Agent. 556 showed
+            // the storefront at 2.17 still answered 2042; upstream's download
+            // uses the authentication agent (2.21), not the purchase one.
+            ("ipatool exact", account.passwordToken, false, false, true, Self.nativeUserAgent),
+            // The reference's client keeps a cookie jar, so its download
+            // carries the sign-in cookies with the 2.21 agent. Every cookie
+            // attempt above was paired with 2.17; the bench download proves the
+            // session itself works.
+            ("ipatool + cookies", account.passwordToken, false, true, true, Self.nativeUserAgent),
         ]
 
         // Printed once, because a zero-length token silently turns every
@@ -1930,11 +2093,14 @@ final class AppStoreClient {
             request.httpMethod = "POST"
             request.setValue("application/x-apple-plist", forHTTPHeaderField: "Content-Type")
             // upstream's purchase operation uses 2.18 rather than the default.
-            request.setValue(Self.storeUserAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue(attempt.userAgent, forHTTPHeaderField: "User-Agent")
             request.setValue(account.dsid, forHTTPHeaderField: "iCloud-DSID")
             request.setValue(account.dsid, forHTTPHeaderField: "X-Dsid")
             if !attempt.token.isEmpty {
                 request.setValue(attempt.token, forHTTPHeaderField: "X-Token")
+            }
+            if attempt.sendStoreFront, !account.storefront.isEmpty {
+                request.setValue(account.storefront, forHTTPHeaderField: "X-Apple-Store-Front")
             }
             // The session Apple actually checks. authenticate hands back
             // mz_at_ssl-<dsid>, X-Dsid, X-Token, wosid and session-store-id as
@@ -1945,18 +2111,69 @@ final class AppStoreClient {
             if attempt.sendCookie, !capturedCookieHeader.isEmpty {
                 request.setValue(capturedCookieHeader, forHTTPHeaderField: "Cookie")
             }
+
+            // The reference mints the proof for the download URL before the
+            // request and sends it with the first attempt (appstore_amd.go,
+            // storeAMDProof). Do the same instead of waiting for an SP answer.
+            // The reference's downloadProductRequest carries six headers and no
+            // Cookie; the proof is added by the send layer (download_product.go
+            // :272). That is the exact shape, not the cookie-replay one.
+            if attempt.label == "ipatool exact" {
+                do {
+                    let proof = try AnisetteIdentity.storeProof(
+                        endpoint: components.url?.absoluteString ?? endpoint,
+                        guid: guid)
+                    for (key, value) in proof {
+                        request.setValue(value, forHTTPHeaderField: key)
+                    }
+                    AppLog.info("download: store proof attached ("
+                                + String(proof.count) + " headers)", .download)
+                } catch {
+                    AppLog.error("download proof failed: "
+                                 + error.localizedDescription, .download)
+                }
+            }
+
             request.httpBody = body
 
             let responseData: Data
             let status: Int
+            var httpResponse: HTTPURLResponse?
+
             if attempt.signed {
                 let (d, http) = try await signedRequest(request, signer: signer, redirects: 4)
                 responseData = d
                 status = http.statusCode
+                httpResponse = http
             } else {
                 let (d, r) = try await session.data(for: request)
                 responseData = d
                 status = (r as? HTTPURLResponse)?.statusCode ?? -1
+                httpResponse = r as? HTTPURLResponse
+            }
+
+            if let http = httpResponse, status == 200 {
+                let action = http.value(forHTTPHeaderField: "X-Apple-AMD-Action")
+                let data = http.value(forHTTPHeaderField: "X-Apple-AMD-Data")
+                AppLog.info("download AMD [" + attempt.label + "] action="
+                            + (action ?? "-") + " data=" + String(data?.count ?? 0),
+                            .download)
+
+                // The download endpoint asks for its own Store provisioning.
+                // Same machine action as the sign-in, with the download URL as
+                // the proof endpoint.
+                if attempt.label == "ipatool + cookies",
+                   (action ?? "").uppercased() == "SP",
+                   let challenge = data, !challenge.isEmpty {
+                    AppLog.info("download SP: provisioning for "
+                                + String(challenge.count) + " chars", .download)
+
+                    if let retried = await retryWithDownloadProof(
+                        session: session, request: request,
+                        challenge: challenge, guid: guid) {
+                        return retried
+                    }
+                }
             }
 
             // The fields, not the bytes -- responseDetail says why the bytes were
@@ -2124,6 +2341,15 @@ final class AppStoreClient {
 
     /// How many times a single authentication request is sent. ipatool uses
     /// three, with the delays below between them.
+    /// Routes sign-in through the Store runtime instead of the hand-built
+    /// request. Off by default: the hand-built path is the one that has
+    /// reached the application, and this switch exists to compare them.
+    /// A new key so a stale `false` from the old comparison-arm setting cannot
+    /// pin a fresh install to the hand-built login (run 611). Native passed
+    /// device runs 554, 597 and 610; the fallback stays in Diagnostics under
+    /// this key, defaulting on.
+    static let nativeAuthenticateKey = "com.a23bc.dliparebuild.nativeAuthenticateV2"
+
     private static let authenticationRequestAttempts = 3
 
     /// 10s then 20s, capped at 30s the way ipatool caps it.

@@ -23,9 +23,11 @@ const (
 )
 
 var frameworkImagePaths = []string{
+	"/System/Library/PrivateFrameworks/CoreADI.framework/Versions/A/adid",
 	"/System/Library/PrivateFrameworks/CommerceKit.framework/Versions/A/Resources/commerce",
 	"/System/Library/PrivateFrameworks/CoreFP.framework/Versions/A/CoreFP",
 	"/System/Library/PrivateFrameworks/CoreFP.framework/Versions/A/Resources/CoreFP.icxs",
+	"/System/Library/PrivateFrameworks/CoreFP.framework/Versions/A/fairplayd",
 }
 
 func resolveRemoteImage(ctx context.Context) (Bundle, error) {
@@ -66,6 +68,10 @@ func resolveRemoteImage(ctx context.Context) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("extract AppleMediaServices from macOS %s (%s): %w", macOSVersion, macOSBuild, err)
 	}
 
+	if err := extractFairPlayKext(archive, filepath.Join(frameworkDirectory, "FairPlayIOKit")); err != nil {
+		return Bundle{}, err
+	}
+
 	files := make(map[string][]byte, len(requiredFiles))
 
 	for _, spec := range requiredFiles {
@@ -81,6 +87,10 @@ func resolveRemoteImage(ctx context.Context) (Bundle, error) {
 	if err := validate(bundle); err != nil {
 		return Bundle{}, err
 	}
+
+	blocks, bytes := remote.Stats()
+	fmt.Fprintf(os.Stderr, "[SAP] assets: %d range requests, %d bytes fetched from the restore image\n",
+		blocks, bytes)
 
 	return bundle, nil
 }
@@ -127,12 +137,17 @@ func extractAppleMediaServices(ctx context.Context, client *http.Client, remote 
 }
 
 func pinnedZipEntry(archive *zip.Reader, name string, compressedSize, uncompressedSize uint64) (*zip.File, error) {
+	expectedMethod := zip.Store
+	if compressedSize != uncompressedSize {
+		expectedMethod = zip.Deflate
+	}
+
 	for _, entry := range archive.File {
 		if entry.Name != name {
 			continue
 		}
 
-		if entry.Method != zip.Store || entry.CompressedSize64 != compressedSize || entry.UncompressedSize64 != uncompressedSize {
+		if entry.Method != expectedMethod || entry.CompressedSize64 != compressedSize || entry.UncompressedSize64 != uncompressedSize {
 			return nil, fmt.Errorf("macOS %s (%s) restore member %s does not match the pinned image", macOSVersion, macOSBuild, name)
 		}
 

@@ -332,6 +332,13 @@ final class AppSession: ObservableObject {
     /// One machine authorisation per launch; see ensureSession.
     private var didAuthorizeMachine = false
 
+    /// A kbsync blob must exist before the store runtime opens: ent/download
+    /// resolves it from memory or disk only, and the generator cannot run on an
+    /// engine that already holds mapped store pages. The stored account carries
+    /// the DSID, so make the blob once at session build, before sign-in opens
+    /// that runtime. One attempt per process; a failure is logged, not retried.
+    private var didPreGenerateKBSync = false
+
     /// Makes sure the bag and the SAP session exist, then hands back what the
     /// download path needs. Throws when nobody is signed in.
     /// Opens the SAP runtime before anything else needs it.
@@ -509,6 +516,30 @@ final class AppSession: ObservableObject {
             AppLog.info("opening the SAP session for downloads", .sap)
         }
         let signer = try await ensureSigner(bag)
+
+        if !account.dsid.isEmpty && !didPreGenerateKBSync {
+            didPreGenerateKBSync = true
+            // Do NOT close the store guest here. Run 615 proved it makes the
+            // SAP machine's StoreAgent return -42306, so no blob can be made
+            // afterwards. On a fresh install the reliable sequence is: sign in,
+            // restart the app, let this pre-generation run on a clean engine,
+            // then download.
+            if signer.hasStoreRuntime() {
+                AppLog.warn("kbsync pre-generation skipped: the store runtime is "
+                            + "open; restart the app once after the first sign-in "
+                            + "to seed it before downloading", .sap)
+            } else {
+                signer.invalidateKBSync(dsid: account.dsid)
+                do {
+                    let blob = try await runOffMain { try signer.kbsync(dsid: account.dsid) }
+                    AppLog.info("pre-generated kbsync: " + String(blob.count)
+                                + " bytes for DSID " + AppStoreClient.masked(account.dsid), .sap)
+                } catch {
+                    AppLog.warn("pre-generating kbsync failed: "
+                                + error.localizedDescription, .sap)
+                }
+            }
+        }
 
         // authenticate proves the password and hands back a token, but it leaves
         // the store with no session: the cookie store comes back empty and every

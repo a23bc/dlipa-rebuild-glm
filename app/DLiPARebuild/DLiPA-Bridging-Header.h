@@ -32,11 +32,28 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSData *)sign:(NSData *)body error:(NSError **)error;
 - (NSString *)signatureHeaderValue:(NSData *)body error:(NSError **)error;
 - (nullable NSData *)generateKBSync:(NSString *)dsid error:(NSError **)error;
-- (nullable NSString *)entDownload:(nullable NSString *)dsid token:(nullable NSString *)token storefront:(nullable NSString *)storefront endpoint:(nullable NSString *)endpoint cookieHeader:(nullable NSString *)cookieHeader appID:(long long)appID externalVersionID:(nullable NSString *)externalVersionID purpose:(nullable NSString *)purpose error:(NSError **)error;
+- (nullable NSString *)entDownload:(nullable NSString *)dsid token:(nullable NSString *)token storefront:(nullable NSString *)storefront endpoint:(nullable NSString *)endpoint cookieHeader:(nullable NSString *)cookieHeader appID:(long long)appID externalVersionID:(nullable NSString *)externalVersionID purpose:(nullable NSString *)purpose anisetteState:(nullable NSString *)anisetteState error:(NSError **)error;
+- (nullable NSString *)authenticateOnce:(NSString *)inputJSON error:(NSError **)error;
+- (BOOL)hasStoreRuntime;
+- (BOOL)closeStoreRuntime:(NSError **)error;
+- (nullable NSString *)warmStoreRuntime:(NSError **)error;
 - (nullable NSString *)storeSmoke:(nullable NSString *)dsid token:(nullable NSString *)token storefront:(nullable NSString *)storefront entEndpoint:(nullable NSString *)entEndpoint cookieHeader:(nullable NSString *)cookieHeader error:(NSError **)error;
 - (nullable NSData *)hardware;
 - (BOOL)close:(NSError **)error;
 @end
+
+@interface SapbridgeAnisette : NSObject
+- (nullable NSString *)headers:(NSString *)stateBase64 error:(NSError **)error;
+- (nullable NSString *)provisionStore:(NSString *)stateBase64 challenge:(NSString *)challenge kbsync:(NSString *)kbsync identityJSON:(NSString *)identityJSON hardwareHex:(NSString *)hardwareHex error:(NSError **)error;
+- (nullable NSString *)downloadProof:(NSString *)stateBase64 challenge:(NSString *)challenge endpoint:(NSString *)endpoint identityJSON:(NSString *)identityJSON hardwareHex:(NSString *)hardwareHex error:(NSError **)error;
+- (nullable NSString *)storeProof:(NSString *)stateBase64 endpoint:(NSString *)endpoint hardwareHex:(NSString *)hardwareHex error:(NSError **)error;
+@end
+
+FOUNDATION_EXPORT SapbridgeAnisette * _Nullable SapbridgeNewAnisette(void);
+
+/// Probes whether AuthKit's anisette daemon answers this process. The callback
+/// runs on the main queue and fires at most once.
+FOUNDATION_EXPORT void DLPAProbeAnisetteDaemon(void (^ _Nonnull callback)(NSString * _Nonnull message));
 
 FOUNDATION_EXPORT NSString * _Nonnull SapbridgeBundleDirValue(void);
 FOUNDATION_EXPORT NSString * _Nonnull SapbridgeGuidFromHardware(NSData * _Nullable hardwareID);

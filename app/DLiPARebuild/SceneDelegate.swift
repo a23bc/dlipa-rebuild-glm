@@ -25,11 +25,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // The app is a SwiftUI shell now. It is hosted in the existing
         // UIKit scene so the launch path, logging and icon plumbing stay
         // exactly as they were; only the view hierarchy changed.
-        let vc = UIHostingController(rootView: RootTabView())
-        window.rootViewController = vc
+        let controller = UIHostingController(rootView: RootTabView())
+        window.rootViewController = controller
         window.backgroundColor = .systemBackground
         self.window = window
         window.makeKeyAndVisible()
-        print("[DLiPA] SceneDelegate: window visible, rootViewController=\(type(of: vc))")
+        print("[DLiPA] SceneDelegate: window visible, rootViewController=\(type(of: controller))")
     }
 }

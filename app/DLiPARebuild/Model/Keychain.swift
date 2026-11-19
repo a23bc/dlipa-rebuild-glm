@@ -67,4 +67,52 @@ enum Keychain {
         guard !email.isEmpty else { return }
         SecItemDelete(query(email) as CFDictionary)
     }
+
+    // MARK: - Anisette state
+
+    /// The opaque machine identity behind the anisette headers. One per device,
+    /// not per account: re-provisioning on every sign-in makes the store treat
+    /// the phone as a new machine.
+    private static let anisetteService = "com.a23bc.dliparebuild.anisette"
+
+    private static func anisetteQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: anisetteService,
+            kSecAttrAccount as String: "state",
+        ]
+    }
+
+    static func saveAnisetteState(_ data: Data) {
+        guard !data.isEmpty else { return }
+
+        SecItemDelete(anisetteQuery() as CFDictionary)
+
+        var attributes = anisetteQuery()
+        attributes[kSecValueData as String] = data
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+
+        if status == errSecSuccess {
+            AppLog.info("anisette state kept, " + String(data.count) + " bytes", .sap)
+        } else {
+            AppLog.warn("could not keep the anisette state: " + String(status), .sap)
+        }
+    }
+
+    static func anisetteState() -> Data? {
+        var request = anisetteQuery()
+        request[kSecReturnData as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+
+        guard SecItemCopyMatching(request as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else {
+            return nil
+        }
+
+        return data
+    }
 }

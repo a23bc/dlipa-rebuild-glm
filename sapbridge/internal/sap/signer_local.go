@@ -38,6 +38,13 @@ type Signer struct {
 	// The account the open runtime belongs to. Zero until one is opened.
 	storeRuntimeDSID uint64
 
+	// authRuntime is a Store guest on its own engine for the login exchange.
+	// It is kept across calls: run 619 showed that closing it after the first
+	// authenticate leaves the SAP machine's signer returning -42306 on the
+	// second, because the close restores patched bytes the machine shares.
+	// Closed only with the signer.
+	authRuntime *emulator.Runtime
+
 	// kbsyncBlob is the blob generated for kbsyncDSID. Generating one costs the
 	// better part of a minute, and the same account keeps the same blob for the
 	// life of the session.
@@ -239,7 +246,59 @@ func (s *Signer) KBSync(ctx context.Context, dsid uint64) ([]byte, error) {
 		return nil, errors.New("kbsync: blob is empty")
 	}
 
+	// A generated blob is the only kind ent/download can use when a store runtime
+	// is already resident: ent_fetch resolves memory/disk only, because running the
+	// generator on an engine with mapped store pages runs past its bound. Seeding
+	// both here means a blob made before sign-in (or by the Gate 0 button) is the
+	// one the later download uses, instead of being thrown away.
+	s.kbsyncBlob, s.kbsyncDSID = blob, dsid
+	storeKBSync(dsid, blob)
+
+	fmt.Fprintf(os.Stderr, "[SAP] kbsync: seeded DSID %d (%d bytes) for ent/download\n",
+		dsid, len(blob))
+
 	return blob, nil
+}
+
+// HasStoreRuntime reports whether a Store guest is currently mapped on this
+// signer's engine. The caller uses it to avoid generating kbsync on an engine
+// that already holds store pages, where the generator runs past its bound.
+func (s *Signer) HasStoreRuntime() bool {
+	return s != nil && s.storeRuntime != nil
+}
+
+// CachedKBSync exposes the memory-or-disk lookup to the bridge. A caller that
+// pre-generates must reuse an accepted blob instead of making another one: run
+// 616 regenerated despite a cached blob, and the Store proof failed afterwards.
+func (s *Signer) CachedKBSync(dsid uint64) ([]byte, bool) {
+	if s == nil {
+		return nil, false
+	}
+
+	return s.cachedKBSync(dsid)
+}
+
+// CloseStoreRuntime releases just the Store guest, leaving the SAP machine and
+// its signer intact. A fresh install has no kbsync on disk and login opens the
+// guest before the account DSID is known; closing it lets the generator run on
+// a clean engine, after which the download opens a new guest.
+func (s *Signer) CloseStoreRuntime() error {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.storeRuntime == nil {
+		return nil
+	}
+
+	err := s.storeRuntime.Close()
+	s.storeRuntime = nil
+	s.storeRuntimeDSID = 0
+
+	return err
 }
 
 func (s *Signer) Close() error {
@@ -264,6 +323,11 @@ func (s *Signer) Close() error {
 	if s.storeRuntime != nil {
 		closeErrors = append(closeErrors, s.storeRuntime.Close())
 		s.storeRuntime = nil
+	}
+
+	if s.authRuntime != nil {
+		closeErrors = append(closeErrors, s.authRuntime.Close())
+		s.authRuntime = nil
 	}
 
 	if s.machine != nil && s.context != 0 {

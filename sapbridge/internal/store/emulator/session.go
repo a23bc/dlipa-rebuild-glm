@@ -49,6 +49,25 @@ func (r *Runtime) ephemeralAccount(saved map[string]any) (uint64, error) {
 		return 0, err
 	}
 
+	// The method can answer with the class itself after the proof guest has
+	// rewritten the cluster; allocate a real instance rather than messaging the
+	// class with instance selectors.
+	if _, isClass := r.classNames[account]; isClass {
+		allocated, allocErr := r.Invoke(account, "alloc")
+		if allocErr != nil {
+			return 0, allocErr
+		}
+
+		instance, initErr := r.Invoke(allocated, "init")
+		if initErr != nil {
+			return 0, initErr
+		}
+
+		account = instance
+	}
+
+	r.registerGuestObject(account, "AMSEphemeralAccount")
+
 	if saved == nil {
 		return account, nil
 	}
@@ -67,6 +86,24 @@ func (r *Runtime) ephemeralAccount(saved map[string]any) (uint64, error) {
 
 	return account, nil
 }
+
+// PrepareAuthenticate builds the session and account an authenticate request
+// will use. The caller builds them before a guest step that changes the class
+// cluster, so the request keeps objects whose classes the image named.
+func (r *Runtime) PrepareAuthenticate() (uint64, uint64, error) {
+	session, err := r.newSession()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	account, err := r.ephemeralAccount(nil)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return session, account, nil
+}
+
 func (r *Runtime) configureRequest(request, account, bag uint64, raw bool) error {
 	properties, err := r.Invoke(request, "properties")
 	if err != nil {
@@ -82,11 +119,30 @@ func (r *Runtime) configureRequest(request, account, bag uint64, raw bool) error
 
 	return nil
 }
+
+// registerGuestObject records an object the guest handed back under the class
+// the receiver was declared with. initWithConfiguration: answers with a class
+// cluster or dynamic subclass the host never allocated; without this the next
+// instance message is an unknown receiver (549/578/579).
+func (r *Runtime) registerGuestObject(ptr uint64, class string) {
+	if ptr == 0 {
+		return
+	}
+
+	if _, ok := r.objects[ptr]; ok {
+		return
+	}
+
+	r.objects[ptr] = &Object{Class: class, Properties: map[string]uint64{}}
+}
+
 func (r *Runtime) newSession() (uint64, error) {
 	session, err := r.Invoke(r.New("AMSURLSession", nil), "initWithConfiguration:delegate:delegateQueue:", 0, 0, 0)
 	if err != nil {
 		return 0, err
 	}
+
+	r.registerGuestObject(session, "AMSURLSession")
 
 	_, err = r.Invoke(session, "setUseFallbackBag:", 0)
 

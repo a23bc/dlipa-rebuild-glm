@@ -9,11 +9,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/install"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/measure"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/assetsremote"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -23,6 +27,7 @@ import (
 
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap"
 	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/sap/machine"
+	"github.com/a23bc/dlipa-rebuild/sapbridge/internal/storeauth"
 )
 
 // Signer holds a live SAP session. One instance covers a whole app session:
@@ -176,6 +181,23 @@ func (s *Signer) signatureHeaderValue(body []byte) (string, error) {
 // per account and device, so callers should cache it: generating one runs the
 // emulated Apple binaries and takes seconds.
 func (s *Signer) GenerateKBSync(dsid string) (blob []byte, err error) {
+	// A blob already on disk is the one to use. Generating another one in the
+	// same process leaves the machine unable to produce a Store proof: run 616
+	// regenerated despite a cached blob and ent failed with no Store AMD proof,
+	// while run 610 reused the disk blob and downloaded successfully.
+	if numeric, parseErr := parseDSID(dsid); parseErr == nil && s != nil && s.inner != nil {
+		if cached, ok := s.inner.(interface {
+			CachedKBSync(uint64) ([]byte, bool)
+		}); ok {
+			if existing, found := cached.CachedKBSync(numeric); found {
+				fmt.Fprintf(os.Stderr, "[SAP] kbsync: using cached blob for DSID %d (%d bytes)\n",
+					numeric, len(existing))
+
+				return existing, nil
+			}
+		}
+	}
+
 	err = runRecovered("KBSync", func() error {
 		var innerErr error
 		blob, innerErr = s.kbsync(dsid)
@@ -215,6 +237,36 @@ func (s *Signer) kbsync(dsid string) ([]byte, error) {
 	sap.ReportRSS("after kbsync")
 
 	return blob, nil
+}
+
+// HasStoreRuntime reports whether the Store guest is mapped on this signer's
+// engine. Swift asks before generating kbsync: the generator must run before
+// any store runtime opens, or it runs past its bound on the busy engine.
+func (s *Signer) HasStoreRuntime() bool {
+	if s == nil || s.inner == nil {
+		return false
+	}
+	// Only the live signer knows; the test double and other implementations need
+	// no opinion, so this stays an optional capability rather than widening
+	// ActionSigner and every fake that satisfies it.
+	probe, ok := s.inner.(interface{ HasStoreRuntime() bool })
+
+	return ok && probe.HasStoreRuntime()
+}
+
+// CloseStoreRuntime releases just the Store guest on this signer's engine.
+// Swift calls it before generating kbsync on a fresh install, where login has
+// already opened the guest but no blob is cached yet.
+func (s *Signer) CloseStoreRuntime() error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	closer, ok := s.inner.(interface{ CloseStoreRuntime() error })
+	if !ok {
+		return nil
+	}
+
+	return closer.CloseStoreRuntime()
 }
 
 // Hardware returns a copy of the device identity bytes.
@@ -269,7 +321,7 @@ func (s *Signer) StoreSmoke(dsid string, token string, storefront string, entEnd
 // carries would overwrite the slot the next real download patches from.
 func (s *Signer) EntDownload(dsid string, token string, storefront string, endpoint string,
 	cookieHeader string, appID int64, externalVersionID string,
-	purpose string) (result string, err error) {
+	purpose string, anisetteState string) (result string, err error) {
 	if s == nil {
 		return "", fmt.Errorf("sapbridge: signer is closed")
 	}
@@ -280,6 +332,17 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 	image, err := appleMediaServicesImage()
 	if err != nil {
 		return "", err
+	}
+
+	var rawState []byte
+
+	if anisetteState != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(anisetteState)
+		if decodeErr != nil {
+			return "", fmt.Errorf("sapbridge: ent state: %w", decodeErr)
+		}
+
+		rawState = decoded
 	}
 
 	return s.inner.(interface {
@@ -293,7 +356,410 @@ func (s *Signer) EntDownload(dsid string, token string, storefront string, endpo
 		AppID:             appID,
 		Purpose:           purpose,
 		ExternalVersionID: externalVersionID,
+		AnisetteState:     rawState,
 	})
+}
+
+// Anisette provisions and proves a machine identity.
+//
+// It owns no SAP session: the runtimes it opens are its own and are closed
+// before Headers returns. That is what lets Swift ask for identity headers
+// before it has a signer, which is the order a sign-in needs.
+type Anisette struct {
+	// The download path asks for the same Store proof twice: once for the
+	// licence gate, once for the package. iOS has one guest, and a second
+	// type-2 run in it crashes, so keep the pair for a short window.
+	proofMu     sync.Mutex
+	lastProofAt time.Time
+	lastProof   map[string]string
+}
+
+// NewAnisette returns a handle for the identity calls.
+func NewAnisette() *Anisette {
+	return &Anisette{}
+}
+
+// ProvisionStore runs the Store provisioning step an SP answer asks for: it
+// finishes the machine action with the challenge and a kbsync blob, then mints
+// the Store AMD proof from the provisioned state.
+func (a *Anisette) ProvisionStore(stateBase64, challenge, kbsync, identityJSON, hardwareHex string) (string, error) {
+	state, err := base64.StdEncoding.DecodeString(stateBase64)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provisioning state: %w", err)
+	}
+
+	hardware, err := hex.DecodeString(hardwareHex)
+	if err != nil || len(hardware) != 6 {
+		return "", fmt.Errorf("sapbridge: provisioning hardware identity")
+	}
+
+	var identity map[string]string
+	if err := json.Unmarshal([]byte(identityJSON), &identity); err != nil {
+		return "", fmt.Errorf("sapbridge: provisioning identity: %w", err)
+	}
+
+	headers := make(http.Header, len(identity))
+	for name, value := range identity {
+		headers.Set(name, value)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	provisioned, err := storeauth.ProvisionStoreAnisette(ctx, storeauth.NewHTTPClient(nil), state,
+		challenge, "https://auth.itunes.apple.com/auth/v1/otp/1.5/finish",
+		"Configurator/2.21 (Macintosh; OS X 27.0.1; 26A434) AppleWebKit/0625.2.5.11.6",
+		kbsync, hardware, headers)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provision store: %w", err)
+	}
+
+	output := struct {
+		State string `json:"state"`
+	}{
+		State: base64.StdEncoding.EncodeToString(provisioned),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provisioning result: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// DownloadProof runs the Store provisioning an AMD-Action from the download
+// endpoint asks for, then mints the proof for that endpoint.
+func (a *Anisette) DownloadProof(stateBase64, challenge, endpoint, identityJSON, hardwareHex string) (string, error) {
+	a.proofMu.Lock()
+	if time.Since(a.lastProofAt) < 2*time.Minute && a.lastProof != nil {
+		cached := a.lastProof
+		a.proofMu.Unlock()
+
+		output := struct {
+			Headers map[string]string `json:"headers"`
+			State   string            `json:"state"`
+		}{Headers: cached, State: stateBase64}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			return "", fmt.Errorf("sapbridge: download proof result: %w", err)
+		}
+
+		return string(data), nil
+	}
+	a.proofMu.Unlock()
+
+	state, err := base64.StdEncoding.DecodeString(stateBase64)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: download state: %w", err)
+	}
+
+	hardware, err := hex.DecodeString(hardwareHex)
+	if err != nil || len(hardware) != 6 {
+		return "", fmt.Errorf("sapbridge: download hardware identity")
+	}
+
+	var identity map[string]string
+	if err := json.Unmarshal([]byte(identityJSON), &identity); err != nil {
+		return "", fmt.Errorf("sapbridge: download identity: %w", err)
+	}
+
+	headers := make(http.Header, len(identity))
+	for name, value := range identity {
+		headers.Set(name, value)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	jar, _ := cookiejar.New(nil)
+
+	provisioned, err := storeauth.ProvisionStoreAnisette(ctx, storeauth.NewHTTPClient(jar), state,
+		challenge, "https://auth.itunes.apple.com/auth/v1/otp/1.5/finish",
+		"Configurator/2.21 (Macintosh; OS X 27.0.1; 26A434) AppleWebKit/0625.2.5.11.6",
+		"", hardware, headers)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: provision download: %w", err)
+	}
+
+	proof, next, err := storeauth.StoreAMDHeaders(ctx, provisioned, endpoint, hardware)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: download proof: %w", err)
+	}
+
+	a.proofMu.Lock()
+	a.lastProofAt = time.Now()
+	a.lastProof = proof
+	a.proofMu.Unlock()
+
+	// The provisioning exchange sets the store session cookie the download
+	// needs; the reference keeps it in its client jar, so return it with the
+	// proof instead of dropping it with the client.
+	if jar != nil {
+		var pairs []string
+
+		for _, cookie := range jar.Cookies(&url.URL{Scheme: "https", Host: "itunes.apple.com"}) {
+			pairs = append(pairs, cookie.Name+"="+cookie.Value)
+		}
+
+		if len(pairs) != 0 {
+			proof["Cookie"] = strings.Join(pairs, "; ")
+		}
+	}
+
+	output := struct {
+		Headers map[string]string `json:"headers"`
+		State   string            `json:"state"`
+	}{
+		Headers: proof,
+		State:   base64.StdEncoding.EncodeToString(next),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: download proof result: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// StoreProof mints the Store AMD proof for one endpoint from an already
+// provisioned state, the way the reference's storeAMDProof does before a
+// download. No provisioning exchange runs here.
+func (a *Anisette) StoreProof(stateBase64, endpoint, hardwareHex string) (string, error) {
+	state, err := base64.StdEncoding.DecodeString(stateBase64)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: store proof state: %w", err)
+	}
+
+	hardware, err := hex.DecodeString(hardwareHex)
+	if err != nil || len(hardware) != 6 {
+		return "", fmt.Errorf("sapbridge: store proof hardware identity")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	proof, next, err := storeauth.StoreAMDHeaders(ctx, state, endpoint, hardware)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: store proof: %w", err)
+	}
+
+	a.proofMu.Lock()
+	a.lastProofAt = time.Now()
+	a.lastProof = proof
+	a.proofMu.Unlock()
+
+	output := struct {
+		Headers map[string]string `json:"headers"`
+		State   string            `json:"state"`
+	}{
+		Headers: proof,
+		State:   base64.StdEncoding.EncodeToString(next),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: store proof result: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// Headers takes the state from the previous call (base64, empty on first use)
+// and returns JSON {"headers":{...},"state":"base64"}.
+//
+// The state is opaque and belongs in the app's keychain: handing back the
+// state from before the call would provision a new machine instead of reusing
+// the one the store already knows.
+func (a *Anisette) Headers(stateBase64 string) (string, error) {
+	var state []byte
+
+	if stateBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(stateBase64)
+		if err != nil {
+			return "", fmt.Errorf("sapbridge: anisette state: %w", err)
+		}
+
+		state = decoded
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	found, next, err := storeauth.AnisetteHeaders(ctx, storeauth.NewHTTPClient(nil), state)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: anisette headers: %w", err)
+	}
+
+	flat := make(map[string]string, len(found))
+	for name, values := range found {
+		if len(values) == 0 {
+			continue
+		}
+
+		flat[name] = values[0]
+	}
+
+	output := struct {
+		Headers map[string]string `json:"headers"`
+		State   string            `json:"state"`
+	}{
+		Headers: flat,
+		State:   base64.StdEncoding.EncodeToString(next),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: anisette result: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// WarmStoreRuntime opens the Store runtime without sending a request.
+func (s *Signer) WarmStoreRuntime() (result string, err error) {
+	if s == nil {
+		return "", fmt.Errorf("sapbridge: signer is closed")
+	}
+
+	image, err := appleMediaServicesImage()
+	if err != nil {
+		return "", err
+	}
+
+	warm, ok := s.inner.(interface {
+		WarmStore(context.Context, []byte) error
+	})
+	if !ok {
+		return "", fmt.Errorf("sapbridge: this build cannot warm the store runtime")
+	}
+
+	if err := warm.WarmStore(context.Background(), image); err != nil {
+		return "", err
+	}
+
+	return "ok", nil
+}
+
+// AuthenticateOnce performs one authenticate exchange through the Store
+// runtime and returns a JSON result. It never retries and never follows
+// redirects: the Swift side owns both decisions.
+//
+// Input is JSON rather than a struct because gomobile maps exported method
+// parameters, not Go structs: {"endpoint","appleId","password","guid",
+// "cookie","userAgent","timeoutMs"}. Output is {"status","headers",
+// "bodyBase64","url"}.
+func (s *Signer) AuthenticateOnce(inputJSON string) (result string, err error) {
+	if s == nil {
+		return "", fmt.Errorf("sapbridge: signer is closed")
+	}
+
+	var input struct {
+		Endpoint        string            `json:"endpoint"`
+		AppleID         string            `json:"appleId"`
+		Password        string            `json:"password"`
+		GUID            string            `json:"guid"`
+		Cookie          string            `json:"cookie"`
+		UserAgent       string            `json:"userAgent"`
+		ExtraHeaders    map[string]string `json:"extraHeaders"`
+		IdentityMode    string            `json:"identityMode"`
+		ResetStore      bool              `json:"resetStore"`
+		ResetStoreAfter bool              `json:"resetStoreAfter"`
+		StoreProof      bool              `json:"storeProof"`
+		StoreState      string            `json:"storeState"`
+		StoreEndpoint   string            `json:"storeEndpoint"`
+		Bag             map[string]any    `json:"bag"`
+		TimeoutMS       int               `json:"timeoutMs"`
+	}
+
+	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
+		return "", fmt.Errorf("sapbridge: authenticate input: %w", err)
+	}
+
+	if input.ResetStore {
+		s.ResetStoreRuntime()
+	}
+
+	var storeState []byte
+
+	if input.StoreState != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(input.StoreState)
+		if decodeErr != nil {
+			return "", fmt.Errorf("sapbridge: store state: %w", decodeErr)
+		}
+
+		storeState = decoded
+	}
+
+	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	if timeout > 2*time.Minute {
+		timeout = 2 * time.Minute
+	}
+
+	image, err := appleMediaServicesImage()
+	if err != nil {
+		return "", err
+	}
+
+	exchange, ok := s.inner.(interface {
+		AuthenticateOnce(context.Context, []byte, sap.AuthenticateInput) (sap.AuthenticateResult, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("sapbridge: this build does not support authenticate")
+	}
+
+	response, err := exchange.AuthenticateOnce(context.Background(), image, sap.AuthenticateInput{
+		Endpoint:      input.Endpoint,
+		AppleID:       input.AppleID,
+		Password:      input.Password,
+		GUID:          input.GUID,
+		Cookie:        input.Cookie,
+		UserAgent:     input.UserAgent,
+		ExtraHeaders:  input.ExtraHeaders,
+		IdentityMode:  input.IdentityMode,
+		Bag:           input.Bag,
+		Timeout:       timeout,
+		StoreProof:    input.StoreProof,
+		AnisetteState: storeState,
+		StoreEndpoint: input.StoreEndpoint,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	// The ent download's kbsync can only be generated with the store session
+	// closed. Closing it here is the "restart and download once" the ent path
+	// asks for, without the restart.
+	if input.ResetStoreAfter {
+		s.ResetStoreRuntime()
+	}
+
+	output := struct {
+		Status     int                 `json:"status"`
+		Headers    map[string][]string `json:"headers"`
+		BodyBase64 string              `json:"bodyBase64"`
+		URL        string              `json:"url"`
+		State      string              `json:"state,omitempty"`
+	}{
+		Status:     response.Status,
+		Headers:    response.Headers,
+		BodyBase64: base64.StdEncoding.EncodeToString(response.Body),
+		URL:        response.URL,
+		State:      base64.StdEncoding.EncodeToString(response.AnisetteState),
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("sapbridge: authenticate result: %w", err)
+	}
+
+	return string(data), nil
 }
 
 func (s *Signer) Hardware() []byte {
@@ -304,6 +770,17 @@ func (s *Signer) Hardware() []byte {
 }
 
 // Close tears down the SAP session and releases the guest runtime.
+// ResetStoreRuntime throws away the cached store guest so the next request
+// opens a fresh one. The proof step can rewrite its class metadata in place.
+func (s *Signer) ResetStoreRuntime() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if resetter, ok := s.inner.(interface{ ResetStoreRuntime() }); ok {
+		resetter.ResetStoreRuntime()
+	}
+}
+
 func (s *Signer) Close() (err error) {
 	err = runRecovered("SAP close", func() error {
 		return s.close()
@@ -492,7 +969,8 @@ func FetchSapAssets() (string, error) {
 	}
 
 	total := len(bundle.AppleMediaServices) + len(bundle.Commerce) +
-		len(bundle.CoreFP) + len(bundle.CoreFPICXS)
+		len(bundle.ADID) + len(bundle.CoreFP) + len(bundle.CoreFPICXS) +
+		len(bundle.FairPlayD) + len(bundle.FairPlayKext)
 
 	return fmt.Sprintf("%s produced in %s",
 		cost.Finish(), measure.Bytes(uint64(total))), nil

@@ -27,3 +27,10 @@ VendorAssets/
 # Node tooling for the commit-message rules. The rule text itself is in
 # CONTRIBUTING.md, which is what a contributor on a machine without node reads.
 node_modules/
+
+# The local knowledge base: conclusions, run evidence and handoffs stay on the
+# machine. They are not part of the shipped repository.
+docs/knowledge/
+
+# The agent entry is a local working note; it is not shipped.
+AGENTS.md
