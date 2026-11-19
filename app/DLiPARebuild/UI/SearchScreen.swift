@@ -80,9 +80,9 @@ struct SearchScreen: View {
                     // the same shape of wait, and a second style would only make
                     // the screen noisier.
                     if let working = model.workingStatus {
-                        WorkingCard(text: working, done: model.workingDone)
+                        SystemWaitHUD(text: working, done: model.workingDone)
                     } else if model.busy {
-                        WorkingCard(text: model.status.isEmpty ? "Working..." : model.status)
+                        SystemWaitHUD(text: model.status.isEmpty ? "Working..." : model.status)
                     }
                 }
                 .actionSheet(item: $actionTarget) { app in
@@ -216,54 +216,6 @@ struct SearchScreen: View {
 /// Its own view rather than an alert assembled in SearchScreen's body: the
 /// inline `Binding(get:set:)` that drove that alert was part of what the type
 /// checker could not finish, and a request needs somewhere to keep its result.
-/// The waiting card, drawn over the screen while something takes a moment.
-///
-/// Opaque on purpose. A material let the results list read through the card, and
-/// the one line that explains the wait competed with whatever was behind it --
-/// which defeats the point of saying anything at all.
-private struct WorkingCard: View {
-    let text: String
-    /// Turns the spinner into a tick. SwiftUI has no built-in success mark --
-    /// `ProgressView` only draws a spinner or a bar -- so this is the usual
-    /// stand-in: an SF Symbol and a spring.
-    var done = false
-
-    var body: some View {
-        // Spinner above the line rather than beside it. Side by side, every
-        // extra word made the card wider and it ended up a banner; a fixed width
-        // keeps it a card and lets the line wrap instead.
-        VStack(spacing: 10) {
-            ZStack {
-                if done {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundColor(.green)
-                        .transition(.scale.combined(with: .opacity))
-                } else {
-                    ProgressView()
-                }
-            }
-            // Fixed, so swapping one for the other does not move the line below.
-            .frame(height: 24)
-
-            Text(text)
-                .font(.footnote)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(width: 190)
-        .padding(.vertical, 18)
-        .padding(.horizontal, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(UIColor.secondarySystemGroupedBackground))
-                .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
-        )
-        .animation(.spring(response: 0.32, dampingFraction: 0.62), value: done)
-    }
-}
-
 /// What sits under the search bar.
 ///
 /// Kept separate from SearchScreen because \`isSearching\` is only populated
@@ -459,6 +411,9 @@ final class SearchModel: ObservableObject {
     private static let historyKey = "com.a23bc.dliparebuild.searchHistory"
     private static let historyLimit = 12
 
+    @AppStorage(SettingsScreen.resultLimitKey) private var selectedLimit = 50
+    @AppStorage(SettingsScreen.customLimitKey) private var customLimit = 50
+
     init() {
         history = UserDefaults.standard.stringArray(forKey: Self.historyKey) ?? []
     }
@@ -515,7 +470,16 @@ final class SearchModel: ObservableObject {
         defer { busy = false; status = "" }
 
         do {
-            results = try await AppSession.shared.search(query)
+            let found = try await AppSession.shared.search(query)
+            // Honour the limit from Settings: a fixed 25/50/100, or the custom
+            // stepper value when the picker is on Custom (-1).
+            let limit: Int
+            if selectedLimit < 0 {
+                limit = max(1, customLimit)
+            } else {
+                limit = selectedLimit
+            }
+            results = Array(found.prefix(limit))
             hasSearched = true
             record(query)
         } catch {

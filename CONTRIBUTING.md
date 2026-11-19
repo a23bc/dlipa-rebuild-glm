@@ -7,7 +7,6 @@ Everything here is derived from a fork of an app whose source was never publishe
 * [`README.md`](README.md) — what is broken upstream, what this rebuild does, how to install the artifact.
 * [`docs/architecture.md`](docs/architecture.md) — how the pieces fit, and why each piece is shaped the way it is. It records decisions that were forced by specific failures; read it before changing the guest, the signer or the download path.
 * [`docs/diagnostics.md`](docs/diagnostics.md) — what the Diagnostics tab's switches change, when each one takes effect, and how to read the log. Read it before proposing a performance fix from a capture, and before adding a log line that prints on every launch.
-* [`DELIVERY_STATUS.md`](DELIVERY_STATUS.md) — what works today and the evidence.
 * [`sapbridge/VERIFICATION.md`](sapbridge/VERIFICATION.md) — the Go build and test matrix.
 
 ## The constraint that shapes the whole workflow

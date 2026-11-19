@@ -80,7 +80,6 @@ DLiPA 失效，是因为 Apple 现在要求 App Store 私有 API 请求携带 `X
 
 * **[docs/architecture.md](docs/architecture.md)** — 各部分怎么拼起来：两个租户（tenant）共用一个 guest、为什么 Store runtime 打开一次就留着、下载流程的端到端、被具体失败逼出来的那些决定，以及在真机上时间都花在哪。
 * **[CONTRIBUTING.md](CONTRIBUTING.md)** — 没有 Mac 怎么干活：两层 CI 各自能证明什么、真正会让 push 失败的提交信息规则，以及什么才算验证过。
-* `DELIVERY_STATUS.md` — 现在什么能用、什么不能用，以及证据。
 * `sapbridge/VERIFICATION.md` — Go 侧的构建与测试矩阵。
 * **[docs/RELEASING.md](docs/RELEASING.md)** — 哪个版本字段是人为决定、哪个是运行计数，产物名字里带的是什么，以及 bundle 是用什么封装的。
 

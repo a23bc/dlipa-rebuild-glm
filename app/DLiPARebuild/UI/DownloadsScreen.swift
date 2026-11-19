@@ -25,22 +25,25 @@ struct DownloadsScreen: View {
                     )
                 } else {
                     List {
-                        ForEach(manager.activeJobs) { job in
-                            DownloadJobRow(job: job)
-                                .contentShape(Rectangle())
-                                .onTapGesture { sheetTarget = .job(job) }
-                        }
-
-                        ForEach(files, id: \.self) { file in
-                            FinishedRow(file: file)
-                                .contentShape(Rectangle())
-                                .onTapGesture { sheetTarget = .file(file) }
-                        }
-                        .onDelete { offsets in
-                            for index in offsets {
-                                delete(files[index])
+                        ForEach(accountGroups, id: \.name) { group in
+                            Section(group.name) {
+                                ForEach(group.jobs) { job in
+                                    DownloadJobRow(job: job)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { sheetTarget = .job(job) }
+                                }
+                                ForEach(group.files, id: \.self) { file in
+                                    FinishedRow(file: file)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { sheetTarget = .file(file) }
+                                }
+                                .onDelete { offsets in
+                                    for index in offsets {
+                                        delete(group.files[index])
+                                    }
+                                    reload()
+                                }
                             }
-                            reload()
                         }
                     }
                 }
@@ -92,6 +95,36 @@ struct DownloadsScreen: View {
     private func reload() {
         files = AppSession.downloadedFiles()
     }
+
+    /// Runs jobs and finished files grouped by the account that started them.
+    /// Finished files carry the account in their sidecar; older sidecars without
+    /// one fall under "Other" rather than being dropped.
+    private var accountGroups: [DownloadGroup] {
+        var groups: [String: DownloadGroup] = [:]
+
+        func group(_ name: String) -> DownloadGroup {
+            if let existing = groups[name] { return existing }
+            let created = DownloadGroup(name: name)
+            groups[name] = created
+            return created
+        }
+
+        for job in manager.activeJobs {
+            group(job.accountLabel).jobs.append(job)
+        }
+        for file in files {
+            let account = DownloadMetadataStore.read(for: file)?.account ?? "Other"
+            group(account).files.append(file)
+        }
+
+        return groups.values.sorted { $0.name < $1.name }
+    }
+}
+
+private struct DownloadGroup {
+    let name: String
+    var jobs: [DownloadJob] = []
+    var files: [URL] = []
 }
 
 /// What the tap menu acts on: a file on disk, or a job still running.

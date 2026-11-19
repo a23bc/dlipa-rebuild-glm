@@ -19,12 +19,20 @@ private struct Row: View {
 struct SettingsScreen: View {
     /// Set once the Diagnostics tab has been unlocked. Shared with RootTabView.
     static let showDiagnosticsKey = "com.a23bc.dliparebuild.showDiagnostics"
-
+    /// Search result limit: 25 / 50 / 100, or -1 for the custom stepper.
+    static let resultLimitKey = "com.a23bc.dliparebuild.searchResultLimit"
+    static let customLimitKey = "com.a23bc.dliparebuild.searchCustomLimit"
 
     /// Taps needed on the About row before the Diagnostics tab appears.
     private static let unlockTaps = 5
 
+    static var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    }
+
     @AppStorage(showDiagnosticsKey) private var showDiagnostics = false
+    @AppStorage(resultLimitKey) private var resultLimit = 50
+    @AppStorage(customLimitKey) private var customLimit = 50
 
     /// Read on appear and again after a regeneration: the value lives in
     /// UserDefaults, not in observable state.
@@ -45,19 +53,29 @@ struct SettingsScreen: View {
                     }
                 }
 
-                Section("SAP") {
-                    Row(title: "Protocol", value: "200 / 210")
-                    Row(title: "Backend", value: "Unicorn guest")
-                }
-
                 Section("About") {
                     Button {
                         registerUnlockTap()
                     } label: {
-                        Row(title: "App", value: "DLiPA Rebuild")
+                        Row(title: "Version", value: Self.appVersion)
                     }
                     .buttonStyle(.plain)
                     Row(title: "Bundle", value: "com.a23bc.dliparebuild")
+                    Link("Source on GitHub", destination: URL(string: "https://github.com/a23bc/dlipa-rebuild-glm")!)
+                }
+
+                Section("Search") {
+                    Picker("Result limit", selection: $resultLimit) {
+                        Text("25").tag(25)
+                        Text("50").tag(50)
+                        Text("100").tag(100)
+                        Text("Custom").tag(-1)
+                    }
+                    if resultLimit == -1 {
+                        Stepper(value: $customLimit, in: 1...1000, step: 5) {
+                            Text("Custom limit: \(customLimit)")
+                        }
+                    }
                 }
 
                 if showDiagnostics {

@@ -83,9 +83,7 @@ struct AccountsScreen: View {
             }
             .overlay {
                 if model.busy {
-                    ProgressView(model.status.isEmpty ? "Working..." : model.status)
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    SystemWaitHUD(text: model.status.isEmpty ? "Working..." : model.status)
                 }
             }
         }

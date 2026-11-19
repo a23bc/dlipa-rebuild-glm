@@ -21,6 +21,9 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// nil means "whatever the store hands out today".
     let versionID: String?
     let fileName: String
+    /// The account that started this download, for grouping in the Downloads tab.
+    /// Stored as the email when available, else the DSID.
+    let accountLabel: String
 
     var appName: String { app.trackName }
     var bundleID: String { app.bundleId }
@@ -63,10 +66,16 @@ final class DownloadJob: ObservableObject, Identifiable {
     @Published private(set) var received: Int64 = 0
     @Published private(set) var expected: Int64 = 0
 
-    init(app: StoreApp, versionID: String?, fileName: String) {
+    init(app: StoreApp, versionID: String?, fileName: String, accountLabel: String) {
         self.app = app
         self.versionID = versionID
         self.fileName = fileName
+        self.accountLabel = accountLabel
+    }
+
+    static func currentAccountLabel() -> String {
+        guard let account = AppSession.shared.activeAccount else { return "Unknown account" }
+        return account.email.isEmpty ? account.dsid : account.email
     }
 
     var fraction: Double {
@@ -158,7 +167,8 @@ final class DownloadManager: ObservableObject {
         // old build with the newest number.
         let version = versionID ?? app.version ?? "latest"
         let name = app.bundleId + "-" + version + ".ipa"
-        let job = DownloadJob(app: app, versionID: versionID, fileName: name)
+        let job = DownloadJob(app: app, versionID: versionID, fileName: name,
+                              accountLabel: Self.currentAccountLabel())
 
         jobs.insert(job, at: 0)
 
@@ -220,6 +230,7 @@ final class DownloadManager: ObservableObject {
                 DownloadMetadataStore.write(app,
                                             version: job.versionText,
                                             minimumOS: identity?.minimumOS ?? app.minimumOsVersion,
+                                            account: job.accountLabel,
                                             for: file)
 
                 if let artwork = URL(string: app.artworkUrl100 ?? app.artworkUrl60 ?? "") {
@@ -308,16 +319,19 @@ struct DownloadMetadata: Codable {
     /// The icon itself, so the list does not need the network to draw a row that has
     /// been sitting there for weeks.
     var artworkData: Data?
+    /// The account that downloaded this package. Optional so older sidecars decode.
+    var account: String?
 }
 
 enum DownloadMetadataStore {
-    static func write(_ app: StoreApp, version: String, minimumOS: String?, for file: URL) {
+    static func write(_ app: StoreApp, version: String, minimumOS: String?, account: String, for file: URL) {
         let metadata = DownloadMetadata(name: app.trackName,
                                         bundleID: app.bundleId,
                                         version: version,
                                         artwork: app.artworkUrl100 ?? app.artworkUrl60,
                                         minimumOS: minimumOS,
-                                        artworkData: nil)
+                                        artworkData: nil,
+                                        account: account)
 
         guard let data = try? PropertyListEncoder().encode(metadata) else { return }
         try? data.write(to: sidecar(for: file))
