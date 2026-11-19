@@ -38,6 +38,13 @@ type Signer struct {
 	// The account the open runtime belongs to. Zero until one is opened.
 	storeRuntimeDSID uint64
 
+	// authRuntime is a Store guest on its own engine for the login exchange.
+	// It is kept across calls: run 619 showed that closing it after the first
+	// authenticate leaves the SAP machine's signer returning -42306 on the
+	// second, because the close restores patched bytes the machine shares.
+	// Closed only with the signer.
+	authRuntime *emulator.Runtime
+
 	// kbsyncBlob is the blob generated for kbsyncDSID. Generating one costs the
 	// better part of a minute, and the same account keeps the same blob for the
 	// life of the session.
@@ -316,6 +323,11 @@ func (s *Signer) Close() error {
 	if s.storeRuntime != nil {
 		closeErrors = append(closeErrors, s.storeRuntime.Close())
 		s.storeRuntime = nil
+	}
+
+	if s.authRuntime != nil {
+		closeErrors = append(closeErrors, s.authRuntime.Close())
+		s.authRuntime = nil
 	}
 
 	if s.machine != nil && s.context != 0 {

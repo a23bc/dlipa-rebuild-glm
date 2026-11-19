@@ -118,15 +118,20 @@ func (s *Signer) AuthenticateOnce(ctx context.Context, image []byte, input Authe
 	}
 
 	// Run the entire exchange -- proof and request -- on one standalone guest,
-	// then close it before returning. The shared machine's engine stays free for
-	// kbsync generation after sign-in: run 615 showed a resident store guest
-	// makes StoreAgent global init return -42306, and run 614 showed the
-	// download cannot start without that blob on a fresh install.
-	runtime, err := emulator.Open(ctx, image, prepared)
-	if err != nil {
-		return AuthenticateResult{}, fmt.Errorf("authenticate: open runtime: %w", err)
+	// kept across calls. The shared machine's engine stays free for kbsync
+	// generation after sign-in: run 615 showed a resident store guest there
+	// makes StoreAgent global init return -42306. Do NOT close this runtime
+	// between calls: run 619 showed closing it after the first authenticate
+	// leaves the machine's signer returning -42306 on the second call.
+	runtime := s.authRuntime
+	if runtime == nil {
+		runtime, err = emulator.Open(ctx, image, prepared)
+		if err != nil {
+			return AuthenticateResult{}, fmt.Errorf("authenticate: open runtime: %w", err)
+		}
+
+		s.authRuntime = runtime
 	}
-	defer func() { _ = runtime.Close() }()
 
 	// The proof must be minted on the same guest that sends the request (549/552).
 	// The returned state is the portable one the download needs later.
