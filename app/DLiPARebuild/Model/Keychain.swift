@@ -115,4 +115,20 @@ enum Keychain {
 
         return data
     }
+
+    /// Removes every item this app wrote to the keychain: stored passwords and
+    /// the anisette machine state. Used by the full reset in Settings.
+    static func removeAll() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+        ]
+        let anisette: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: anisetteService,
+        ]
+
+        SecItemDelete(query as CFDictionary)
+        SecItemDelete(anisette as CFDictionary)
+    }
 }

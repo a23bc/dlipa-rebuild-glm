@@ -75,15 +75,14 @@ struct SearchScreen: View {
                     // leaving the last results on screen.
                     if value.isEmpty { model.clear() }
                 }
-                .overlay {
-                    // One card for both jobs: searching and taking a licence are
-                    // the same shape of wait, and a second style would only make
-                    // the screen noisier.
-                    if let working = model.workingStatus {
-                        SystemWaitHUD(text: working, done: model.workingDone)
-                    } else if model.busy {
-                        SystemWaitHUD(text: model.status.isEmpty ? "Working..." : model.status)
-                    }
+                // The wait surface is a system UIAlertController with a system
+                // spinner, the same shape TrollStore uses for "Installing".
+                .background {
+                    SystemWaitAlert(
+                        isPresented: Binding(
+                            get: { model.workingStatus != nil || model.busy },
+                            set: { _ in }),
+                        text: model.workingStatus ?? (model.status.isEmpty ? "Working..." : model.status))
                 }
                 .actionSheet(item: $actionTarget) { app in
                     actionSheet(for: app)

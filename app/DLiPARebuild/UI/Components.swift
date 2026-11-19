@@ -26,42 +26,44 @@ struct EmptyStateView: View {
     }
 }
 
-/// A system-styled wait HUD: the system activity indicator on a system material
-/// background. Used for the search, licence and sign-in waits so they read as
-/// one of the OS's own progress surfaces rather than a hand-drawn card.
-struct SystemWaitHUD: View {
+/// The wait surface TrollStore uses: a system `UIAlertController` with a system
+/// `UIActivityIndicatorView` in it. This is a real system alert, not a drawn card,
+/// so it reads as one of the OS's own progress dialogs. Bound to a `Bool`: while
+/// true the alert is presented, when it flips false the alert dismisses itself.
+struct SystemWaitAlert: UIViewControllerRepresentable {
+    let isPresented: Binding<Bool>
     let text: String
-    var done = false
 
-    var body: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                if done {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(.green)
-                        .transition(.scale.combined(with: .opacity))
-                } else {
-                    // UIKit's indicator is the actual system spinner; SwiftUI's
-                    // ProgressView maps to it, but wrapping it keeps the intent
-                    // explicit and the style consistent across iOS 15+.
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                }
-            }
-            .frame(height: 26)
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
 
-            Text(text)
-                .font(.subheadline)
-                .foregroundColor(.primary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+    func updateUIViewController(_ controller: UIViewController, context: Context) {
+        let shouldShow = isPresented.wrappedValue
+        if shouldShow && context.coordinator.alert == nil {
+            let alert = UIAlertController(title: text, message: nil, preferredStyle: .alert)
+            let spinner = UIActivityIndicatorView(style: .medium)
+            spinner.translatesAutoresizingMaskIntoConstraints = false
+            spinner.startAnimating()
+            alert.view.addSubview(spinner)
+            NSLayoutConstraint.activate([
+                spinner.centerXAnchor.constraint(equalTo: alert.view.centerXAnchor),
+                spinner.bottomAnchor.constraint(equalTo: alert.view.bottomAnchor, constant: -12)
+            ])
+            context.coordinator.alert = alert
+            controller.present(alert, animated: true)
+        } else if !shouldShow && context.coordinator.alert != nil {
+            controller.dismiss(animated: true)
+            context.coordinator.alert = nil
+        } else if let alert = context.coordinator.alert {
+            alert.title = text
         }
-        .padding(.vertical, 18)
-        .padding(.horizontal, 20)
-        .frame(maxWidth: 240)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .animation(.spring(response: 0.32, dampingFraction: 0.62), value: done)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var alert: UIAlertController?
     }
 }
 

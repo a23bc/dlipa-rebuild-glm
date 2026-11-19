@@ -81,10 +81,10 @@ struct AccountsScreen: View {
             .sheet(item: $twoFactor, onDismiss: { twoFactor = nil }) { challenge in
                 TwoFactorView(model: model, challenge: challenge)
             }
-            .overlay {
-                if model.busy {
-                    SystemWaitHUD(text: model.status.isEmpty ? "Working..." : model.status)
-                }
+            .background {
+                SystemWaitAlert(
+                    isPresented: Binding(get: { model.busy }, set: { _ in }),
+                    text: model.status.isEmpty ? "Signing in..." : model.status)
             }
         }
         .onReceive(NotificationCenter.default.publisher(

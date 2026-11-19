@@ -19,7 +19,7 @@ private struct Row: View {
 struct SettingsScreen: View {
     /// Set once the Diagnostics tab has been unlocked. Shared with RootTabView.
     static let showDiagnosticsKey = "com.a23bc.dliparebuild.showDiagnostics"
-    /// Search result limit: 25 / 50 / 100, or -1 for the custom stepper.
+    /// Search result limit: 25 / 50 / 100, or -1 for the custom value below.
     static let resultLimitKey = "com.a23bc.dliparebuild.searchResultLimit"
     static let customLimitKey = "com.a23bc.dliparebuild.searchCustomLimit"
 
@@ -38,12 +38,23 @@ struct SettingsScreen: View {
     /// UserDefaults, not in observable state.
     @State private var guid = HardwareIdentity.current().guid
     @State private var confirmingReset = false
+    @State private var confirmingWipe = false
     @State private var unlockTapsSoFar = 0
     @State private var lastTap = Date.distantPast
 
     var body: some View {
         NavigationView {
             List {
+                // Search sits above Identity: the result limit is the setting
+                // people reach for most often.
+                Section("Search") {
+                    NavigationLink {
+                        ResultLimitView(limit: $resultLimit, custom: $customLimit)
+                    } label: {
+                        Row(title: "Result limit", value: resultLimit < 0 ? "Custom (\(customLimit))" : "\(resultLimit)")
+                    }
+                }
+
                 Section("Identity") {
                     Row(title: "Device GUID", value: guid)
                     Button(role: .destructive) {
@@ -53,40 +64,39 @@ struct SettingsScreen: View {
                     }
                 }
 
+                if showDiagnostics {
+                    Section {
+                        Toggle("Show Diagnostics tab", isOn: $showDiagnostics)
+                    }
+                }
+
+                // The wipe sits immediately above About, so the destructive
+                // action is near the identity it destroys rather than buried.
+                Section {
+                    Button(role: .destructive) {
+                        confirmingWipe = true
+                    } label: {
+                        Text("Reset all data")
+                    }
+                }
+
+                // About is last. A tap on Version unlocks the Diagnostics tab.
                 Section("About") {
+                    NavigationLink {
+                        AboutRepositoryView()
+                    } label: {
+                        Text("Github Repository")
+                    }
                     Button {
                         registerUnlockTap()
                     } label: {
                         Row(title: "Version", value: Self.appVersion)
                     }
                     .buttonStyle(.plain)
-                    Row(title: "Bundle", value: "com.a23bc.dliparebuild")
-                    Link("Source on GitHub", destination: URL(string: "https://github.com/a23bc/dlipa-rebuild-glm")!)
-                }
-
-                Section("Search") {
-                    Picker("Result limit", selection: $resultLimit) {
-                        Text("25").tag(25)
-                        Text("50").tag(50)
-                        Text("100").tag(100)
-                        Text("Custom").tag(-1)
-                    }
-                    if resultLimit == -1 {
-                        Stepper(value: $customLimit, in: 1...1000, step: 5) {
-                            Text("Custom limit: \(customLimit)")
-                        }
-                    }
-                }
-
-                if showDiagnostics {
-                    Section {
-                        Toggle("Show Diagnostics tab", isOn: $showDiagnostics)
-                    }
                 }
             }
             .navigationTitle("Settings")
             .onAppear {
-                // The tab may be shown long after a regeneration happened.
                 guid = HardwareIdentity.current().guid
             }
             .alert(isPresented: $confirmingReset) {
@@ -94,6 +104,13 @@ struct SettingsScreen: View {
                     title: Text("Regenerate device GUID?"),
                     message: Text("Signs you out, discards cached download keys, and makes Apple treat this as a new device."),
                     primaryButton: .destructive(Text("Regenerate")) { regenerate() },
+                    secondaryButton: .cancel())
+            }
+            .alert(isPresented: $confirmingWipe) {
+                Alert(
+                    title: Text("Reset all data?"),
+                    message: Text("Removes every account and password, the machine identity, cached download keys and all app settings. This cannot be undone."),
+                    primaryButton: .destructive(Text("Reset")) { wipeAll() },
                     secondaryButton: .cancel())
             }
         }
@@ -118,10 +135,75 @@ struct SettingsScreen: View {
     }
 
     private func regenerate() {
-        // The cached kbsync blobs belong to the identity being replaced.
         SAPSigner.forgetAllCachedKBSync()
         guid = HardwareIdentity.regenerate().guid
-        // regenerate() posts the change notification; AccountsScreen listens
-        // for it and tears down its live session.
+    }
+
+    /// Clears everything the app owns: accounts and tokens (UserDefaults), stored
+    /// passwords and the anisette state (Keychain), cached kbsync blobs and the
+    /// search history. The process is told to leave so no in-memory state survives.
+    private func wipeAll() {
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("com.a23bc.dliparebuild") {
+            defaults.removeObject(forKey: key)
+        }
+        Keychain.removeAll()
+        SAPSigner.forgetAllCachedKBSync()
+        AppLog.clear()
+        AppLog.info("all app data reset", .app)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            exit(0)
+        }
+    }
+}
+
+/// The second-level page for the result limit. Custom is edited here, so the
+/// main settings list never grows a stepper that pushes rows around.
+private struct ResultLimitView: View {
+    @Binding var limit: Int
+    @Binding var custom: Int
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Preset", selection: $limit) {
+                    Text("25").tag(25)
+                    Text("50").tag(50)
+                    Text("100").tag(100)
+                    Text("Custom").tag(-1)
+                }
+                .pickerStyle(.inline)
+            }
+            if limit < 0 {
+                Section("Custom limit") {
+                    Stepper(value: $custom, in: 1...1000, step: 5) {
+                        Text("\(custom) results")
+                    }
+                }
+            }
+        }
+        .navigationTitle("Result limit")
+    }
+}
+
+/// Destination for the About link. Keeping it a real navigation link gives the
+/// chevron style without a blue text label.
+private struct AboutRepositoryView: View {
+    private static let url = "https://github.com/a23bc/dlipa-rebuild-glm"
+
+    var body: some View {
+        Form {
+            Section {
+                Link("Open in Safari", destination: URL(string: Self.url)!)
+            }
+            Section {
+                Text(Self.url)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .navigationTitle("Github Repository")
     }
 }
