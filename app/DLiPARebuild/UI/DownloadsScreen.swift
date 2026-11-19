@@ -121,10 +121,12 @@ struct DownloadsScreen: View {
     }
 }
 
-private struct DownloadGroup {
+private final class DownloadGroup {
     let name: String
     var jobs: [DownloadJob] = []
     var files: [URL] = []
+
+    init(name: String) { self.name = name }
 }
 
 /// What the tap menu acts on: a file on disk, or a job still running.

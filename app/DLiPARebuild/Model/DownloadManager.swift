@@ -168,7 +168,7 @@ final class DownloadManager: ObservableObject {
         let version = versionID ?? app.version ?? "latest"
         let name = app.bundleId + "-" + version + ".ipa"
         let job = DownloadJob(app: app, versionID: versionID, fileName: name,
-                              accountLabel: Self.currentAccountLabel())
+                              accountLabel: DownloadJob.currentAccountLabel())
 
         jobs.insert(job, at: 0)
 
